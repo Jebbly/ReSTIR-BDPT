@@ -90,6 +90,43 @@ struct EmissivePowerSampler : IEmissiveLightSampler
         return true;
     }
 
+    /** Draw a single light sample.
+        \param[in] normalW Normal at the shading point in world space.
+        \param[in] upperHemisphere True if only upper hemisphere should be considered.
+        \param[in,out] sg Sample generator.
+        \param[out] ls Light sample. Only valid if true is returned.
+        \return True if a sample was generated, false otherwise.
+    */
+    bool sampleLight<S : ISampleGenerator>(inout S sg, out TriangleLightSample ls)
+    {
+        ls = {};
+
+        if (gScene.lightCollection.isEmpty()) return false;
+
+        // Randomly pick a triangle out of the global list with uniform probability.
+        float uLight = sampleNext1D(sg);
+        uint triangleCount = gScene.lightCollection.triangleCount;
+        // Safety precaution as the result of the multiplication may be rounded to triangleCount even if uLight < 1.0 when triangleCount is large.
+        uint triangleIndex = min((uint)(uLight * triangleCount), triangleCount - 1);
+
+        uint2 packed = _emissivePower.triangleAliasTable[triangleIndex];
+        float threshold = f16tof32(packed.x >> 16u);
+        uint  selectAbove = ((packed.x & 0xFFFFu) << 8u) | ((packed.y >> 24u) & 0xFFu);
+        uint  selectBelow = packed.y & 0xFFFFFFu;
+
+        // Test the threshold in the current table entry; pick one of the two options
+        triangleIndex = (sampleNext1D(sg) >= threshold) ? selectAbove : selectBelow;
+
+        float triangleSelectionPdf = gScene.lightCollection.fluxData[triangleIndex].flux * _emissivePower.invWeightsSum;
+
+        // Sample the triangle uniformly.
+        if (!sampleTriangle(triangleIndex, sampleNext4D(sg), ls)) return false;
+
+        // The final probability density is the product of the sampling probabilities.
+        ls.pdf *= triangleSelectionPdf;
+        return true;
+    }
+
     /** Evaluate the PDF associated with selecting an emissive triangle.
         \param[in] posW Shading point in world space.
         \param[in] normalW Normal at the shading point in world space.
@@ -98,6 +135,17 @@ struct EmissivePowerSampler : IEmissiveLightSampler
         \return Probability of drawing the input triangle proportionally to its emissive power
     */
     float evalTriangleSelectionPdf(const float3 posW, const float3 normalW, const bool upperHemisphere, const uint triangleIndex)
+    {
+        if (triangleIndex == LightCollection::kInvalidIndex) return 0.f;
+
+        return gScene.lightCollection.fluxData[triangleIndex].flux * _emissivePower.invWeightsSum;
+    }
+
+    /** Evaluate the PDF associated with selecting an emissive triangle.
+        \param[in] triangleIndex Index of selected triangle.
+        \return Probability of drawing the input triangle proportionally to its emissive power
+    */
+    float evalTriangleSelectionPdf(const uint triangleIndex)
     {
         if (triangleIndex == LightCollection::kInvalidIndex) return 0.f;
 

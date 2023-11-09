@@ -139,6 +139,8 @@ struct StandardMaterialInstance : MaterialInstanceBase, IMaterialInstance
         float alpha = data.roughness * data.roughness;
         p.roughness = alpha < kMinGGXAlpha ? 0.f : data.roughness;
 
+        p.eta = data.eta;
+
         // Compute approximation of the albedos.
         // For now use the blend weights and colors, but this should be improved to better numerically approximate the integrals.
         p.diffuseReflectionAlbedo = (1.f - data.diffuseTransmission) * (1.f - data.specularTransmission) * data.diffuse;

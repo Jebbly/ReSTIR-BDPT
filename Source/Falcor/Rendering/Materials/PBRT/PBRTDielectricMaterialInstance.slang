@@ -197,6 +197,7 @@ struct PBRTDielectricMaterialInstance : MaterialInstanceBase, IMaterialInstance
 
         p.guideNormal = sf.N;
         p.roughness = bsdf.D.getIsotropicRoughness();
+        p.eta = bsdf.eta;
 
         p.specularReflectionAlbedo = float3(1.0f);
         p.specularTransmissionAlbedo = float3(1.0f);

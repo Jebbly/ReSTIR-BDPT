@@ -78,6 +78,7 @@ struct PathGenerator
     NRDBuffers outputNRD;                           ///< Output NRD data.
 
     RWTexture2D<float4> outputColor;                ///< Output color buffer if kSamplesPerPixel == 1.
+    RWByteAddressBuffer lightImage;                 ///< Input light traced image. Only valid when kUseBPT == true. Added to the output when kSamplesPerPixel == 1.
 
     // Render settings that depend on the scene.
     // TODO: Move into scene defines.

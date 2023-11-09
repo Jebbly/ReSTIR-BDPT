@@ -96,6 +96,9 @@ struct PathState
     float3      normal;                 ///< Shading normal at the scatter ray origin.
     HitInfo     hit;                    ///< Hit information for the scatter ray. This is populated at committed triangle hits.
 
+    float dVCM;                         ///< Partial MIS quantities, used to compute MIS weights.
+    float dVC;                          ///< Partial MIS quantities, used to compute MIS weights.
+
     float3      thp;                    ///< Path throughput.
     float3      L;                      ///< Accumulated path contribution.
 

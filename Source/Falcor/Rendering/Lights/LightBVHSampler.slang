@@ -124,6 +124,11 @@ struct LightBVHSampler : IEmissiveLightSampler
         return traversalPdf * triangleSelectionPdf;
     }
 
+    // No-op since LightBVH requires a shading point.
+    bool sampleLight<S : ISampleGenerator>(inout S sg, out TriangleLightSample ls) { ls = {}; return false; }
+    // No-op since LightBVH requires a shading point.
+    float evalTriangleSelectionPdf(const uint triangleIndex) { return 0.f; }
+
     /** Evaluate the PDF at a shading point given a hit point on an emissive triangle.
         \param[in] posW Shading point in world space.
         \param[in] normalW Normal at the shading point in world space.

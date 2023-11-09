@@ -451,6 +451,16 @@ void PathTracer::execute(RenderContext* pRenderContext, const RenderData& render
     // This should be called after all resources have been created.
     preparePathTracer(renderData);
 
+    // Trace light sub-paths
+    if (mStaticParams.useBPT)
+    {
+        // clear the light image
+        pRenderContext->clearUAV(mpLightImage->getUAV().get(), float4(0.f));
+
+        FALCOR_ASSERT(mpLightTracePass);
+        tracePass(pRenderContext, renderData, *mpLightTracePass, uint2(mParams.frameDim.x, (mParams.lightSubpathCount + mParams.frameDim.x-1) / mParams.frameDim.x));
+    }
+
     // Generate paths at primary hits.
     generatePaths(pRenderContext, renderData);
 
@@ -463,14 +473,14 @@ void PathTracer::execute(RenderContext* pRenderContext, const RenderData& render
 
     // Trace pass.
     FALCOR_ASSERT(mpTracePass);
-    tracePass(pRenderContext, renderData, *mpTracePass);
+    tracePass(pRenderContext, renderData, *mpTracePass, mParams.frameDim);
 
     // Launch separate passes to trace delta reflection and transmission paths to generate respective guide buffers.
     if (mOutputNRDAdditionalData)
     {
         FALCOR_ASSERT(mpTraceDeltaReflectionPass && mpTraceDeltaTransmissionPass);
-        tracePass(pRenderContext, renderData, *mpTraceDeltaReflectionPass);
-        tracePass(pRenderContext, renderData, *mpTraceDeltaTransmissionPass);
+        tracePass(pRenderContext, renderData, *mpTraceDeltaReflectionPass, mParams.frameDim);
+        tracePass(pRenderContext, renderData, *mpTraceDeltaTransmissionPass, mParams.frameDim);
     }
 
     // Resolve pass.
@@ -545,10 +555,21 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
     dirty |= widget.checkbox("Russian roulette", mStaticParams.useRussianRoulette);
     widget.tooltip("Use russian roulette to terminate low throughput paths.");
 
-    dirty |= widget.checkbox("Next-event estimation (NEE)", mStaticParams.useNEE);
-    widget.tooltip("Use next-event estimation.\nThis option enables direct illumination sampling at each path vertex.");
+    dirty |= widget.checkbox("Bidirectional path tracing (BPT)", mStaticParams.useBPT);
+    widget.tooltip("Use bidirectional path tracing.\nThis option automatically enables NEE and MIS.");
 
-    if (mStaticParams.useNEE)
+    if (mStaticParams.useBPT)
+    {
+        dirty |= widget.checkbox("Light trace only", mStaticParams.lightTraceOnly);
+        widget.tooltip("Only use light tracing.\nThis option disables tracing paths from the camera.");
+    }
+    else
+    {
+        dirty |= widget.checkbox("Next-event estimation (NEE)", mStaticParams.useNEE);
+        widget.tooltip("Use next-event estimation.\nThis option enables direct illumination sampling at each path vertex.");
+    }
+
+    if ((mStaticParams.useNEE || mStaticParams.useBPT) && !(mStaticParams.useBPT && mStaticParams.lightTraceOnly))
     {
         dirty |= widget.checkbox("Multiple importance sampling (MIS)", mStaticParams.useMIS);
         widget.tooltip("When enabled, BSDF sampling is combined with light sampling for the environment map and emissive lights.\n"
@@ -563,22 +584,40 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
                 dirty |= widget.var("MIS power exponent", mStaticParams.misPowerExponent, 0.01f, 10.f);
             }
         }
+    }
 
-        if (mpScene && mpScene->useEmissiveLights())
+    if (mStaticParams.useBPT)
+    {
+        if (auto group = widget.group("BPT"))
         {
-            if (auto group = widget.group("Emissive sampler"))
+            if (mStaticParams.useRussianRoulette && !mStaticParams.lightTraceOnly)
             {
-                if (widget.dropdown("Emissive sampler", mStaticParams.emissiveSampler))
-                {
-                    resetLighting();
-                    dirty = true;
-                }
-                widget.tooltip("Selects which light sampler to use for importance sampling of emissive geometry.", true);
+                dirty |= widget.var("Continuation probability", mParams.contProb, 0.f, 1.f);
+                widget.tooltip("Probability of continuing the path at each vertex.");
+            }
 
-                if (mpEmissiveSampler)
-                {
-                    if (mpEmissiveSampler->renderUI(group)) mOptionsChanged = true;
-                }
+            widget.var("Debug light vertex count", mParams.debugLightVertexCount, -1);
+            widget.tooltip("Only render paths with this many light vertices.");
+
+            dirty |= widget.var("Light sub-path count", mParams.lightSubpathCount, 1u, 10000000u);
+            widget.tooltip("Number of light sub-paths to trace when BPT is enabled.");
+        }
+    }
+
+    if ((mStaticParams.useNEE || mStaticParams.useBPT) && mpScene && mpScene->useEmissiveLights())
+    {
+        if (auto group = widget.group("Emissive sampler"))
+        {
+            if (widget.dropdown("Emissive sampler", mStaticParams.emissiveSampler))
+            {
+                resetLighting();
+                dirty = true;
+            }
+            widget.tooltip("Selects which light sampler to use for importance sampling of emissive geometry.", true);
+
+            if (mpEmissiveSampler)
+            {
+                if (mpEmissiveSampler->renderUI(group)) mOptionsChanged = true;
             }
         }
     }
@@ -770,6 +809,7 @@ void PathTracer::resetPrograms()
     mpTracePass = nullptr;
     mpTraceDeltaReflectionPass = nullptr;
     mpTraceDeltaTransmissionPass = nullptr;
+    mpLightTracePass = nullptr;
     mpGeneratePaths = nullptr;
     mpReflectTypes = nullptr;
 
@@ -806,6 +846,15 @@ void PathTracer::updatePrograms()
 
         mpTraceDeltaReflectionPass->prepareProgram(mpDevice, defines);
         mpTraceDeltaTransmissionPass->prepareProgram(mpDevice, defines);
+    }
+
+    // Create light trace pass.
+    if (mStaticParams.useBPT)
+    {
+        if (!mpLightTracePass)
+            mpLightTracePass = std::make_unique<TracePass>(mpDevice, "tracePass", "LIGHT_TRACE_PASS", mpScene, defines, globalTypeConformances);
+
+        mpLightTracePass->prepareProgram(mpDevice, defines);
     }
 
     // Create compute passes.
@@ -853,6 +902,15 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
     const uint32_t sampleCount = tileCount * kScreenTileDim.x * kScreenTileDim.y * spp;
     const uint32_t screenPixelCount = mParams.frameDim.x * mParams.frameDim.y;
     const uint32_t pathCount = screenPixelCount * spp;
+
+    if (mStaticParams.useBPT)
+    {
+        if (!mpLightImage || mpLightImage->getSize() != sizeof(float3) * mParams.frameDim.x * mParams.frameDim.y)
+        {
+            mpLightImage = mpDevice->createBuffer(sizeof(float3) * mParams.frameDim.x * mParams.frameDim.y, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mVarsChanged = true;
+        }
+    }
 
     // Allocate output sample offset buffer if needed.
     // This buffer stores the output offset to where the samples for each pixel are stored consecutively.
@@ -1083,11 +1141,12 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
     // Bind static resources that don't change per frame.
     if (mVarsChanged)
     {
-        if (useLightSampling && mpEnvMapSampler) mpEnvMapSampler->bindShaderData(var["envMapSampler"]);
+        if (useLightSampling && mpEnvMapSampler) mpEnvMapSampler->bindShaderData(var["lightSampler"]["envMapSampler"]);
 
         var["sampleOffset"] = mpSampleOffset; // Can be nullptr
         var["sampleColor"] = mpSampleColor;
         var["sampleGuideData"] = mpSampleGuideData;
+        var["lightImage"] = mpLightImage;
     }
 
     // Bind runtime data.
@@ -1116,7 +1175,7 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
     if (useLightSampling && mpEmissiveSampler)
     {
         // TODO: Do we have to bind this every frame?
-        mpEmissiveSampler->bindShaderData(var["emissiveSampler"]);
+        mpEmissiveSampler->bindShaderData(var["lightSampler"]["emissiveSampler"]);
     }
 }
 
@@ -1163,6 +1222,9 @@ bool PathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& ren
 
         return false;
     }
+
+    const auto& aabb = mpScene->getSceneBounds();
+    mParams.sceneSphere = float4(aabb.maxPoint + aabb.minPoint, length(aabb.maxPoint - aabb.minPoint))*.5f;
 
     // Update materials.
     prepareMaterials(pRenderContext);
@@ -1303,7 +1365,7 @@ void PathTracer::generatePaths(RenderContext* pRenderContext, const RenderData& 
     mpGeneratePaths->execute(pRenderContext, { mParams.screenTiles.x * tileSize, mParams.screenTiles.y, 1u });
 }
 
-void PathTracer::tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass)
+void PathTracer::tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass, const uint2 dispatchDims)
 {
     FALCOR_PROFILE(pRenderContext, tracePass.name);
 
@@ -1329,7 +1391,7 @@ void PathTracer::tracePass(RenderContext* pRenderContext, const RenderData& rend
     var["gPathTracer"] = mpPathTracerBlock;
 
     // Full screen dispatch.
-    mpScene->raytrace(pRenderContext, tracePass.pProgram.get(), tracePass.pVars, uint3(mParams.frameDim, 1));
+    mpScene->raytrace(pRenderContext, tracePass.pProgram.get(), tracePass.pVars, uint3(dispatchDims, 1));
 }
 
 void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& renderData)
@@ -1347,11 +1409,13 @@ void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& re
     // Additional specialization. This shouldn't change resource declarations.
     mpResolvePass->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
     mpResolvePass->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
+    mpResolvePass->addDefine("USE_BPT", mStaticParams.useBPT ? "1" : "0");
 
     // Bind resources.
     auto var = mpResolvePass->getRootVar()["CB"]["gResolvePass"];
     var["params"].setBlob(mParams);
     var["sampleCount"] = renderData.getTexture(kInputSampleCount); // Can be nullptr
+    var["lightImage"] = mpLightImage;
     var["outputColor"] = renderData.getTexture(kOutputColor);
     var["outputAlbedo"] = renderData.getTexture(kOutputAlbedo);
     var["outputSpecularAlbedo"] = renderData.getTexture(kOutputSpecularAlbedo);
@@ -1394,8 +1458,10 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("MAX_TRANSMISSON_BOUNCES", std::to_string(maxTransmissionBounces));
     defines.add("ADJUST_SHADING_NORMALS", adjustShadingNormals ? "1" : "0");
     defines.add("USE_BSDF_SAMPLING", useBSDFSampling ? "1" : "0");
-    defines.add("USE_NEE", useNEE ? "1" : "0");
-    defines.add("USE_MIS", useMIS ? "1" : "0");
+    defines.add("USE_NEE", (useBPT || useNEE) ? "1" : "0");
+    defines.add("USE_MIS", (useBPT || useMIS) ? "1" : "0");
+    defines.add("USE_BPT", useBPT ? "1" : "0");
+    defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");
     defines.add("USE_RUSSIAN_ROULETTE", useRussianRoulette ? "1" : "0");
     defines.add("USE_RTXDI", useRTXDI ? "1" : "0");
     defines.add("USE_ALPHA_TEST", useAlphaTest ? "1" : "0");

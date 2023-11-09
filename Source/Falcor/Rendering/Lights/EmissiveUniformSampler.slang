@@ -74,6 +74,44 @@ struct EmissiveUniformSampler : IEmissiveLightSampler
         return true;
     }
 
+    /** Draw a single light sample.
+        \param[in,out] sg Sample generator.
+        \param[out] ls Light sample. Only valid if true is returned.
+        \return True if a sample was generated, false otherwise.
+    */
+    bool sampleLight<S : ISampleGenerator>(inout S sg, out TriangleLightSample ls)
+    {
+        ls = {};
+
+        if (gScene.lightCollection.getActiveTriangleCount() == 0) return false;
+
+        // Randomly pick a triangle out of the global list of active triangles with uniform probability.
+        float uLight = sampleNext1D(sg);
+        uint triangleCount = gScene.lightCollection.getActiveTriangleCount();
+        uint idx = min((uint)(uLight * triangleCount), triangleCount - 1); // Safety precaution as the result of the multiplication may be rounded to triangleCount even if uLight < 1.0 when triangleCount is large.
+        uint triangleIndex = gScene.lightCollection.activeTriangles[idx];
+        float triangleSelectionPdf = 1.f / (float)triangleCount;
+
+        // Sample the triangle uniformly.
+        if (!sampleTriangle(triangleIndex, sampleNext4D(sg), ls)) return false;
+
+        // The final probability density is the product of the sampling probabilities.
+        ls.pdf *= triangleSelectionPdf;
+        return true;
+    }
+
+    /** Evaluate the PDF associated with selecting an emissive triangle.
+        \param[in] triangleIndex Index of selected triangle.
+        \return Probability of drawing the input triangle from an uniform distribution.
+    */
+    float evalTriangleSelectionPdf(const uint triangleIndex)
+    {
+        if (triangleIndex == LightCollection::kInvalidIndex) return 0.f;
+
+        // Lights are chosen uniformly so the selection probability is just one over the number of lights.
+        return gScene.lightCollection.getActiveTriangleCount() > 0 ? 1.f / (float)gScene.lightCollection.getActiveTriangleCount() : 0.f;
+    }
+
     /** Evaluate the PDF associated with selecting an emissive triangle.
         \param[in] posW Shading point in world space.
         \param[in] normalW Normal at the shading point in world space.

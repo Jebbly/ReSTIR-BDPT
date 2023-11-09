@@ -249,6 +249,7 @@ struct ReorderingScheduler
         gPathTracer.generatePath(pathID, path);
         gPathTracer.setupPathLogging(path);
 
+#if !defined(LIGHT_TRACE_PASS)
         if (path.isHit())
         {
             // Handle primary hits.
@@ -299,6 +300,7 @@ struct ReorderingScheduler
             // the path tracer runs first. Abort execution here to avoid double work.
             return;
         }
+#endif
 
         // Trace path.
         while (path.isActive())
@@ -342,7 +344,7 @@ struct ReorderingScheduler
             path = PathPayload::unpack(payload);
         }
 
-#if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS)
+#if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS) && !defined(LIGHT_TRACE_PASS)
         gPathTracer.writeOutput(path);
 #endif
     }
@@ -352,6 +354,10 @@ struct ReorderingScheduler
     */
     void run(uint2 pixel)
     {
+#if defined(LIGHT_TRACE_PASS)
+        tracePath(pixel.x | (pixel.y << 12) | ((-1) << 24));
+#else
+#if LIGHT_TRACE_ONLY == 0
         // Determine number of samples to take.
         uint samplesRemaining = kSamplesPerPixel;
         if (kSamplesPerPixel == 0)
@@ -378,6 +384,9 @@ struct ReorderingScheduler
                 }
             }
         }
+#endif
+        gPathTracer.writeLightImageOutput(pixel);
+#endif
     }
 }
 
@@ -455,6 +464,7 @@ struct Scheduler
         gPathTracer.generatePath(pathID, path);
         gPathTracer.setupPathLogging(path);
 
+#if !defined(LIGHT_TRACE_PASS)
         // Handle primary hit/miss.
         if (path.isHit())
         {
@@ -473,6 +483,7 @@ struct Scheduler
             // the path tracer runs first. Abort execution here to avoid double work.
             return;
         }
+#endif
 
         // Trace path.
         while (path.isActive())
@@ -480,7 +491,7 @@ struct Scheduler
             nextHit(path);
         }
 
-#if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS)
+#if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS) && !defined(LIGHT_TRACE_PASS)
         gPathTracer.writeOutput(path);
 #endif
     }
@@ -490,6 +501,10 @@ struct Scheduler
     */
     void run(uint2 pixel)
     {
+#if defined(LIGHT_TRACE_PASS)
+        tracePath(pixel.x | (pixel.y << 12) | ((-1) << 24));
+#else
+#if LIGHT_TRACE_ONLY == 0
         // Determine number of samples to take.
         uint samplesRemaining = kSamplesPerPixel;
         if (kSamplesPerPixel == 0)
@@ -504,6 +519,9 @@ struct Scheduler
             uint pathID = pixel.x | (pixel.y << 12) | (samplesRemaining << 24);
             tracePath(pathID);
         }
+#endif
+        gPathTracer.writeLightImageOutput(pixel);
+#endif
     }
 }
 
@@ -647,7 +665,12 @@ void rayGen()
 {
     uint2 pixel = DispatchRaysIndex().xy;
     uint2 frameDim = DispatchRaysDimensions().xy;
+
+#if defined(LIGHT_TRACE_PASS)
+    if (pixel.y*gPathTracer.params.frameDim.x + pixel.x >= gPathTracer.params.lightSubpathCount) return;
+#else
     if (all(pixel >= frameDim)) return;
+#endif
 
     gScheduler.run(pixel);
 }

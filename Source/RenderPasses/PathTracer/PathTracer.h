@@ -100,7 +100,7 @@ private:
     bool beginFrame(RenderContext* pRenderContext, const RenderData& renderData);
     void endFrame(RenderContext* pRenderContext, const RenderData& renderData);
     void generatePaths(RenderContext* pRenderContext, const RenderData& renderData);
-    void tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass);
+    void tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass, const uint2 dispatchDims);
     void resolvePass(RenderContext* pRenderContext, const RenderData& renderData);
 
     /** Static configuration. Changing any of these options require shader recompilation.
@@ -120,9 +120,11 @@ private:
         bool        useRussianRoulette = false;                 ///< Use russian roulette to terminate low throughput paths.
         bool        useNEE = true;                              ///< Use next-event estimation (NEE). This enables shadow ray(s) from each path vertex.
         bool        useMIS = true;                              ///< Use multiple importance sampling (MIS) when NEE is enabled.
+        bool        useBPT = true;                              ///< Use bidirectional path tracing.
+        bool        lightTraceOnly = false;                     ///< Only use light tracing. Disables camera tracing.
         MISHeuristic misHeuristic = MISHeuristic::Balance;      ///< MIS heuristic.
         float       misPowerExponent = 2.f;                     ///< MIS exponent for the power heuristic. This is only used when 'PowerExp' is chosen.
-        EmissiveLightSamplerType emissiveSampler = EmissiveLightSamplerType::LightBVH;  ///< Emissive light sampler to use for NEE.
+        EmissiveLightSamplerType emissiveSampler = EmissiveLightSamplerType::Power;  ///< Emissive light sampler to use for NEE.
         bool        useRTXDI = false;                           ///< Use RTXDI for direct illumination.
 
         // Material parameters
@@ -182,10 +184,12 @@ private:
     ref<ComputePass>                mpReflectTypes;             ///< Helper for reflecting structured buffer types.
 
     std::unique_ptr<TracePass>      mpTracePass;                ///< Main trace pass.
+    std::unique_ptr<TracePass>      mpLightTracePass;           ///< Light trace pass.
     std::unique_ptr<TracePass>      mpTraceDeltaReflectionPass; ///< Delta reflection trace pass (for NRD).
     std::unique_ptr<TracePass>      mpTraceDeltaTransmissionPass;   ///< Delta transmission trace pass (for NRD).
 
     ref<Texture>                    mpSampleOffset;             ///< Output offset into per-sample buffers to where the samples for each pixel are stored (the offset is relative the start of the tile). Only used with non-fixed sample count.
+    ref<Buffer>                     mpLightImage;               ///< Light trace image. Light subpath contributions are atomically added to this.
     ref<Buffer>                     mpSampleColor;              ///< Compact per-sample color buffer. This is used only if spp > 1.
     ref<Buffer>                     mpSampleGuideData;          ///< Compact per-sample denoiser guide data.
     ref<Buffer>                     mpSampleNRDRadiance;        ///< Compact per-sample NRD radiance data.

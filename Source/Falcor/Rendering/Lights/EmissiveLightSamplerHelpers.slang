@@ -44,7 +44,6 @@ import Rendering.Lights.EmissiveLightSamplerInterface;
 
 /** Samples an emissive triangle uniformly by area and evaluates the probability density function.
     Note that the triangle is only emitting on the front-facing side.
-    \param[in] lights The light collection.
     \param[in] posW Shading point in world space.
     \param[in] triangleIndex Triangle index of sampled triangle.
     \param[in] u Uniform random number (2D).
@@ -98,6 +97,59 @@ bool sampleTriangle(const float3 posW, const uint triangleIndex, const float2 u,
 
     // TODO: We can simplify the expressions by using the unnormalized quantities for computing the pdf.
     //ls.pdf = -2.f * distSqr * ls.distance / (dot(N, L);    // Optimized (except N would have to be properly flipped above, before normalW is computed).
+    return true;
+}
+
+/** Samples an emissive triangle uniformly by area and evaluates the probability density function.
+    Note that the triangle is only emitting on the front-facing side.
+    \param[in] triangleIndex Triangle index of sampled triangle.
+    \param[in] u Uniform random number (4D).
+    \param[out] ls Light sample. Only valid if true is returned.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleTriangle(const uint triangleIndex, const float4 u, out TriangleLightSample ls)
+{
+    ls = {};
+    ls.triangleIndex = triangleIndex;
+    const EmissiveTriangle tri = gScene.lightCollection.getTriangle(triangleIndex);
+
+    // Sample the triangle uniformly.
+    const float3 barycentrics = sample_triangle(u.xy);
+    ls.posW = tri.getPosition(barycentrics);
+
+    // Get triangle normal.
+    ls.normalW = tri.normal;
+
+    ls.dir = sample_cosine_hemisphere_polar(u.zw, ls.pdf);
+    ls.distance = FLT_MAX;
+
+    // Compute probability density with respect to the triangle area.
+    ls.pdf /= tri.area;
+
+    // Save light sample triangle barycentric coordinates
+    ls.uv = u.xy;
+
+    // Reject sample if triangle is back-facing.
+    float cosTheta = ls.dir.z;
+
+    // Convert dir to world space
+    float3 t, b;
+    branchlessONB(ls.normalW, t, b);
+    ls.dir = normalize(ls.dir.x * t + ls.dir.y * b + ls.dir.z * ls.normalW);
+
+    // Evaluate emitted radiance.
+    float2 uv = tri.getTexCoord(barycentrics);
+    ls.Le = gScene.materials.evalEmissive(tri.materialID, uv) * cosTheta;
+
+    // DEMO21: Evaluate light profile.
+    if (Scene::kUseLightProfile)
+    {
+        if (gScene.materials.getMaterialHeader(tri.materialID).isLightProfileEnabled())
+        {
+            ls.Le *= gScene.lightProfile.eval(cosTheta);
+        }
+    }
+
     return true;
 }
 

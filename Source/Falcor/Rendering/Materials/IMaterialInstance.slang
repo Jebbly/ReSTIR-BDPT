@@ -81,7 +81,8 @@ struct BSDFProperties
     float3  emission;                       ///< Radiance emitted in the incident direction (wi).
     float   roughness;                      ///< Surface roughness on a perceptually linear scale, where 0.0 = perfectly smooth and 1.0 = maximum roughness.
     float3  guideNormal;                    ///< Representative shading normal in world space that includes effects of normal mapping. Useful as guide for denoisers.
-    uint    flags;                          ///< Flags storing additional properties.
+    uint flags;                             ///< Flags storing additional properties.
+    float eta;                              ///< Relative index of refraction. Zero for non-transmissive materials.
 
     // Approximate directional-hemispherical reflectance/transmittance of the BSDF (black-sky albedo).
     // The exact values are given by the integrals of the BSDF over wo given an incident direction wi.
@@ -222,4 +223,3 @@ struct MaterialInstanceBase
 
     }
 }
-

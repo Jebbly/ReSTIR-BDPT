@@ -90,7 +90,11 @@ struct PathTracerParams
 
     uint    frameCount = 0;             ///< Frames rendered. This is used as random seed.
     uint    seed = 0;                   ///< Random seed. This will get updated from the host depending on settings.
-    uint2   _pad0;
+
+    uint lightSubpathCount = 1000000;   ///< Number of light sub-paths to trace.
+    int debugLightVertexCount = -1;     ///< Number of light vertices for debugging.
+    float4 sceneSphere;                 ///< Scene bounding sphere.
+    float contProb = 0.9f;              ///< Continuation probability when using BPT.
 
 #ifndef HOST_CODE
     /** Computes the offset into the tiled sample buffer for a given tile.

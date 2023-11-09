@@ -49,6 +49,8 @@ struct ResolvePass
     StructuredBuffer<float4>      sampleNRDEmission;        ///< Input per-sample NRD emission data. Only valid if kOutputNRDData == true.
     StructuredBuffer<float4>      sampleNRDReflectance;     ///< Input per-sample NRD reflectance data. Only valid if kOutputNRDData == true.
 
+    ByteAddressBuffer lightImage;                           ///< Input light trace contribution.
+
     StructuredBuffer<float4> sampleNRDPrimaryHitNeeOnDelta; ///< Output per-sample NEE on paths classified as delta, from delta+diffuse materials. Only valid if kOutputNRDData == true.
     Texture2D<float4> primaryHitDiffuseReflectance;         ///< Output per-pixel primary hit diffuse reflectance. Only valid if kOutputNRDData == true.
 
@@ -70,6 +72,7 @@ struct ResolvePass
 
     static const bool kOutputGuideData = OUTPUT_GUIDE_DATA;
     static const bool kOutputNRDData = OUTPUT_NRD_DATA;
+    static const bool kUseLightImage = USE_BPT;
 
     /** Entry point for resolve pass.
         \param[in] pixel Pixel coordinates.
@@ -87,6 +90,12 @@ struct ResolvePass
         const uint spp = kSamplesPerPixel > 0 ? kSamplesPerPixel : min(sampleCount[pixel], kMaxSamplesPerPixel);
         const float invSpp = spp > 0 ? 1.f / spp : 1.f; // Setting invSpp to 1.0 if we have no samples to avoid NaNs below.
 
+        float3 lightTraceColor = float3(0.f);
+        if (kUseLightImage)
+        {
+            lightTraceColor = lightImage.Load<float3>(sizeof(float3) * (pixel.y * params.frameDim.x + pixel.x));
+        }
+
         // For the special case of fixed 1 spp output, the path tracer writes directly to the output color buffer.
         // In all other cases, we need to resolve the individual samples.
         if (kSamplesPerPixel != 1)
@@ -99,7 +108,7 @@ struct ResolvePass
                 color += sampleColor[idx].get();
             }
 
-            outputColor[pixel] = float4(invSpp * color, 1.f);
+            outputColor[pixel] = float4(invSpp * color + lightTraceColor, 1.f);
         }
 
         // Guide data is always written per-sample and needs to be resolved.
@@ -138,13 +147,21 @@ struct ResolvePass
             float3 residualRadiance = 0.f;
             float hitDist = 0.f;
 
+            if (kUseLightImage)
+            {
+                // Add the light trace contribution to each NRD sample. This is a quick hack,
+                // ideally we should fully resolve the light trace samples using information
+                // at the last light sub-path vertex.
+                lightTraceColor /= spp;
+            }
+
             for (uint sampleIdx = 0; sampleIdx < spp; sampleIdx++)
             {
                 const uint idx = offset + sampleIdx;
 
                 const NRDRadiance radianceData = sampleNRDRadiance[idx];
                 const NRDPathType pathType = radianceData.getPathType();
-                const float3 radiance = radianceData.getRadiance();
+                const float3 radiance = radianceData.getRadiance() + lightTraceColor;
 
                 // neeOnDelta is non-zero for primary hits on surfaces with a diffuse and a delta reflection lobe.
                 // It contains the radiance estimate from NEE and only contains energy from the diffuse lobe as

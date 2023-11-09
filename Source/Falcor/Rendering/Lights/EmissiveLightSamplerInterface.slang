@@ -69,6 +69,19 @@ interface IEmissiveLightSampler
     */
     bool sampleLight<S : ISampleGenerator>(const float3 posW, const float3 normalW, const bool upperHemisphere, inout S sg, out TriangleLightSample ls);
 
+    /** Draw a single light sample.
+        \param[in,out] sg Sample generator.
+        \param[out] ls Light sample. Only valid if true is returned.
+        \return True if a sample was generated, false otherwise.
+    */
+    bool sampleLight<S : ISampleGenerator>(inout S sg, out TriangleLightSample ls);
+
+    /** Evaluate the PDF associated with selecting an emissive triangle.
+        \param[in] triangleIndex index of selected triangle
+        \return Probability of selecting the input triangle
+    */
+    float evalTriangleSelectionPdf(const uint triangleIndex);
+
     /** Evaluate the PDF associated with selecting an emissive triangle.
         \param[in] posW Shading point in world space.
         \param[in] normalW Normal at the shading point in world space.

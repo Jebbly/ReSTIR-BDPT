@@ -70,6 +70,18 @@ __exported import Utils.Sampling.SampleGeneratorInterface;
             return false;
         }
 
+        bool sampleLight<S : ISampleGenerator>(inout S sg, out TriangleLightSample ls )
+        {
+            ls = {};
+
+            return false;
+        }
+
+        float evalTriangleSelectionPdf(const uint triangleIndex)
+        {
+            return 0.f;
+        }
+
         float evalTriangleSelectionPdf(const float3 posW, const float3 normalW, const bool upperHemisphere, const uint triangleIndex)
         {
             return 0.f;
