@@ -112,7 +112,7 @@ float3 generateSceneSphereSample(const float4 sceneSphere, const float3 dir, ino
     float2 uv = sample_disk_concentric(sampleNext2D(sg));
     float3 t, b;
     branchlessONB(dir, t, b);
-    return sceneSphere.xyz + sceneSphere.w * (t * uv.x + b * uv.y - dir);
+    return sceneSphere.xyz + sceneSphere.w * (t * uv.x + b * uv.y + dir);
 }
 float getSceneSpherePdf(const float4 sceneSphere)
 {
@@ -177,7 +177,7 @@ struct LightSampler
         ls.pdf = lightSample.pdf;
         ls.origin = generateSceneSphereSample(sceneSphere, lightSample.dir, sg);
         ls.distance = kRayTMax;
-        ls.dir = lightSample.dir;
+        ls.dir = -lightSample.dir;
         ls.emitPdf = ls.pdf * getSceneSpherePdf(sceneSphere);
         ls.Li = ls.emitPdf > 0.f ? lightSample.Le / ls.emitPdf : float3(0);
 

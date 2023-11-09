@@ -25,6 +25,8 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
+#include "Utils/Math/MathConstants.slangh"
+
 import Rendering.Lights.EmissiveLightSampler;
 import Rendering.Materials.IsotropicGGX;
 import Rendering.Materials.InteriorListHelpers;
@@ -613,6 +615,26 @@ struct PathTracer
         }
     }
 
+    /** Helper to compute the MIS weight when an emissive surface is hit.
+        \param[in] path Path state.
+        \param[in] lightPdf PDF of sampling the current vertex using NEE.
+        \param[in] lightEmitPdf PDF of sampling a light ray from the current vertex.
+        \return MIS weight.
+    */
+    float computeHitMIS(const PathState path, float lightPdf, float lightEmitPdf)
+    {
+        if (kUseBPT)
+        {
+            return evalMIS(1, path.pdf, 1, lightPdf);
+        }
+        else
+        {
+            // Compute MIS weight by combining this with BSDF sampling.
+            // Note we can assume path.pdf > 0.f since we shouldn't have got here otherwise.
+            return evalMIS(1, path.pdf, 1, lightPdf);
+        }
+    }
+
     /** Handle the case when a scatter ray hits a surface.
         After handling the hit, a new scatter ray is generated or the path is terminated.
         \param[in,out] path The path state.
@@ -718,9 +740,8 @@ struct PathTracer
                     bool upperHemisphere = path.isLightSampledUpper() && !path.isLightSampledLower();
                     float lightPdf = lightSampler.getEmissiveSelectionProbability() * lightSampler.emissiveSampler.evalPdf(path.origin, path.normal, upperHemisphere, hit);
 
-                    // Compute MIS weight by combining this with BSDF sampling.
-                    // Note we can assume path.pdf > 0.f since we shouldn't have got here otherwise.
-                    misWeight = evalMIS(1, path.pdf, 1, lightPdf);
+                    const float cosTheta = abs(dot(sd.V, sd.faceN));
+                    misWeight = computeHitMIS(path, lightPdf, lightPdf * cosTheta * M_1_PI);
                 }
 
                 if (kUseBPT && params.debugLightVertexCount == 0) misWeight = 1.f;
@@ -933,9 +954,7 @@ struct PathTracer
                     // Evaluate PDF, had it been generated with light sampling.
                     float lightPdf = lightSampler.getEnvMapSelectionProbability() * lightSampler.envMapSampler.evalPdf(path.dir);
 
-                    // Compute MIS weight by combining this with BSDF sampling.
-                    // Note we can assume path.pdf > 0.f since we shouldn't have got here otherwise.
-                    misWeight = evalMIS(1, path.pdf, 1, lightPdf);
+                    misWeight = computeHitMIS(path, lightPdf, lightPdf * getSceneSpherePdf(params.sceneSphere));
                 }
 
                 if (kUseBPT && params.debugLightVertexCount == 0) misWeight = 1;
