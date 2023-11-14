@@ -569,13 +569,17 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
         widget.tooltip("Use next-event estimation.\nThis option enables direct illumination sampling at each path vertex.");
     }
 
-    if ((mStaticParams.useNEE || mStaticParams.useBPT) && !(mStaticParams.useBPT && mStaticParams.lightTraceOnly))
+    if (mStaticParams.useNEE || mStaticParams.useBPT)
     {
-        dirty |= widget.checkbox("Multiple importance sampling (MIS)", mStaticParams.useMIS);
-        widget.tooltip("When enabled, BSDF sampling is combined with light sampling for the environment map and emissive lights.\n"
-            "Note that MIS has currently no effect on analytic lights.");
+        // BPT always uses MIS
+        if (!mStaticParams.useBPT)
+        {
+            dirty |= widget.checkbox("Multiple importance sampling (MIS)", mStaticParams.useMIS);
+            widget.tooltip("When enabled, BSDF sampling is combined with light sampling for the environment map and emissive lights.\n"
+                "Note that MIS has currently no effect on analytic lights.");
+        }
 
-        if (mStaticParams.useMIS)
+        if (mStaticParams.useMIS || mStaticParams.useBPT)
         {
             dirty |= widget.dropdown("MIS heuristic", mStaticParams.misHeuristic);
 
@@ -583,6 +587,8 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
             {
                 dirty |= widget.var("MIS power exponent", mStaticParams.misPowerExponent, 0.01f, 10.f);
             }
+
+            dirty |= widget.checkbox("Debug MIS", mStaticParams.debugMIS);
         }
     }
 
@@ -1461,6 +1467,7 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("USE_NEE", (useBPT || useNEE) ? "1" : "0");
     defines.add("USE_MIS", (useBPT || useMIS) ? "1" : "0");
     defines.add("USE_BPT", useBPT ? "1" : "0");
+    defines.add("DEBUG_MIS", debugMIS ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");
     defines.add("USE_RUSSIAN_ROULETTE", useRussianRoulette ? "1" : "0");
     defines.add("USE_RTXDI", useRTXDI ? "1" : "0");

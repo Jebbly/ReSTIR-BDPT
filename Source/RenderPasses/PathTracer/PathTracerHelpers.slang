@@ -99,12 +99,49 @@ struct LightSample
     float3 Li;      ///< Incident radiance at the shading point (unshadowed). This is already divided by the pdf.
     float pdf;      ///< Pdf with respect to solid angle at the shading point.
     float emitPdf;  ///< Emission pdf with respect to solid angle at the light surface. This is already multiplied by the area-measure light sampling pdf.
+    float cosLight; ///< Cosine term at the light surface for area lights, or 1 for non-area lights.
     float3 origin;  ///< Ray origin for visibility evaluation (offseted to avoid self-intersection).
     float distance; ///< Ray distance for visibility evaluation (shortened to avoid self-intersection).
     float3 dir;     ///< Ray direction for visibility evaluation (normalized).
-    uint lightType; ///< Light type this sample comes from (LightSampleType casted to uint).
+    uint flags;
 
     Ray getVisibilityRay() { return Ray(origin, dir, 0.f, distance); }
+
+    LightSampleType getType()
+    {
+        return LightSampleType(flags >> 2);
+    }
+
+    [mutating]
+    void setType(uint newValue)
+    {
+        flags &= ~3u;
+        flags |= newValue >> 2u;
+    }
+
+    bool getIsFinite()
+    {
+        return (flags & 1u) != 0;
+    }
+
+    bool getIsDelta()
+    {
+        return (flags & 2u) != 0;
+    }
+
+    [mutating]
+    void setIsFinite(bool newValue)
+    {
+        flags &= ~1u;
+        if (newValue) flags |= 1u;
+    }
+
+    [mutating]
+    void setIsDelta(bool newValue)
+    {
+        flags &= ~2u;
+        if (newValue) flags |= 2u;
+    }
 };
 
 float3 generateSceneSphereSample(const float4 sceneSphere, const float3 dir, inout SampleGenerator sg)
@@ -153,6 +190,9 @@ struct LightSampler
         ls.dir = lightSample.dir;
         ls.emitPdf = lightSample.pdf * getSceneSpherePdf(sceneSphere);
         ls.Li = lightSample.pdf > 0.f ? lightSample.Le / lightSample.pdf : float3(0);
+        ls.cosLight = 1.f;
+        ls.setIsDelta(false);
+        ls.setIsFinite(false);
 
         return any(ls.Li > 0.f);
     }
@@ -180,6 +220,9 @@ struct LightSampler
         ls.dir = -lightSample.dir;
         ls.emitPdf = ls.pdf * getSceneSpherePdf(sceneSphere);
         ls.Li = ls.emitPdf > 0.f ? lightSample.Le / ls.emitPdf : float3(0);
+        ls.cosLight = 1.f;
+        ls.setIsDelta(false);
+        ls.setIsFinite(false);
 
         return any(ls.Li > 0.f);
     }
@@ -206,12 +249,16 @@ struct LightSampler
         // Setup returned sample.
         ls.Li = tls.pdf > 0.f ? tls.Le / tls.pdf : float3(0);
         ls.pdf = tls.pdf;
+        ls.emitPdf = tls.emitPdf;
+        ls.cosLight = abs(dot(tls.normalW, tls.dir));
         // Offset shading and light position to avoid self-intersection.
         float3 lightPos = computeRayOrigin(tls.posW, tls.normalW);
         ls.origin = computeRayOrigin(vertex, lightPos - vertex.posW);
         float3 toLight = lightPos - ls.origin;
         ls.distance = length(toLight);
         ls.dir = normalize(toLight);
+        ls.setIsDelta(false);
+        ls.setIsFinite(true);
 
         return any(ls.Li > 0.f);
     }
@@ -230,12 +277,16 @@ struct LightSampler
         if (!emissiveSampler.sampleLight(sg, tls)) return false;
 
         // Setup returned sample.
-        ls.Li = tls.pdf > 0.f ? tls.Le / tls.pdf : float3(0);
+        ls.Li = tls.pdf > 0.f ? tls.Le / tls.emitPdf : float3(0);
         ls.pdf = tls.pdf;
+        ls.emitPdf = tls.emitPdf;
+        ls.cosLight = abs(dot(tls.normalW, tls.dir));
         // Offset shading and light position to avoid self-intersection.
         ls.origin = computeRayOrigin(tls.posW, tls.normalW);
         ls.distance = kMaxLightDistance;
         ls.dir = tls.dir;
+        ls.setIsDelta(false);
+        ls.setIsFinite(true);
 
         return any(ls.Li > 0.f);
     }
@@ -397,7 +448,7 @@ struct LightSampler
             return false;
 
         // Account for light type selection.
-        ls.lightType = lightType;
+        ls.setType(lightType);
         ls.pdf *= selectionPdf;
         ls.emitPdf *= selectionPdf;
         ls.Li /= selectionPdf;
@@ -440,7 +491,7 @@ struct LightSampler
         if (!valid) return false;
 
         // Account for light type selection.
-        ls.lightType = lightType;
+        ls.setType(lightType);
         ls.pdf *= selectionPdf;
         ls.emitPdf *= selectionPdf;
         ls.Li /= selectionPdf;

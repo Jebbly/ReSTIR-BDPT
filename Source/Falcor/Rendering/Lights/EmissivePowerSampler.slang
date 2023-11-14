@@ -87,6 +87,7 @@ struct EmissivePowerSampler : IEmissiveLightSampler
 
         // The final probability density is the product of the sampling probabilities.
         ls.pdf *= triangleSelectionPdf;
+        ls.emitPdf *= triangleSelectionPdf;
         return true;
     }
 
@@ -124,6 +125,7 @@ struct EmissivePowerSampler : IEmissiveLightSampler
 
         // The final probability density is the product of the sampling probabilities.
         ls.pdf *= triangleSelectionPdf;
+        ls.emitPdf *= triangleSelectionPdf;
         return true;
     }
 

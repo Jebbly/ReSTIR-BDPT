@@ -64,7 +64,9 @@ enum class PathFlags
     deltaTransmissionPath       = 0x0800,   ///< Path started with and followed delta transmission events (whenever possible - TIR could be an exception) until it hit the first non-delta event.
     deltaOnlyPath               = 0x1000,   ///< There was no non-delta events along the path so far.
 
-    // Bits 14 to kPathFlagsBitCount are still unused.
+    finiteLight                 = 0x2000,   ///< Whether the light sub-path came from an infinite source.
+
+    // Bits 15 to kPathFlagsBitCount are still unused.
 };
 
 /** Bounce types. We keep separate counters for all of these.
@@ -96,11 +98,11 @@ struct PathState
     float3      normal;                 ///< Shading normal at the scatter ray origin.
     HitInfo     hit;                    ///< Hit information for the scatter ray. This is populated at committed triangle hits.
 
-    float dVCM;                         ///< Partial MIS quantities, used to compute MIS weights.
-    float dVC;                          ///< Partial MIS quantities, used to compute MIS weights.
-
     float3      thp;                    ///< Path throughput.
     float3      L;                      ///< Accumulated path contribution.
+
+    float dVCM;                         ///< Partial MIS quantities, used to compute MIS weights.
+    float dVC;                          ///< Partial MIS quantities, used to compute MIS weights.
 
     GuideData   guideData;              ///< Denoiser guide data.
     InteriorList interiorList;          ///< Interior list. Keeping track of a stack of materials with medium properties.
@@ -130,6 +132,7 @@ struct PathState
     bool isDeltaReflectionPrimaryHit() { return hasFlag(PathFlags::deltaReflectionPrimaryHit); }
     bool isDeltaTransmissionPath() { return hasFlag(PathFlags::deltaTransmissionPath); }
     bool isDeltaOnlyPath() { return hasFlag(PathFlags::deltaOnlyPath); }
+    bool isFiniteLight() { return hasFlag(PathFlags::finiteLight); }
 
     // Check if the scatter event is samplable by the light sampling technique.
     bool isLightSamplable() { return !isDelta(); }
@@ -155,6 +158,7 @@ struct PathState
     [mutating] void setDeltaReflectionPrimaryHit(bool value = true) { setFlag(PathFlags::deltaReflectionPrimaryHit, value); }
     [mutating] void setDeltaTransmissionPath(bool value = true) { setFlag(PathFlags::deltaTransmissionPath, value); }
     [mutating] void setDeltaOnlyPath(bool value = true) { setFlag(PathFlags::deltaOnlyPath, value); }
+    [mutating] void setFiniteLight(bool value = true) { setFlag(PathFlags::finiteLight, value); }
 
     bool hasFlag(PathFlags flag)
     {

@@ -43,6 +43,7 @@ struct TriangleLightSample
     float3  Le;                 ///< Emitted radiance. This is zero if the light is back-facing or sample is invalid.
     float   pdf;                ///< Probability density with respect to solid angle from the shading point. The range is [0,inf] (inclusive), where pdf == 0.0 indicated an invalid sample.
     float2  uv;                 ///< Light sample barycentric coords over the triangle
+    float   emitPdf;            ///< Probability of sampling an emisison ray from pos towards dir, w.r.t. solid angle from posW.
 };
 
 /** Describes a light sample at a hit point on an emissive triangle.

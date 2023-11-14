@@ -92,14 +92,92 @@ struct PathTracer
     // Additional specialization.
     static const bool kOutputGuideData   = OUTPUT_GUIDE_DATA;
     static const bool kUseBPT            = USE_BPT;
+    static const bool kDebugMIS          = DEBUG_MIS;
     #ifdef LIGHT_TRACE_PASS
     static const bool kTraceFromLight    = true;
     #else
     static const bool kTraceFromLight    = false;
     #endif
 
-    float getImagePlaneDist() { return params.frameDim.y * (gScene.camera.data.focalLength / gScene.camera.data.frameHeight); }
     float getMisVmWeightFactor() { return 0; }
+
+    float getImageToSolidAngleFactor(const float3 dir, out float cosCamera)
+    {
+        cosCamera = dot(dir, normalize(gScene.camera.data.cameraW));
+        const float imagePlaneDist = params.frameDim.y * (gScene.camera.data.focalLength / gScene.camera.data.frameHeight);
+        const float imagePointToCameraDist = imagePlaneDist / cosCamera;
+        return (imagePointToCameraDist * imagePointToCameraDist) / cosCamera;
+    }
+
+    /** Helper to compute the MIS weight when an emissive surface is hit via BSDF sampling.
+        \param[in] path Path state.
+        \param[in] lightPdfW Pdf w.r.t. solid angle at the previous vertex of sampling the current vertex using NEE.
+        \param[in] lightEmitPdfW Pdf w.r.t. of sampling a light sub-path towards the current vertex.
+        \param[in] lightPdfA Pdf w.r.t area.
+        \return MIS weight.
+    */
+    float evalScatterMIS(const PathState path, float lightPdfW, float lightEmitPdfW, float lightPdfA)
+    {
+        if (kUseBPT)
+        {
+            const float wCamera = evalMIS(1.f, lightPdfA) * path.dVCM + evalMIS(1.f, lightEmitPdfW) * path.dVC;
+            return 1.f / (1.f + wCamera);
+        }
+        else
+        {
+            // Compute MIS weight by combining this with BSDF sampling.
+            // Note we can assume path.pdf > 0.f since we shouldn't have got here otherwise.
+            return evalMIS(1, path.pdf, 1, lightPdfW);
+        }
+    }
+
+    /** Helper to compute the MIS weight for next event estimation.
+        \param[in] path Path state.
+        \param[in] bsdfPdf PDF of sampling the light vertex using BSDF sampling. Solid-angle w.r.t the shading point.
+        \param[in] lightPdf PDF of sampling the light. Solid-angle w.r.t the shading point.
+        \param[in] lightEmitPdf PDF of sampling a light ray from the light to the current vertex. Solid-angle w.r.t. the shading point
+        \return MIS weight.
+    */
+    float evalDirectMIS(const PathState path, float bsdfFwdPdf, float bsdfRevPdf, float cosOut, LightSample ls)
+    {
+        if (kUseBPT)
+        {
+            const float wLight = evalMIS(1.f, bsdfFwdPdf / ls.pdf);
+            const float wCamera = evalMIS(1.f, ls.emitPdf * abs(cosOut) / (ls.pdf * ls.cosLight)) * (
+                getMisVmWeightFactor() + path.dVCM +
+                path.dVC * evalMIS(1.f, bsdfRevPdf));
+
+            return 1.f / (wLight + 1.f + wCamera);
+        }
+        else
+        {
+            return evalMIS(1.f, ls.pdf, 1.f, bsdfFwdPdf);
+        }
+    }
+
+    /** Helper to compute the MIS weight for pure light tracing.
+        \param[in] path Path state.
+        \param[in] bsdfRevPdf BSDF sampling probability density towards the previous light sub-path vertex.
+        \param[in] lightPdf PDF of sampling the light. Solid-angle w.r.t the shading point.
+        \param[in] lightEmitPdf PDF of sampling a light ray from the light to the current vertex. Solid-angle w.r.t. the shading point
+        \return MIS weight.
+    */
+    float evalLightTraceMIS(const PathState path, float bsdfRevPdf, float cameraPdfA)
+    {
+        const float wLight = evalMIS(1.f, cameraPdfA / params.lightSubpathCount) * (
+            getMisVmWeightFactor() + path.dVCM +
+            path.dVC * evalMIS(1, bsdfRevPdf));
+        return 1.f / (wLight + 1.f);
+    }
+
+    float evalRevScatterPdf(const ShadingData sd, const IMaterialInstance mi, const float3 wo)
+    {
+        ShadingData revSd = sd;
+        revSd.V = wo;
+        revSd.frontFacing = dot(wo, sd.faceN) >= 0.f;
+        return mi.evalPdf(revSd, sd.V, kUseBSDFSampling);
+    }
+
 
     /** Set guiding data when background is hit.
     */
@@ -227,6 +305,10 @@ struct PathTracer
             path.dir = ls.dir;
 
             path.setVertexIndex(0);
+            path.setFiniteLight(ls.getIsFinite());
+
+            path.dVCM = evalMIS(1.f, ls.pdf / ls.emitPdf);
+            path.dVC = ls.getIsDelta() ? 0 : evalMIS(1.f, ls.cosLight / ls.emitPdf);
         }
         else
         {
@@ -250,6 +332,14 @@ struct PathTracer
             {
                 path.setHit(hit);
                 path.setVertexIndex(1);
+            }
+
+            if (kUseBPT)
+            {
+                float cosCamera;
+                const float cameraPdfW = getImageToSolidAngleFactor(path.dir, cosCamera);
+                path.dVCM = evalMIS(1.f, params.lightSubpathCount / cameraPdfW);
+                path.dVC = 0;
             }
         }
     }
@@ -325,9 +415,12 @@ struct PathTracer
         \param[in,out] path Path state.
         \param[in] radiance Vertex radiance.
     */
-    void addToPathContribution(inout PathState path, const float3 radiance)
+    void addToPathContribution(inout PathState path, const float3 radiance, const float misWeight)
     {
-        path.L += path.thp * radiance;
+        if (kDebugMIS)
+            path.L += misWeight;
+        else
+            path.L += path.thp * radiance * misWeight;
     }
 
     /** Generates a new scatter ray using BSDF importance sampling.
@@ -341,6 +434,24 @@ struct PathTracer
         BSDFSample result;
         bool valid = mi.sample(sd, path.sg, result, kUseBSDFSampling);
         if (valid) valid = generateScatterRay(result, sd, mi, path);
+
+        if (kUseBPT && valid)
+        {
+            const float cosOut = abs(dot(path.dir, path.normal));
+
+            if ((mi.getLobeTypes(sd) & (uint)LobeType::NonDelta) == 0)
+            {
+                path.dVCM = 0.f;
+                path.dVC *= evalMIS(1.f, cosOut);
+            }
+            else
+            {
+                float revPdf = evalRevScatterPdf(sd, mi, path.dir);
+
+                path.dVCM = evalMIS(1.f, 1.f / path.pdf);
+                path.dVC = evalMIS(1.f, cosOut / path.pdf) * (path.dVC * evalMIS(1.f, revPdf) + path.dVCM + getMisVmWeightFactor());
+            }
+        }
 
         // Ignore valid on purpose for now.
         if (!kTraceFromLight && kOutputNRDData)
@@ -498,7 +609,8 @@ struct PathTracer
             return;
         }
 
-        const float cosCamera = -dot(toCamera, normalize(gScene.camera.data.cameraW));
+        float cosCamera;
+        const float imageToSolidAngleFactor = getImageToSolidAngleFactor(-toCamera, cosCamera);
 
         float4 clip = mul(gScene.camera.data.viewProjMat, float4(sd.posW, 1));
         clip.y = -clip.y;
@@ -506,23 +618,15 @@ struct PathTracer
         if (any(pixel < 0) || any(pixel >= params.frameDim) || cosCamera <= 0)
             return;
 
-        const float imagePointToCameraDist = getImagePlaneDist() / cosCamera;
-        const float imageToSolidAngleFactor = (imagePointToCameraDist * imagePointToCameraDist) / cosCamera;
-
         const float invDist2 = 1.f / (dist * dist);
 
         // Compute MIS weight
-        const float cameraPdfA = imageToSolidAngleFactor * abs(dot(sd.faceN, toCamera)) * invDist2;
-        ShadingData revSd = sd;
-        revSd.V = toCamera;
-        const float bsdfRevPdfW = mi.evalPdf(revSd, sd.V, kUseBSDFSampling);
-        const float wLight = evalMIS(1, cameraPdfA / params.lightSubpathCount) * (
-            getMisVmWeightFactor() + path.dVCM +
-            path.dVC * evalMIS(1, bsdfRevPdfW));
-        const float misWeight = (kLightTraceOnly || params.debugLightVertexCount == -1) ? 1.f : (1.f / (wLight + 1.f));
+        const float bsdfRevPdfW = evalRevScatterPdf(sd, mi, toCamera);
+        float misWeight = kLightTraceOnly ? 1.f : evalLightTraceMIS(path, bsdfRevPdfW, imageToSolidAngleFactor * abs(dot(sd.faceN, toCamera)) * invDist2);
 
         // Compute full path contribution
-        const float3 f = path.thp * mi.eval(sd, toCamera, path.sg) * getShadingNormalCorrection(sd, toCamera) * (misWeight * imageToSolidAngleFactor * invDist2 / params.lightSubpathCount);
+        float3 f = path.thp * mi.eval(sd, toCamera, path.sg) * getShadingNormalCorrection(sd, toCamera) * (misWeight * imageToSolidAngleFactor * invDist2 / params.lightSubpathCount);
+        if (kDebugMIS) f = misWeight;
         if (!any(f > 0))
             return;
 
@@ -575,6 +679,11 @@ struct PathTracer
         return true;
     }
 
+    float getContinuationProbability(const PathState path)
+    {
+        return (kUseBPT && !kLightTraceOnly) ? params.contProb : saturate(luminance(path.thp));
+    }
+
     /** Apply russian roulette to terminate paths early.
         \param[in,out] path Path.
         \param[in] u Uniform random number in [0,1).
@@ -582,7 +691,7 @@ struct PathTracer
     */
     bool terminatePathByRussianRoulette(inout PathState path, float u)
     {
-        const float rrVal = (kUseBPT && !kLightTraceOnly) ? params.contProb : luminance(path.thp);
+        const float rrVal = getContinuationProbability(path);
         const float prob = max(0.f, 1.f - rrVal);
         if (u < prob)
         {
@@ -615,26 +724,6 @@ struct PathTracer
         }
     }
 
-    /** Helper to compute the MIS weight when an emissive surface is hit.
-        \param[in] path Path state.
-        \param[in] lightPdf PDF of sampling the current vertex using NEE.
-        \param[in] lightEmitPdf PDF of sampling a light ray from the current vertex.
-        \return MIS weight.
-    */
-    float computeHitMIS(const PathState path, float lightPdf, float lightEmitPdf)
-    {
-        if (kUseBPT)
-        {
-            return evalMIS(1, path.pdf, 1, lightPdf);
-        }
-        else
-        {
-            // Compute MIS weight by combining this with BSDF sampling.
-            // Note we can assume path.pdf > 0.f since we shouldn't have got here otherwise.
-            return evalMIS(1, path.pdf, 1, lightPdf);
-        }
-    }
-
     /** Handle the case when a scatter ray hits a surface.
         After handling the hit, a new scatter ray is generated or the path is terminated.
         \param[in,out] path The path state.
@@ -659,6 +748,16 @@ struct PathTracer
         // Load shading data. This is a long latency operation.
         ShadingData sd = loadShadingData(path.hit, path.origin, path.dir, lod);
 
+        const float hitDist = length(sd.posW - path.origin);
+
+        if (kUseBPT)
+        {
+            if (!kTraceFromLight || !isPrimaryHit || path.isFiniteLight())
+                path.dVCM *= evalMIS(1.f, hitDist*hitDist);
+            path.dVCM /= evalMIS(1.f, abs(dot(sd.V, sd.faceN)));
+            path.dVC  /= evalMIS(1.f, abs(dot(sd.V, sd.faceN)));
+        }
+
         const bool isHairMaterial = kUseHairMaterial && (sd.mtl.getMaterialType() == MaterialType::Hair);
         // TODO: Decouple geometry from the material.
         const bool isCurvePolyTubeHit = isTriangleHit && isHairMaterial;
@@ -669,7 +768,7 @@ struct PathTracer
             const uint materialID = path.interiorList.getTopMaterialID();
             let material = gScene.materials.getMaterial(materialID);
             let vp = material.getHomogeneousVolumeProperties(gScene.materials, materialID);
-            updatePathThroughput(path, HomogeneousVolumeSampler::evalTransmittance(vp, length(sd.posW - path.origin)));
+            updatePathThroughput(path, HomogeneousVolumeSampler::evalTransmittance(vp, hitDist));
         }
 
         // Reject false hits in nested dielectrics.
@@ -738,16 +837,15 @@ struct PathTracer
                     // Evaluate PDF at the hit, had it been generated with light sampling.
                     // Emissive light samplers have an option to exclusively sample the upper hemisphere.
                     bool upperHemisphere = path.isLightSampledUpper() && !path.isLightSampledLower();
-                    float lightPdf = lightSampler.getEmissiveSelectionProbability() * lightSampler.emissiveSampler.evalPdf(path.origin, path.normal, upperHemisphere, hit);
+                    float p = lightSampler.getEmissiveSelectionProbability();
+                    float lightPdfW = p * lightSampler.emissiveSampler.evalPdf(path.origin, path.normal, upperHemisphere, hit);
+                    float lightPdfA = p * lightSampler.emissiveSampler.evalTriangleSelectionPdf(hit.triangleIndex) / gScene.lightCollection.getTriangle(hit.triangleIndex).area;
 
-                    const float cosTheta = abs(dot(sd.V, sd.faceN));
-                    misWeight = computeHitMIS(path, lightPdf, lightPdf * cosTheta * M_1_PI);
+                    misWeight = evalScatterMIS(path, lightPdfW, lightPdfA * (abs(dot(path.dir, sd.faceN)) * M_1_PI), lightPdfA);
                 }
 
-                if (kUseBPT && params.debugLightVertexCount == 0) misWeight = 1.f;
-
                 // Accumulate emitted radiance weighted by path throughput and MIS weight.
-                addToPathContribution(path, misWeight * bsdfProperties.emission);
+                addToPathContribution(path, bsdfProperties.emission, misWeight);
 
                 attenuatedEmission = path.thp * misWeight * bsdfProperties.emission;
             }
@@ -780,77 +878,84 @@ struct PathTracer
         const uint lobeTypes = mi.getLobeTypes(sd);
         const bool hasNonDeltaLobes = (lobeTypes & (uint)LobeType::NonDelta) != 0;
 
-        if (kTraceFromLight && hasNonDeltaLobes)
+        // Path connection strategies.
+        if (hasNonDeltaLobes)
         {
-            connectToCamera(sd, mi, path, vq);
-        }
-        else
-        {
-            // Check if we should apply NEE.
-            const bool applyNEE = kUseNEE && hasNonDeltaLobes;
-
-            // Check if sample from RTXDI should be applied instead of NEE.
-            const bool applyRTXDI = kUseRTXDI && isPrimaryHit && hasNonDeltaLobes;
-
-            // TODO: Support multiple shadow rays.
-            path.setLightSampled(false, false);
-            if (applyNEE || applyRTXDI)
+            if (kTraceFromLight)
             {
-                LightSample ls = {};
-                bool validSample = false;
+                connectToCamera(sd, mi, path, vq);
+            }
+            else
+            {
+                // Check if sample from RTXDI should be applied instead of NEE.
+                const bool applyRTXDI = kUseRTXDI && isPrimaryHit;
 
-                if (applyRTXDI)
+                // TODO: Support multiple shadow rays.
+                path.setLightSampled(false, false);
+                if (kUseBPT || kUseNEE || applyRTXDI)
                 {
-                    // Query final sample from RTXDI.
-                    validSample = gRTXDI.getFinalSample(path.getPixel(), ls.dir, ls.distance, ls.Li);
-                    ls.origin = path.origin;
-                }
-                else
-                {
-                    // Determine if upper/lower hemispheres need to be sampled.
-                    bool sampleUpperHemisphere = isCurveHit || isCurvePolyTubeHit || ((lobeTypes & (uint)LobeType::NonDeltaReflection) != 0);
-                    if (!kUseLightsInDielectricVolumes && path.isInsideDielectricVolume()) sampleUpperHemisphere = false;
-                    bool sampleLowerHemisphere = isCurveHit || isCurvePolyTubeHit || ((lobeTypes & (uint)LobeType::NonDeltaTransmission) != 0);
+                    LightSample ls = {};
+                    bool validSample = false;
 
-                    // Sample a light.
-                    validSample = lightSampler.generateLightSample(sd, sampleUpperHemisphere, sampleLowerHemisphere, params.sceneSphere, path.sg, ls);
-                    path.setLightSampled(sampleUpperHemisphere, sampleLowerHemisphere);
-                }
-
-                if (validSample)
-                {
-                    float misWeight = 1.f;
-                    // Apply MIS weight.
-                    if (kUseMIS && !applyRTXDI && ls.lightType != (uint)LightSampleType::Analytic)
+                    if (applyRTXDI)
                     {
-                        float scatterPdf = mi.evalPdf(sd, ls.dir, kUseBSDFSampling);
-                        misWeight = evalMIS(1, ls.pdf, 1, scatterPdf);
+                        // Query final sample from RTXDI.
+                        validSample = gRTXDI.getFinalSample(path.getPixel(), ls.dir, ls.distance, ls.Li);
+                        ls.origin = path.origin;
+                    }
+                    else
+                    {
+                        // Determine if upper/lower hemispheres need to be sampled.
+                        bool sampleUpperHemisphere = isCurveHit || isCurvePolyTubeHit || ((lobeTypes & (uint)LobeType::NonDeltaReflection) != 0);
+                        if (!kUseLightsInDielectricVolumes && path.isInsideDielectricVolume()) sampleUpperHemisphere = false;
+                        bool sampleLowerHemisphere = isCurveHit || isCurvePolyTubeHit || ((lobeTypes & (uint)LobeType::NonDeltaTransmission) != 0);
+
+                        // Sample a light.
+                        validSample = lightSampler.generateLightSample(sd, sampleUpperHemisphere, sampleLowerHemisphere, params.sceneSphere, path.sg, ls);
+                        path.setLightSampled(sampleUpperHemisphere, sampleLowerHemisphere);
                     }
 
-                    if (kUseBPT && params.debugLightVertexCount == 1) misWeight = 1.f;
-
-                    ls.Li *= misWeight;
-
-                    float3 weight = mi.eval(sd, ls.dir, path.sg);
-                    float3 Lr = weight * ls.Li;
-                    if (any(Lr > 0.f))
+                    if (validSample && (!kUseBPT || params.debugLightVertexCount == -1 || params.debugLightVertexCount == 1))
                     {
-                        Ray ray = ls.getVisibilityRay();
-
-                        if (isCurvePolyTubeHit)
+                        float misWeight = 1.f;
+                        // Apply MIS weight.
+                        if (kUseMIS && !applyRTXDI && (kUseBPT || ls.getType() != LightSampleType::Analytic))
                         {
-                            // For curves tessellated into poly-tubes, we make sure that the origin is on the same side as light
-                            // so there is no self-shadowing (transmission lobe of hair BSDF takes care of that).
-                            if (dot(sd.frame.N, ray.dir) < 0.f)
+                            float scatterPdf = mi.evalPdf(sd, ls.dir, kUseBSDFSampling);
+                            float revScatterPdf = evalRevScatterPdf(sd, mi, ls.dir);
+                            if (ls.getType() == LightSampleType::Analytic)
                             {
-                                ray.origin = ray.origin - sd.frame.N * sd.curveRadius * 2.1f;
+                                scatterPdf = 0;
                             }
+                            misWeight = evalDirectMIS(path, scatterPdf, revScatterPdf, abs(dot(sd.faceN, ls.dir)), ls);
                         }
 
-                        logTraceRay(PixelStatsRayType::Visibility);
-                        bool visible = vq.traceVisibilityRay(ray);
-                        if (visible) addToPathContribution(path, Lr);
+                        float3 weight = mi.eval(sd, ls.dir, path.sg);
+                        float3 Lr = weight * ls.Li;
+                        if (any(Lr > 0.f) && misWeight > 0.f)
+                        {
+                            Ray ray = ls.getVisibilityRay();
+
+                            if (isCurvePolyTubeHit)
+                            {
+                                // For curves tessellated into poly-tubes, we make sure that the origin is on the same side as light
+                                // so there is no self-shadowing (transmission lobe of hair BSDF takes care of that).
+                                if (dot(sd.frame.N, ray.dir) < 0.f)
+                                {
+                                    ray.origin = ray.origin - sd.frame.N * sd.curveRadius * 2.1f;
+                                }
+                            }
+
+                            logTraceRay(PixelStatsRayType::Visibility);
+                            bool visible = vq.traceVisibilityRay(ray);
+                            if (visible) addToPathContribution(path, Lr, misWeight);
+                        }
                     }
+                }
+
+                if (kUseBPT)
+                {
+
                 }
             }
         }
@@ -954,14 +1059,12 @@ struct PathTracer
                     // Evaluate PDF, had it been generated with light sampling.
                     float lightPdf = lightSampler.getEnvMapSelectionProbability() * lightSampler.envMapSampler.evalPdf(path.dir);
 
-                    misWeight = computeHitMIS(path, lightPdf, lightPdf * getSceneSpherePdf(params.sceneSphere));
+                    misWeight = evalScatterMIS(path, lightPdf, lightPdf * getSceneSpherePdf(params.sceneSphere), 1.f);
                 }
 
-                if (kUseBPT && params.debugLightVertexCount == 0) misWeight = 1;
-
                 float3 Le = lightSampler.envMapSampler.eval(path.dir);
+                addToPathContribution(path, Le, misWeight);
                 emitterRadiance = misWeight * Le;
-                addToPathContribution(path, emitterRadiance);
 
                 if (kOutputGuideData && path.getVertexIndex() == 2
                     && (path.getBounces(BounceType::Specular) == 1

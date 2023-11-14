@@ -91,6 +91,7 @@ bool sampleTriangle(const float3 posW, const uint triangleIndex, const float2 u,
     // Note: Guard against div-by-zero here by clamping.
     float denom = max(FLT_MIN, cosTheta * tri.area);
     ls.pdf = distSqr / denom;
+    ls.emitPdf = (1.f / tri.area) * (cosTheta * M_1_PI);
 
     // Save light sample triangle barycentric coordinates
     ls.uv = u;
@@ -120,11 +121,12 @@ bool sampleTriangle(const uint triangleIndex, const float4 u, out TriangleLightS
     // Get triangle normal.
     ls.normalW = tri.normal;
 
-    ls.dir = sample_cosine_hemisphere_polar(u.zw, ls.pdf);
+    ls.dir = sample_cosine_hemisphere_polar(u.zw, ls.emitPdf);
     ls.distance = FLT_MAX;
 
     // Compute probability density with respect to the triangle area.
-    ls.pdf /= tri.area;
+    ls.pdf = 1.f / tri.area;
+    ls.emitPdf *= ls.pdf;
 
     // Save light sample triangle barycentric coordinates
     ls.uv = u.xy;
