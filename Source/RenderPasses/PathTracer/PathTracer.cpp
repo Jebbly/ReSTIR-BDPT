@@ -456,6 +456,7 @@ void PathTracer::execute(RenderContext* pRenderContext, const RenderData& render
     {
         // clear the light image
         pRenderContext->clearUAV(mpLightImage->getUAV().get(), float4(0.f));
+        pRenderContext->clearUAV(mpLightVertexCount->getUAV().get(), uint4(0.f));
 
         FALCOR_ASSERT(mpLightTracePass);
         tracePass(pRenderContext, renderData, *mpLightTracePass, uint2(mParams.frameDim.x, (mParams.lightSubpathCount + mParams.frameDim.x-1) / mParams.frameDim.x));
@@ -588,7 +589,6 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
                 dirty |= widget.var("MIS power exponent", mStaticParams.misPowerExponent, 0.01f, 10.f);
             }
 
-            dirty |= widget.checkbox("Debug MIS", mStaticParams.debugMIS);
         }
     }
 
@@ -601,9 +601,6 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
                 dirty |= widget.var("Continuation probability", mParams.contProb, 0.f, 1.f);
                 widget.tooltip("Probability of continuing the path at each vertex.");
             }
-
-            widget.var("Debug light vertex count", mParams.debugLightVertexCount, -1);
-            widget.tooltip("Only render paths with this many light vertices.");
 
             dirty |= widget.var("Light sub-path count", mParams.lightSubpathCount, 1u, 10000000u);
             widget.tooltip("Number of light sub-paths to trace when BPT is enabled.");
@@ -708,6 +705,10 @@ bool PathTracer::renderDebugUI(Gui::Widgets& widget)
             dirty |= group.var("Seed", mParams.fixedSeed);
         }
 
+        dirty |= widget.var("Debug light vertex count", mParams.debugLightVertexCount, -1);
+        widget.tooltip("Only render paths with this many light vertices.");
+        dirty |= widget.checkbox("Debug MIS", mStaticParams.debugMIS);
+
         mpPixelDebug->renderUI(group);
     }
 
@@ -747,7 +748,7 @@ PathTracer::TracePass::TracePass(ref<Device> pDevice, const std::string& name, c
     desc.addShaderLibrary(kTracePassFilename);
     if (pDevice->getType() == Device::Type::D3D12 && useSER)
         desc.addCompilerArguments({ "-Xdxc", "-enable-lifetime-markers" });
-    desc.setMaxPayloadSize(160); // This is conservative but the required minimum is 140 bytes.
+    desc.setMaxPayloadSize(176); // This is conservative but the required minimum is 140 bytes.
     desc.setMaxAttributeSize(pScene->getRaytracingMaxAttributeSize());
     desc.setMaxTraceRecursionDepth(1);
     if (!pScene->hasProceduralGeometry()) desc.setRtPipelineFlags(RtPipelineFlags::SkipProceduralPrimitives);
@@ -916,6 +917,16 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
             mpLightImage = mpDevice->createBuffer(sizeof(float3) * mParams.frameDim.x * mParams.frameDim.y, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
+
+        const size_t lightVerticesSize = mParams.lightSubpathCount * std::max(1u, mStaticParams.maxSurfaceBounces) * 80;
+        if (!mpLightVertices || mpLightVertices->getSize() != lightVerticesSize)
+        {
+            mpLightVertices = mpDevice->createBuffer(lightVerticesSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mVarsChanged = true;
+        }
+
+        if (!mpLightVertexCount)
+            mpLightVertexCount = mpDevice->createBuffer(sizeof(uint4), ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
     }
 
     // Allocate output sample offset buffer if needed.
@@ -1153,6 +1164,8 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["sampleColor"] = mpSampleColor;
         var["sampleGuideData"] = mpSampleGuideData;
         var["lightImage"] = mpLightImage;
+        var["lightVertices"] = mpLightVertices;
+        var["lightVertexCount"] = mpLightVertexCount;
     }
 
     // Bind runtime data.

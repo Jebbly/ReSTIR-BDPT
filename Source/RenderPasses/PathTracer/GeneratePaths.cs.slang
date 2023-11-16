@@ -79,6 +79,8 @@ struct PathGenerator
 
     RWTexture2D<float4> outputColor;                ///< Output color buffer if kSamplesPerPixel == 1.
     RWByteAddressBuffer lightImage;                 ///< Input light traced image. Only valid when kUseBPT == true. Added to the output when kSamplesPerPixel == 1.
+    RWByteAddressBuffer lightVertices;              ///< Diffuse light sub-path vertices.
+    RWByteAddressBuffer lightVertexCount;           ///< Number of items in lightVertices.
 
     // Render settings that depend on the scene.
     // TODO: Move into scene defines.

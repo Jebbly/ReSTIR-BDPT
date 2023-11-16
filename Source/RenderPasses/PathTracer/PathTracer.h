@@ -191,6 +191,8 @@ private:
 
     ref<Texture>                    mpSampleOffset;             ///< Output offset into per-sample buffers to where the samples for each pixel are stored (the offset is relative the start of the tile). Only used with non-fixed sample count.
     ref<Buffer>                     mpLightImage;               ///< Light trace image. Light subpath contributions are atomically added to this.
+    ref<Buffer>                     mpLightVertices;            ///< Light sub-path vertices.
+    ref<Buffer>                     mpLightVertexCount;         ///< Light vertex counter.
     ref<Buffer>                     mpSampleColor;              ///< Compact per-sample color buffer. This is used only if spp > 1.
     ref<Buffer>                     mpSampleGuideData;          ///< Compact per-sample denoiser guide data.
     ref<Buffer>                     mpSampleNRDRadiance;        ///< Compact per-sample NRD radiance data.
