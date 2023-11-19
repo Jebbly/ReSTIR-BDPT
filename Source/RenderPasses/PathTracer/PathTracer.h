@@ -122,6 +122,7 @@ private:
         bool        useMIS = true;                              ///< Use multiple importance sampling (MIS) when NEE is enabled.
         bool        useBPT = true;                              ///< Use bidirectional path tracing.
         bool        lightTraceOnly = false;                     ///< Only use light tracing. Disables camera tracing.
+        bool        debugBPT = false;                           ///< Output specific paths for debugging BPT.
         bool        debugMIS = false;                           ///< Output MIS weights.
         MISHeuristic misHeuristic = MISHeuristic::Balance;      ///< MIS heuristic.
         float       misPowerExponent = 2.f;                     ///< MIS exponent for the power heuristic. This is only used when 'PowerExp' is chosen.

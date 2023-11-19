@@ -594,17 +594,14 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
 
     if (mStaticParams.useBPT)
     {
-        if (auto group = widget.group("BPT"))
+        if (mStaticParams.useRussianRoulette && !mStaticParams.lightTraceOnly)
         {
-            if (mStaticParams.useRussianRoulette && !mStaticParams.lightTraceOnly)
-            {
-                dirty |= widget.var("Continuation probability", mParams.contProb, 0.f, 1.f);
-                widget.tooltip("Probability of continuing the path at each vertex.");
-            }
-
-            dirty |= widget.var("Light sub-path count", mParams.lightSubpathCount, 1u, 10000000u);
-            widget.tooltip("Number of light sub-paths to trace when BPT is enabled.");
+            dirty |= widget.var("Continuation probability", mParams.contProb, 0.f, 1.f);
+            widget.tooltip("Probability of continuing the path at each vertex.");
         }
+
+        dirty |= widget.var("Light sub-path count", mParams.lightSubpathCount, 1u, 10000000u);
+        widget.tooltip("Number of light sub-paths to trace when BPT is enabled.");
     }
 
     if ((mStaticParams.useNEE || mStaticParams.useBPT) && mpScene && mpScene->useEmissiveLights())
@@ -705,9 +702,19 @@ bool PathTracer::renderDebugUI(Gui::Widgets& widget)
             dirty |= group.var("Seed", mParams.fixedSeed);
         }
 
-        dirty |= widget.var("Debug light vertex count", mParams.debugLightVertexCount, -1);
-        widget.tooltip("Only render paths with this many light vertices.");
-        dirty |= widget.checkbox("Debug MIS", mStaticParams.debugMIS);
+        bool recompile = false;
+        recompile |= group.checkbox("Debug MIS", mStaticParams.debugMIS);
+
+        recompile |= group.checkbox("Debug BPT", mStaticParams.debugBPT);
+        if (mStaticParams.debugBPT)
+        {
+            recompile |= group.var("Debug path length", mParams.debugPathLength, -1);
+            group.tooltip("Only render paths with this many segments.");
+            recompile |= group.var("Debug light vertex count", mParams.debugLightVertexCount, -1);
+            group.tooltip("Only render paths with this many light vertices.");
+        }
+        dirty |= recompile;
+        mRecompile |= recompile;
 
         mpPixelDebug->renderUI(group);
     }
@@ -910,6 +917,8 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
     const uint32_t screenPixelCount = mParams.frameDim.x * mParams.frameDim.y;
     const uint32_t pathCount = screenPixelCount * spp;
 
+    auto var = mpReflectTypes->getRootVar();
+
     if (mStaticParams.useBPT)
     {
         if (!mpLightImage || mpLightImage->getSize() != sizeof(float3) * mParams.frameDim.x * mParams.frameDim.y)
@@ -918,15 +927,13 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
             mVarsChanged = true;
         }
 
-        const size_t lightVerticesSize = mParams.lightSubpathCount * std::max(1u, mStaticParams.maxSurfaceBounces) * 80;
-        if (!mpLightVertices || mpLightVertices->getSize() != lightVerticesSize)
+        const size_t lightVertexCount = mParams.lightSubpathCount * std::max(1u, mStaticParams.maxSurfaceBounces);
+        if (!mpLightVertices || mpLightVertices->getElementCount() != lightVertexCount || mVarsChanged)
         {
-            mpLightVertices = mpDevice->createBuffer(lightVerticesSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpLightVertices    = mpDevice->createStructuredBuffer(var["pathTracer"]["lightVertices"], lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpLightVertexCount = mpDevice->createBuffer(16, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
-
-        if (!mpLightVertexCount)
-            mpLightVertexCount = mpDevice->createBuffer(sizeof(uint4), ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
     }
 
     // Allocate output sample offset buffer if needed.
@@ -941,8 +948,6 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
             mVarsChanged = true;
         }
     }
-
-    auto var = mpReflectTypes->getRootVar();
 
     // Allocate per-sample buffers.
     // For the special case of fixed 1 spp, the output is written out directly and this buffer is not needed.
@@ -1481,6 +1486,7 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("USE_MIS", (useBPT || useMIS) ? "1" : "0");
     defines.add("USE_BPT", useBPT ? "1" : "0");
     defines.add("DEBUG_MIS", debugMIS ? "1" : "0");
+    defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");
     defines.add("USE_RUSSIAN_ROULETTE", useRussianRoulette ? "1" : "0");
     defines.add("USE_RTXDI", useRTXDI ? "1" : "0");

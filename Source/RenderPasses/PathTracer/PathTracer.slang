@@ -69,14 +69,14 @@ struct PathTracer
     struct LightSubpathVertex
     {
         PackedHitInfo packedHit;
-        float3 L;
-        float dVCM;
-        float3 V;
-        float dVC;
-        float3 rayOrigin;
-        float dVM;
-        float3 rayDirection;
-        uint bounces;
+        float3 L;               //< Throughput at the vertex.
+        float dVCM;             //< dVCM at the vertex.
+        float3 V;               //< View direction at the vertex.
+        float dVC;              //< dVC at the vertex.
+        float3 rayOrigin;       //< origin of the ray we traced to find the vertex.
+        float dVM;              //< dVM at the vertex.
+        float3 rayDirection;    //< direction of the ray we traced to find the vertex.
+        uint vertexIndex;       //< Index of the vertex in the light sub-path
     };
 
     PathTracerParams params;                              ///< Runtime parameters.
@@ -97,8 +97,8 @@ struct PathTracer
     NRDBuffers outputNRD;                                 ///< Output NRD data.
 
     RWTexture2D<float4> outputColor;                      ///< Output color buffer if kSamplesPerPixel == 1.
-    RWByteAddressBuffer lightVertices;                    ///< Diffuse light sub-path vertices.
-    RWByteAddressBuffer lightVertexCount;                 ///< Number of items in lightVertices.
+    RWStructuredBuffer<LightSubpathVertex> lightVertices; ///< Diffuse light sub-path vertices.
+    RWStructuredBuffer<uint> lightVertexCount;            ///< Number of items in lightVertices.
 
     /*******************************************************************
                                 Static members
@@ -108,6 +108,7 @@ struct PathTracer
     static const bool kOutputGuideData   = OUTPUT_GUIDE_DATA;
     static const bool kUseBPT            = USE_BPT;
     static const bool kDebugMIS          = DEBUG_MIS;
+    static const bool kDebugBPT          = DEBUG_BPT;
     #ifdef LIGHT_TRACE_PASS
     static const bool kTraceFromLight    = true;
     #else
@@ -186,7 +187,8 @@ struct PathTracer
 
     float evalRevScatterPdf(const ShadingData sd, const IMaterialInstance mi, const float3 wo)
     {
-        /*VertexData v;
+        /*
+        VertexData v;
         v.coneTexLODValue = 0.f;
         v.curveRadius = sd.curveRadius;
         v.faceNormalW = sd.faceN;
@@ -196,10 +198,11 @@ struct PathTracer
         v.texC = sd.uv;
         let lod = ExplicitLodTextureSampler(params.lodBias);
         ShadingData revSd = gScene.materials.prepareShadingData(v, sd.materialID, wo, lod);
-        */
+        /*/
         ShadingData revSd = sd;
         revSd.V = wo;
         revSd.frontFacing = dot(revSd.faceN, revSd.V) >= 0.f;
+        //*/
         return mi.evalPdf(revSd, sd.V, kUseBSDFSampling);
     }
 
@@ -440,12 +443,53 @@ struct PathTracer
         \param[in,out] path Path state.
         \param[in] radiance Vertex radiance.
     */
-    void addToPathContribution(inout PathState path, const float3 radiance, const float misWeight)
+    void addToPathContribution( inout PathState path, const float3 radiance, float misWeight, const uint lightVertices )
     {
+        const uint viewVertices = path.getVertexIndex() + 1;
+        if (kDebugBPT)
+        {
+            if ((params.debugPathLength != -1 && (viewVertices + lightVertices) - 1 != params.debugPathLength) ||
+                (params.debugLightVertexCount != -1 && lightVertices != params.debugLightVertexCount))
+                return;
+        }
+
         if (kDebugMIS)
             path.L += misWeight;
         else
+        {
+            // if (kDebugBPT && params.debugLightVertexCount != -1)
+            //     misWeight = 1.f;
+            print("length:    ", (viewVertices + lightVertices) - 1);
+            print("lv:        ", lightVertices);
+            print("f:         ", luminance(path.thp * radiance * misWeight));
+            print("thp:       ", luminance(path.thp));
+            print("radiance:  ", luminance(radiance));
+            print("misWeight: ", misWeight);
+
             path.L += path.thp * radiance * misWeight;
+        }
+    }
+
+    void addToLightImage( const uint2 pixel, const float3 radiance, float misWeight, const uint lightVertices )
+    {
+        if (kDebugBPT)
+        {
+            const uint viewVertices = 1;
+            if ((params.debugPathLength != -1 && (viewVertices + lightVertices) - 1 != params.debugPathLength) ||
+                (params.debugLightVertexCount != -1 && lightVertices != params.debugLightVertexCount))
+                return;
+        }
+
+        //if (!kDebugMIS && kDebugBPT && params.debugLightVertexCount != -1)
+        //    misWeight = 1.f;
+
+        const float3 f = kDebugMIS ? misWeight : radiance * misWeight;
+
+        uint addr = sizeof(float3) * (pixel.y * params.frameDim.x + pixel.x);
+        lightImage.InterlockedAddF32(addr + 0, f.r);
+        lightImage.InterlockedAddF32(addr + 4, f.g);
+        lightImage.InterlockedAddF32(addr + 8, f.b);
+
     }
 
     /** Generates a new scatter ray using BSDF importance sampling.
@@ -460,11 +504,13 @@ struct PathTracer
         bool valid = mi.sample(sd, path.sg, result, kUseBSDFSampling);
         if (valid) valid = generateScatterRay(result, sd, mi, path);
 
+        const bool isDeltaLobe = result.isLobe(LobeType::DeltaReflection) || result.isLobe(LobeType::DeltaTransmission);
+
         if (kUseBPT && valid)
         {
             const float cosOut = abs(dot(path.dir, path.normal));
 
-            if ((mi.getLobeTypes(sd) & (uint)LobeType::NonDelta) == 0)
+            if (isDeltaLobe)
             {
                 path.dVCM = 0.f;
                 path.dVC *= evalMIS(1.f, cosOut);
@@ -490,11 +536,11 @@ struct PathTracer
                 path.setDiffusePrimaryHit(result.isLobe(LobeType::Diffuse));
                 path.setSpecularPrimaryHit(result.isLobe(LobeType::Specular));
 
+                // Mark path as delta-only if it followed delta lobe on the primary hit, even though there might have been non-delta lobes.
+                path.setDeltaOnlyPath(isDeltaLobe);
+
                 if (kOutputNRDAdditionalData)
                 {
-                    // Mark path as delta-only if it followed delta lobe on the primary hit, even though there might have been non-delta lobes.
-                    path.setDeltaOnlyPath(result.isLobe(LobeType::DeltaReflection) || result.isLobe(LobeType::DeltaTransmission));
-
                     path.setDeltaReflectionPrimaryHit(result.isLobe(LobeType::DeltaReflection));
                     path.setDeltaTransmissionPath(result.isLobe(LobeType::DeltaTransmission));
                 }
@@ -502,7 +548,7 @@ struct PathTracer
 
             if (path.getVertexIndex() > 1)
             {
-                if (hasNonDeltaLobes) path.setDeltaOnlyPath(false);
+                if (!isDeltaLobe) path.setDeltaOnlyPath(false);
 
                 if (kOutputNRDAdditionalData && path.isDeltaTransmissionPath() && path.isDeltaOnlyPath() && hasDeltaTransmissionLobe)
                 {
@@ -618,18 +664,13 @@ struct PathTracer
      */
     void connectToLightSubpath<VisibilityQuery : IVisibilityQuery>( const ShadingData sd, const IMaterialInstance mi, inout PathState path, inout VisibilityQuery vq )
     {
-        const uint numVertices = lightVertexCount.Load(0);
+        const uint numVertices = lightVertexCount[0];
         if (numVertices == 0)
             return;
 
-        const uint i = min(uint(sampleNext1D(path.sg) * numVertices), numVertices - 1);
-        const LightSubpathVertex lightVertex = lightVertices.Load<LightSubpathVertex>(i * sizeof(LightSubpathVertex));
+        const LightSubpathVertex lightVertex = lightVertices[min(uint(sampleNext1D(path.sg) * numVertices), numVertices - 1)];
 
-        const uint bounces = path.getBounces(BounceType::Diffuse) + path.getBounces(BounceType::Specular) + path.getBounces(BounceType::Transmission);
-        if (bounces + lightVertex.bounces + 1 > kMaxBounces)
-            return;
-
-        if (params.debugLightVertexCount != -1 && lightVertex.bounces + 2 != params.debugLightVertexCount)
+        if (path.getVertexIndex() + lightVertex.vertexIndex > kMaxSurfaceBounces)
             return;
 
         let lod = ExplicitLodTextureSampler(0.f);
@@ -641,12 +682,27 @@ struct PathTracer
         const float cosLight = -dot(toLight, lightSd.getOrientedFaceNormal());
         const float cosCamera = dot(toLight, sd.getOrientedFaceNormal());
 
-        float cameraBsdfFwdPdfW, cameraBsdfRevPdfW;
-        float lightBsdfFwdPdfW, lightBsdfRevPdfW;
+        float3 f = lightVertex.L * (numVertices / float(params.lightSubpathCount));
 
-        float3 f = 1;
+        // evaluate bsdf at light vertex
+        float lightBsdfFwdPdfW, lightBsdfRevPdfW;
+        {
+            let lightMi = gScene.materials.getMaterialInstance(lightSd, lod);
+            // Reject sample if not in the hemisphere of a BSDF lobe.
+            const uint lobeTypes = lightMi.getLobeTypes(lightSd);
+            const bool hasReflection   = lobeTypes & uint(LobeType::Reflection);
+            const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
+            if ((cosLight <= kMinCosTheta && !hasTransmission) || (cosLight >= -kMinCosTheta && !hasReflection))
+                return;
+            f *= lightMi.eval(lightSd, -toLight, path.sg) * getShadingNormalCorrection(lightSd, -toLight);
+
+            lightBsdfFwdPdfW = lightMi.evalPdf(lightSd, -toLight, kUseBSDFSampling);
+            lightBsdfRevPdfW = evalRevScatterPdf(lightSd, lightMi, -toLight);
+        }
+        if (!any(f > 0)) return;
 
         // evaluate bsdf at camera vertex
+        float cameraBsdfFwdPdfW, cameraBsdfRevPdfW;
         {
             // Reject sample if not in the hemisphere of a BSDF lobe.
             const uint lobeTypes = mi.getLobeTypes(sd);
@@ -659,55 +715,29 @@ struct PathTracer
             cameraBsdfFwdPdfW = mi.evalPdf(sd, toLight, kUseBSDFSampling);
             cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, toLight);
         }
-
-        // evaluate bsdf at light vertex
-        {
-            let lightMi = gScene.materials.getMaterialInstance(lightSd, lod);
-            // Reject sample if not in the hemisphere of a BSDF lobe.
-            const uint lobeTypes = lightMi.getLobeTypes(lightSd);
-            const bool hasReflection   = lobeTypes & uint(LobeType::Reflection);
-            const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
-            if ((cosLight <= kMinCosTheta && !hasTransmission) || (cosLight >= -kMinCosTheta && !hasReflection))
-                return;
-            f *= lightMi.eval(lightSd, -toLight, path.sg) * getShadingNormalCorrection(lightSd, -toLight);
-
-            lightBsdfFwdPdfW = lightMi.evalPdf(lightSd, -toLight, kUseBSDFSampling);
-            lightBsdfFwdPdfW = evalRevScatterPdf(lightSd, lightMi, -toLight);
-        }
-
-        f *= lightVertex.L;
-
-        if (!any(f > 0))
-            return;
+        if (!any(f > 0)) return;
 
         // Get origin with offset applied in direction of the geometry normal to avoid self-intersection.
         const float3 origin = computeRayOrigin(sd, toLight);
 
         // Test visibility by tracing a shadow ray.
-        bool V = vq.traceVisibilityRay(Ray(origin, toLight, length(origin - computeRayOrigin(lightSd, -toLight))));
-        if (!V)
-            return;
+        bool V = vq.traceVisibilityRay(Ray(origin, toLight, 0, length(origin - computeRayOrigin(lightSd, -toLight))));
+        if (!V) return;
 
         const float invDist2 = 1.f / (dist * dist);
         f *= invDist2;
 
         const float wLight  = evalMIS(1.f, cameraBsdfFwdPdfW * cosLight * invDist2) * (getMisVmWeightFactor() + lightVertex.dVCM + lightVertex.dVC * evalMIS(1.f, lightBsdfRevPdfW));
         const float wCamera = evalMIS(1.f, lightBsdfFwdPdfW * cosCamera * invDist2) * (getMisVmWeightFactor() + path.dVCM + path.dVC * evalMIS(1.f, cameraBsdfRevPdfW));
-        const float misWeight = kDebugMIS ? 1 : (1.f / (wLight + 1.f + wCamera));
+        const float misWeight = 1.f / (wLight + 1.f + wCamera);
 
-        f *= numVertices / float(params.lightSubpathCount);
-
-        addToPathContribution(path, f, misWeight);
+        addToPathContribution(path, f, misWeight, lightVertex.vertexIndex+1);
     }
 
     /** Connect a light sub-path to the camera to form a full path. Splats the contribution to lightImage.
      */
     void connectToCamera<VisibilityQuery : IVisibilityQuery>( const ShadingData sd, const IMaterialInstance mi, inout PathState path, inout VisibilityQuery vq )
     {
-        const uint bounces = path.getBounces(BounceType::Diffuse) + path.getBounces(BounceType::Specular) + path.getBounces(BounceType::Transmission);
-        if (params.debugLightVertexCount != -1 && params.debugLightVertexCount != bounces + 2)
-            return;
-
         float3 toCamera = gScene.camera.getPosition() - sd.posW;
         const float dist = length(toCamera);
         toCamera /= dist;
@@ -743,9 +773,8 @@ struct PathTracer
         const float misWeight = kLightTraceOnly ? 1.f : evalLightTraceMIS(path, bsdfRevPdfW, imageToSurfaceFactor);
 
         // Compute full path contribution
-        float3 f = path.thp * mi.eval(sd, toCamera, path.sg) * getShadingNormalCorrection(sd, toCamera) * (misWeight * (imageToSolidAngleFactor * invDist2) / params.lightSubpathCount);
-        if (kDebugMIS) f = misWeight;
-        if (!any(f > 0))
+        float3 radiance = path.thp * mi.eval(sd, toCamera, path.sg) * getShadingNormalCorrection(sd, toCamera) * (imageToSolidAngleFactor * invDist2) / params.lightSubpathCount;
+        if (!any(radiance > 0))
             return;
 
         // Get origin with offset applied in direction of the geometry normal to avoid self-intersection.
@@ -756,15 +785,12 @@ struct PathTracer
         if (!V)
             return;
 
-        uint addr = sizeof(float3) * (pixel.y * params.frameDim.x + pixel.x);
-        lightImage.InterlockedAddF32(addr + 0, f.r);
-        lightImage.InterlockedAddF32(addr + 4, f.g);
-        lightImage.InterlockedAddF32(addr + 8, f.b);
+        addToLightImage(pixel, radiance, misWeight, path.getVertexIndex()+1);
     }
 
     void storeLightVertex(const ShadingData sd, const PathState path)
     {
-        LightSubpathVertex v;
+        LightSubpathVertex v = {};
         v.packedHit = path.hit.data;
         v.L = path.thp;
         v.dVCM = path.dVCM;
@@ -772,11 +798,11 @@ struct PathTracer
         v.dVC = path.dVC;
         v.rayOrigin = path.origin;
         v.rayDirection = path.dir;
-        v.bounces = path.getBounces(BounceType::Diffuse) + path.getBounces(BounceType::Specular) + path.getBounces(BounceType::Transmission);
+        v.vertexIndex = path.getVertexIndex();
 
         uint i;
-        lightVertexCount.InterlockedAdd(0, 1, i);
-        lightVertices.Store<LightSubpathVertex>(i*sizeof(LightSubpathVertex), v);
+        InterlockedAdd(lightVertexCount[0], 1, i);
+        lightVertices[i] = v;
     }
 
     /** Handle hits on dielectrics.
@@ -918,12 +944,7 @@ struct PathTracer
         BSDFProperties bsdfProperties = mi.getProperties(sd);
 
         float3 attenuatedEmission = 0.f;
-        if (kTraceFromLight)
-        {
-            // Store light sub-path vertex
-            storeLightVertex(sd, path);
-        }
-        else
+        if (!kTraceFromLight)
         {
             // Compute emission at hit
 
@@ -952,12 +973,10 @@ struct PathTracer
             // that RTXDI cannot handle, such as transmission or delta scattering events.
             if (kUseRTXDI && path.getVertexIndex() == 2 && !path.isTransmission() && !path.isDelta()) computeEmissive = false;
 
-            if (params.debugLightVertexCount > 0) computeEmissive = false;
-
             if (computeEmissive && any(bsdfProperties.emission > 0.f))
             {
                 float misWeight = 1.f;
-                if (kUseEmissiveLights && kUseNEE && kUseMIS && isTriangleHit && !isPrimaryHit && path.isLightSampled() && isLightSamplable)
+                if (kUseEmissiveLights && kUseNEE && kUseMIS && isTriangleHit && !isPrimaryHit && ((path.isLightSampled() && isLightSamplable) || (kUseBPT && !path.isDeltaOnlyPath())))
                 {
                     // If NEE and MIS are enabled, and we've already sampled emissive lights,
                     // then we need to evaluate the MIS weight here to account for the remaining contribution.
@@ -981,7 +1000,7 @@ struct PathTracer
                 }
 
                 // Accumulate emitted radiance weighted by path throughput and MIS weight.
-                addToPathContribution(path, bsdfProperties.emission, misWeight);
+                addToPathContribution(path, bsdfProperties.emission, misWeight, 0);
 
                 attenuatedEmission = path.thp * misWeight * bsdfProperties.emission;
             }
@@ -1019,6 +1038,7 @@ struct PathTracer
         {
             if (kTraceFromLight)
             {
+                storeLightVertex(sd, path);
                 connectToCamera(sd, mi, path, vq);
             }
             else
@@ -1051,7 +1071,7 @@ struct PathTracer
                         path.setLightSampled(sampleUpperHemisphere, sampleLowerHemisphere);
                     }
 
-                    if (validSample && (params.debugLightVertexCount == -1 || params.debugLightVertexCount == 1))
+                    if (validSample)
                     {
                         float misWeight = 1.f;
                         // Apply MIS weight.
@@ -1084,7 +1104,7 @@ struct PathTracer
 
                             logTraceRay(PixelStatsRayType::Visibility);
                             bool visible = vq.traceVisibilityRay(ray);
-                            if (visible) addToPathContribution(path, Lr, misWeight);
+                            if (visible) addToPathContribution(path, Lr, misWeight, 1);
                         }
                     }
                 }
@@ -1178,8 +1198,6 @@ struct PathTracer
             // that RTXDI cannot handle, such as transmission, delta or volume scattering events.
             if (kUseRTXDI && path.getVertexIndex() == 2 && !path.isTransmission() && !path.isDelta()) computeEnv = false;
 
-            if (params.debugLightVertexCount > 0) computeEnv = false;
-
             float3 emitterRadiance = 0.f;
 
             if (computeEnv)
@@ -1187,7 +1205,7 @@ struct PathTracer
                 logPathVertex();
 
                 float misWeight = 1.f;
-                if (kUseNEE && kUseMIS && path.isLightSampled() && isLightSamplable)
+                if (kUseNEE && kUseMIS && ((path.isLightSampled() && isLightSamplable) || (kUseBPT && !path.isDeltaOnlyPath())))
                 {
                     // If NEE and MIS are enabled, and we've already sampled the env map,
                     // then we need to evaluate the MIS weight here to account for the remaining contribution.
@@ -1199,7 +1217,7 @@ struct PathTracer
                 }
 
                 float3 Le = lightSampler.envMapSampler.eval(path.dir);
-                addToPathContribution(path, Le, misWeight);
+                addToPathContribution(path, Le, misWeight, 0);
                 emitterRadiance = misWeight * Le;
 
                 if (kOutputGuideData && path.getVertexIndex() == 2

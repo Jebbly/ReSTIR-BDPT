@@ -92,9 +92,10 @@ struct PathTracerParams
     uint    seed = 0;                   ///< Random seed. This will get updated from the host depending on settings.
 
     uint lightSubpathCount = 1000000;   ///< Number of light sub-paths to trace.
-    int debugLightVertexCount = -1;     ///< Number of light vertices for debugging.
-    float4 sceneSphere;                 ///< Scene bounding sphere.
     float contProb = 0.9f;              ///< Continuation probability when using BPT.
+    float4 sceneSphere;                 ///< Scene bounding sphere.
+    int debugPathLength = -1;           ///< Path length for debugging.
+    int debugLightVertexCount = -1;     ///< Number of light vertices for debugging.
 
 #ifndef HOST_CODE
     /** Computes the offset into the tiled sample buffer for a given tile.
