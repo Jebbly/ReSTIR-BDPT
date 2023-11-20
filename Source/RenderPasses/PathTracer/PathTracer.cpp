@@ -555,6 +555,11 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
 
     dirty |= widget.checkbox("Russian roulette", mStaticParams.useRussianRoulette);
     widget.tooltip("Use russian roulette to terminate low throughput paths.");
+    if (mStaticParams.useRussianRoulette && !(mStaticParams.useBPT && mStaticParams.lightTraceOnly))
+    {
+        dirty |= widget.var("Continuation probability", mParams.contProb, 0.f, 1.f);
+        widget.tooltip("Probability of continuing the path at each vertex.");
+    }
 
     dirty |= widget.checkbox("Bidirectional path tracing (BPT)", mStaticParams.useBPT);
     widget.tooltip("Use bidirectional path tracing.\nThis option automatically enables NEE and MIS.");
@@ -594,12 +599,6 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
 
     if (mStaticParams.useBPT)
     {
-        if (mStaticParams.useRussianRoulette && !mStaticParams.lightTraceOnly)
-        {
-            dirty |= widget.var("Continuation probability", mParams.contProb, 0.f, 1.f);
-            widget.tooltip("Probability of continuing the path at each vertex.");
-        }
-
         dirty |= widget.var("Light sub-path count", mParams.lightSubpathCount, 1u, 10000000u);
         widget.tooltip("Number of light sub-paths to trace when BPT is enabled.");
     }

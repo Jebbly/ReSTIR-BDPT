@@ -1,96 +1,69 @@
+/***************************************************************************
+ # Copyright (c) 2015-22, NVIDIA CORPORATION. All rights reserved.
+ #
+ # Redistribution and use in source and binary forms, with or without
+ # modification, are permitted provided that the following conditions
+ # are met:
+ #  * Redistributions of source code must retain the above copyright
+ #    notice, this list of conditions and the following disclaimer.
+ #  * Redistributions in binary form must reproduce the above copyright
+ #    notice, this list of conditions and the following disclaimer in the
+ #    documentation and/or other materials provided with the distribution.
+ #  * Neither the name of NVIDIA CORPORATION nor the names of its
+ #    contributors may be used to endorse or promote products derived
+ #    from this software without specific prior written permission.
+ #
+ # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS "AS IS" AND ANY
+ # EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ # PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+ # CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ # EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ # PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+ # PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+ # OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+ # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ **************************************************************************/
+
+/** This file contains helper functions for analytic light source sampling.
+    The code supports Falcor's analytic point, directional, and area lights,
+    which are all defined in the scene description.
+
+    Mesh lights (emissive geometry) and light probes are handled separately.
+
+    This is work in progress. The code is not very well-tested.
+*/
+
 #include "Utils/Math/MathConstants.slangh"
 
-//import AnalyticLightHelpers;
+import Scene.Lights.LightData;
 import Rendering.Lights.EnvMapSampler;
 import Rendering.Lights.EmissiveLightSampler;
 import Rendering.Lights.EmissiveLightSamplerHelpers;
 import Utils.Math.MathHelpers;
-import Utils.Color.ColorHelpers;
 import Utils.Geometry.GeometryHelpers;
-import LoadShadingData;
 import PathState;
 import Params;
+import LoadShadingData;
 
-static const float kMinLightDistSqr = 1e-9f;
+static const float kMinLightDistSqr  = 1e-9f;
 static const float kMaxLightDistance = FLT_MAX;
-
-// Render settings that depend on the scene.
-// TODO: Move into scene defines.
 static const bool kUseEnvLight       = USE_ENV_LIGHT;
 static const bool kUseEmissiveLights = USE_EMISSIVE_LIGHTS;
 static const bool kUseAnalyticLights = USE_ANALYTIC_LIGHTS;
-static const bool kUseCurves         = USE_CURVES;
-static const bool kUseHairMaterial   = USE_HAIR_MATERIAL;
 
-/** Evaluates the currently configured heuristic for multiple importance sampling (MIS).
-    \param[in] n Number of samples taken from the sampling strategy.
-    \param[in] p Pdf for the sampling strategy.
-    \return Partial MIS weight
-*/
-float evalMIS(float n, float p)
+float3 generateSceneSphereSample(const float4 sceneSphere, const float3 dir, inout SampleGenerator sg)
 {
-    switch (MISHeuristic(kMISHeuristic))
-    {
-    case MISHeuristic::Balance:
-    {
-        // Balance heuristic
-        return n * p;
-    }
-    case MISHeuristic::PowerTwo:
-    {
-        // Power two heuristic
-        return (n * p) * (n * p);
-    }
-    case MISHeuristic::PowerExp:
-    {
-        // Power exp heuristic
-        return pow(n * p, kMISPowerExponent);
-    }
-    default:
-        return 0.f;
-    }
+    float2 uv = sample_disk_concentric(sampleNext2D(sg));
+    float3 t, b;
+    branchlessONB(dir, t, b);
+    return sceneSphere.xyz + sceneSphere.w * (t * uv.x + b * uv.y + dir);
 }
-
-/** Evaluates the currently configured heuristic for multiple importance sampling (MIS).
-    \param[in] n0 Number of samples taken from the first sampling strategy.
-    \param[in] p0 Pdf for the first sampling strategy.
-    \param[in] n1 Number of samples taken from the second sampling strategy.
-    \param[in] p1 Pdf for the second sampling strategy.
-    \return Weight for the contribution from the first strategy (p0).
-*/
-float evalMIS(float n0, float p0, float n1, float p1)
+float getSceneSpherePdf(const float4 sceneSphere)
 {
-    float q0 = evalMIS(n0, p0);
-    float q1 = evalMIS(n1, p1);
-    float qs = q0 + q1;
-    return qs > 0 ? q0 / qs : 0.f;
+    return M_1_PI / (sceneSphere.w * sceneSphere.w);
 }
-
-/**
- * Returns the shading normal correction for light tracing.
- */
-float getShadingNormalCorrection(const ShadingData sd, const float3 wo) {
-    const float num = abs(dot(sd.frame.N, sd.V) * dot(sd.faceN, wo));
-    const float denom = abs(dot(sd.frame.N, wo) * dot(sd.faceN, sd.V));
-    return denom >= kMinCosTheta ? num / denom : 1;
-}
-
-/**
- * Computes new ray origin based on hit position to avoid self-intersections.
- */
-float3 computeRayOrigin(const ShadingData sd, const float3 dir)
-{
-    return computeRayOrigin(sd.posW, dot(dir, sd.faceN) >= 0.f ? sd.faceN : -sd.faceN);
-}
-
-/** Types of samplable lights.
-*/
-enum class LightSampleType
-{
-    EnvMap,
-    Emissive,
-    Analytic
-};
 
 /** Describes a light sample.
  */
@@ -107,53 +80,262 @@ struct LightSample
 
     Ray getVisibilityRay() { return Ray(origin, dir, 0.f, distance); }
 
-    LightSampleType getType()
-    {
-        return LightSampleType(flags >> 2);
-    }
+    bool getIsFinite()   { return (flags & 1u) != 0; }
+    bool getIsDelta()    { return (flags & 2u) != 0; }
+    bool getIsAnalytic() { return (flags & 4u) != 0; }
 
-    [mutating]
-    void setType(uint newValue)
-    {
-        flags &= ~3u;
-        flags |= newValue >> 2u;
-    }
+    [mutating] void setIsFinite  (bool newValue) { flags = ((flags & ~1u) | (newValue ? 1u : 0u)); }
+    [mutating] void setIsDelta   (bool newValue) { flags = ((flags & ~2u) | (newValue ? 2u : 0u)); }
+    [mutating] void setIsAnalytic(bool newValue) { flags = ((flags & ~4u) | (newValue ? 4u : 0u)); }
 
-    bool getIsFinite()
-    {
-        return (flags & 1u) != 0;
-    }
-
-    bool getIsDelta()
-    {
-        return (flags & 2u) != 0;
-    }
-
-    [mutating]
-    void setIsFinite(bool newValue)
-    {
-        flags &= ~1u;
-        if (newValue) flags |= 1u;
-    }
-
-    [mutating]
-    void setIsDelta(bool newValue)
-    {
-        flags &= ~2u;
-        if (newValue) flags |= 2u;
-    }
 };
 
-float3 generateSceneSphereSample(const float4 sceneSphere, const float3 dir, inout SampleGenerator sg)
+/**
+ * Computes new ray origin based on hit position to avoid self-intersections.
+ */
+float3 computeRayOrigin(const ShadingData sd, const float3 dir)
 {
-    float2 uv = sample_disk_concentric(sampleNext2D(sg));
-    float3 t, b;
-    branchlessONB(dir, t, b);
-    return sceneSphere.xyz + sceneSphere.w * (t * uv.x + b * uv.y + dir);
+    return computeRayOrigin(sd.posW, dot(dir, sd.faceN) >= 0.f ? sd.faceN : -sd.faceN);
 }
-float getSceneSpherePdf(const float4 sceneSphere)
+
+
+/** Internal helper function to finalize the shared computations for area light samples.
+    The input sample must already have posW and normalW computed.
+    \return True if the sample is valid, false otherwise.
+*/
+bool finalizeAreaLightSample(const Optional<ShadingData> sd, const float3 posW, const float3 normalW, const float surfaceArea, inout LightSample ls)
 {
-    return M_1_PI / (sceneSphere.w * sceneSphere.w);
+    ls.setIsDelta(false);
+    ls.setIsFinite(true);
+
+    // Compute direction and distance to light.
+    // The distance is clamped to a small epsilon to avoid div-by-zero below.
+    float3 toLight = posW - sd.value.posW;
+    float distSqr = max(dot(toLight, toLight), kMinLightDistSqr);
+    ls.origin = computeRayOrigin(sd.value, toLight);
+    ls.distance = sqrt(distSqr);
+    ls.dir = toLight / ls.distance;
+
+    // Compute incident radiance at shading point.
+    // The area lights are single-sided by default, so radiance is zero when seen from the back-facing side.
+    ls.cosLight = dot(normalW, -ls.dir);
+    if (ls.cosLight <= 0.f) return false;
+    ls.Li *= surfaceArea * ls.cosLight / distSqr;
+
+    ls.emitPdf = ls.cosLight * M_1_PI / surfaceArea;
+
+    // Compute the PDF with respect to solid angle. Note this may be +inf.
+    ls.pdf = distSqr / (ls.cosLight * surfaceArea);
+    return true;
+}
+
+/** Samples a rectangular area light source.
+    \param[in] shadingPosW Shading point in world space.
+    \param[in] light Light data.
+    \param[in] u Uniform random numbers.
+    \param[out] ls Light sample struct.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleRectAreaLight(const Optional<ShadingData> sd, const LightData light, const float2 u, out LightSample ls)
+{
+    // Pick a random sample on the quad.
+    // The quad is from (-1,-1,0) to (1,1,0) in object space, but may be scaled by its transform matrix.
+    float3 pos = float3(u.x * 2.f - 1.f, u.y * 2.f - 1.f, 0.f);
+
+    // Apply model to world transformation matrix.
+    const float3 posW = mul(light.transMat, float4(pos, 1.f)).xyz;
+
+    // Setup world space normal.
+    // TODO: normalW is not correctly oriented for mesh instances that have flipped triangle winding.
+    const float3 normalW = normalize(mul(light.transMatIT, float4(0.f, 0.f, 1.f, 0.f)).xyz);
+
+    ls.Li = light.intensity;
+
+    return finalizeAreaLightSample(sd, posW, normalW, light.surfaceArea, ls);
+}
+
+/** Samples a spherical area light source.
+    \param[in] shadingPosW Shading point in world space.
+    \param[in] light Light data.
+    \param[in] u Uniform random numbers.
+    \param[out] ls Light sample struct.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleSphereAreaLight(const Optional<ShadingData> sd, const LightData light, const float2 u, out LightSample ls)
+{
+    // Sample a random point on the sphere.
+    // TODO: We should pick a random point on the hemisphere facing the shading point.
+    float3 pos = sample_sphere(u);
+
+    // Apply model to world transformation matrix.
+    const float3 posW = mul(light.transMat, float4(pos, 1.f)).xyz;
+
+    // Setup world space normal.
+    const float3 normalW = normalize(mul(light.transMatIT, float4(pos, 0.f)).xyz);
+
+    ls.Li = light.intensity;
+
+    return finalizeAreaLightSample(sd, posW, normalW, light.surfaceArea, ls);
+}
+
+/** Samples disc area light source.
+    \param[in] shadingPosW Shading point in world space.
+    \param[in] light Light data.
+    \param[in] Uniform random numbers.
+    \param[out] ls Light sample struct.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleDiscAreaLight(const Optional<ShadingData> sd, const LightData light, const float2 u, out LightSample ls)
+{
+    // Sample a random point on the disk.
+    // TODO: Fix spelling disagreement between disc vs disk.
+    float3 pos = float3(sample_disk(u), 0.f);
+
+    // Transform to world space.
+    const float3 posW = mul(light.transMat, float4(pos, 1.f)).xyz;
+
+    // Setup world space normal.
+    const float3 normalW = normalize(mul(light.transMatIT, float4(0.f, 0.f, 1.f, 0.f)).xyz);
+
+    ls.Li = light.intensity;
+
+    return finalizeAreaLightSample(sd, posW, normalW, light.surfaceArea, ls);
+}
+
+/** Samples a distant light source.
+    \param[in] shadingPosW Shading point in world space.
+    \param[in] light Light data.
+    \param[in] u Uniform random numbers.
+    \param[out] ls Light sample struct.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleDistantLight(const Optional<ShadingData> sd, const LightData light, const float4 sceneSphere, const float2 u, out LightSample ls)
+{
+    ls = {};
+    ls.setIsFinite(false);
+    ls.setIsDelta(false);
+
+    // Sample direction.
+    float3 dir = sample_cone(u, light.cosSubtendedAngle);
+    // Transform sampled direction to world space
+    ls.dir = normalize(mul((float3x3)light.transMat, dir));
+
+    ls.origin = computeRayOrigin(sd.value, ls.dir);
+    ls.distance = kMaxLightDistance;
+    ls.cosLight = 1.f;
+
+    // Compute incident radiance at shading point.
+    // A DistantLight's angle defines the solid angle it subtends.
+    // But because the angle is intended to affect penumbra size, but not
+    // perceived brigthness, we treat intensity as radiance.
+    float solidAngle = (float)M_2PI * (1.f - light.cosSubtendedAngle);
+    ls.Li = light.intensity;
+    ls.pdf = 1.f / solidAngle;
+    ls.emitPdf = getSceneSpherePdf(sceneSphere) * ls.pdf;
+    return true;
+}
+
+/** Samples a directional light source.
+    \param[in] shadingPosW Shading point in world space.
+    \param[in] light Light data.
+    \param[out] ls Light sample struct.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleDirectionalLight(const Optional<ShadingData> sd, const LightData light, const float4 sceneSphere, out LightSample ls)
+{
+    ls = {};
+    ls.setIsFinite(false);
+    ls.setIsDelta(true);
+
+    // Setup ray.
+    ls.origin = computeRayOrigin(sd.value, -light.dirW);
+    ls.distance = kMaxLightDistance;
+    ls.dir = -light.dirW;
+
+    // Setup incident radiance. For directional lights there is no falloff or cosine term.
+    ls.Li = light.intensity;
+
+    // For a directional light, the PDF with respect to solid angle is a Dirac function. Set to zero.
+    ls.pdf = 0.f;
+    ls.emitPdf = getSceneSpherePdf(sceneSphere);
+    ls.cosLight = 1.f;
+
+    return true;
+}
+
+/** Samples a point (spot) light.
+    \param[in] shadingPosW Shading point in world space.
+    \param[in] light Light data.
+    \param[out] ls Light sample struct.
+    \return True if a sample was generated, false otherwise.
+*/
+bool samplePointLight(const Optional<ShadingData> sd, const LightData light, out LightSample ls)
+{
+    ls = {};
+    ls.setIsFinite(true);
+    ls.setIsDelta(true);
+
+    // Compute direction and distance to light.
+    // The distance is clamped to a small epsilon to avoid div-by-zero below.
+    float3 toLight = light.posW - sd.value.posW;
+    float distSqr = max(dot(toLight, toLight), kMinLightDistSqr);
+    ls.origin = computeRayOrigin(sd.value, toLight);
+    ls.distance = sqrt(distSqr);
+    ls.dir = toLight / ls.distance;
+
+    // Calculate the falloff for spot-lights.
+    float cosTheta = -dot(ls.dir, light.dirW);
+    float falloff = 1.f;
+    if (cosTheta < light.cosOpeningAngle)
+    {
+        falloff = 0.f;
+    }
+    else if (light.penumbraAngle > 0.f)
+    {
+        float deltaAngle = light.openingAngle - acos(cosTheta);
+        falloff = smoothstep(0.f, light.penumbraAngle, deltaAngle);
+    }
+
+    // Compute incident radiance at shading point.
+    ls.Li = light.intensity * falloff / distSqr;
+
+    // For a point light, the PDF with respect to solid angle is a Dirac function. Set to zero.
+    ls.pdf = 0.f;
+    ls.emitPdf = M_4_PI;
+    ls.cosLight = 1.f;
+
+    return true;
+}
+
+/** Samples an analytic light source.
+    This function calls the correct sampling function depending on the type of light.
+    \param[in] sd Shading point in world space.
+    \param[in] light Light data.
+    \param[in,out] sg Sample generator.
+    \param[out] ls Sampled point on the light and associated sample data, only valid if true is returned.
+    \return True if a sample was generated, false otherwise.
+*/
+bool sampleAnalyticLight(const Optional<ShadingData> sd, const LightData light, const float4 sceneSphere, inout SampleGenerator sg, out LightSample ls)
+{
+    // Sample the light based on its type: point, directional, or area.
+    switch (light.type)
+    {
+    case LightType::Point:
+        return samplePointLight(sd, light, ls);
+    case LightType::Directional:
+        return sampleDirectionalLight(sd, light, sceneSphere, ls);
+    case LightType::Rect:
+        return sampleRectAreaLight(sd, light, sampleNext2D(sg), ls);
+    case LightType::Sphere:
+        return sampleSphereAreaLight(sd, light, sampleNext2D(sg), ls);
+    case LightType::Disc:
+        return sampleDiscAreaLight(sd, light, sampleNext2D(sg), ls);
+    case LightType::Distant:
+        return sampleDistantLight(sd, light, sceneSphere, sampleNext2D(sg), ls);
+    default:
+        ls = {};
+        return false; // Should not happen
+    }
 }
 
 struct LightSampler
@@ -305,9 +487,9 @@ struct LightSampler
     bool generateAnalyticLightSample(const ShadingData vertex, const float4 sceneSphere, inout SampleGenerator sg, out LightSample ls)
     {
         ls = {}; // Default initialization to avoid divergence at returns.
-#if 1
+        #if 0
         return false;
-#else
+        #else
         uint lightCount = gScene.getLightCount();
         if (!kUseAnalyticLights || lightCount == 0) return false;
 
@@ -316,10 +498,13 @@ struct LightSampler
         uint lightIndex = min(uint(sampleNext1D(sg) * lightCount), lightCount - 1);
 
         // Sample local light source.
-        if (!sampleLight(vertex.posW, gScene.getLight(lightIndex), sceneSphere, sg, ls)) return false;
+        if (!sampleAnalyticLight(vertex, gScene.getLight(lightIndex), sceneSphere, sg, ls)) return false;
+
+        ls.pdf     /= lightCount;
+        ls.emitPdf /= lightCount;
 
         return any(ls.Li > 0.f);
-#endif
+        #endif
     }
 
     /** Generates a light sample on the analytic lights.
@@ -331,9 +516,9 @@ struct LightSampler
     bool generateAnalyticLightSample(const float4 sceneSphere, inout SampleGenerator sg, out LightSample ls)
     {
         ls = {}; // Default initialization to avoid divergence at returns.
-#if 1
+        #if 1
         return false;
-#else
+        #else
         uint lightCount = gScene.getLightCount();
         if (!kUseAnalyticLights || lightCount == 0) return false;
 
@@ -342,10 +527,13 @@ struct LightSampler
         uint lightIndex = min(uint(sampleNext1D(sg) * lightCount), lightCount - 1);
 
         // Sample local light source.
-        if (!sampleLight(gScene.getLight(lightIndex), sceneSphere, sg, ls)) return false;
+        if (!sampleAnalyticLight(none, gScene.getLight(lightIndex), sceneSphere, sg, ls)) return false;
+
+        ls.pdf /= lightCount;
+        ls.emitPdf /= lightCount;
 
         return any(ls.Li > 0.f);
-#endif
+        #endif
     }
 
     // ------------------------------------------------------------------------------------------
@@ -359,7 +547,7 @@ struct LightSampler
     {
         // Set relative probabilities of the different sampling techniques.
         // TODO: These should use estimated irradiance from each light type. Using equal probabilities for now.
-        p[0] = kUseEnvLight ? 1.f : 0.f;
+        p[0] = kUseEnvLight       ? 1.f : 0.f;
         p[1] = kUseEmissiveLights ? 1.f : 0.f;
         p[2] = kUseAnalyticLights ? 1.f : 0.f;
 
@@ -373,9 +561,9 @@ struct LightSampler
         p[2] *= invSum;
     }
 
-    float getEnvMapSelectionProbability() { float p[3]; getLightTypeSelectionProbabilities(p); return p[0]; }
+    float getEnvMapSelectionProbability()   { float p[3]; getLightTypeSelectionProbabilities(p); return p[0]; }
     float getEmissiveSelectionProbability() { float p[3]; getLightTypeSelectionProbabilities(p); return p[1]; }
-    float getAnalyicSelectionProbability() { float p[3]; getLightTypeSelectionProbabilities(p); return p[2]; }
+    float getAnalyicSelectionProbability()  { float p[3]; getLightTypeSelectionProbabilities(p); return p[2]; }
 
     /** Select a light type for sampling.
         \param[out] lightType Selected light type.
@@ -426,17 +614,17 @@ struct LightSampler
         if (!selectLightType(lightType, selectionPdf, sg)) return false;
 
         bool valid = false;
-        if (kUseEnvLight && lightType == (uint)LightSampleType::EnvMap)
+        if (kUseEnvLight && lightType == 0)
         {
             valid = generateEnvMapSample(vertex, sceneSphere, sg, ls);
         }
-        if (kUseEmissiveLights && lightType == (uint)LightSampleType::Emissive)
+        if (kUseEmissiveLights && lightType == 1)
         {
             // Emissive light samplers have an option to exclusively sample the upper hemisphere.
             bool upperHemisphere = sampleUpperHemisphere && !sampleLowerHemisphere;
             valid = generateEmissiveSample(vertex, upperHemisphere, sg, ls);
         }
-        if (kUseAnalyticLights && lightType == (uint)LightSampleType::Analytic)
+        if (kUseAnalyticLights && lightType == 2)
         {
             valid = generateAnalyticLightSample(vertex, sceneSphere, sg, ls);
         }
@@ -448,10 +636,10 @@ struct LightSampler
             return false;
 
         // Account for light type selection.
-        ls.setType(lightType);
-        ls.pdf *= selectionPdf;
+        ls.pdf     *= selectionPdf;
         ls.emitPdf *= selectionPdf;
-        ls.Li /= selectionPdf;
+        ls.Li      /= selectionPdf;
+        ls.setIsAnalytic(kUseAnalyticLights && lightType == 2);
 
         return true;
     }
@@ -466,7 +654,7 @@ struct LightSampler
         \param[out] ls Struct describing valid samples.
         \return True if the sample is valid and has nonzero contribution, false otherwise.
     */
-    bool generateLightSample(const float4 sceneSphere, inout SampleGenerator sg, out LightSample ls )
+    bool generateLightSample(const float4 sceneSphere, inout SampleGenerator sg, out LightSample ls)
     {
         ls = {};
 
@@ -475,26 +663,26 @@ struct LightSampler
         if (!selectLightType(lightType, selectionPdf, sg)) return false;
 
         bool valid = false;
-        if (kUseEnvLight && lightType == (uint)LightSampleType::EnvMap)
+        if (kUseEnvLight && lightType == 0)
         {
             valid = generateEnvMapSample(sceneSphere, sg, ls);
         }
-        if (kUseEmissiveLights && lightType == (uint)LightSampleType::Emissive)
+        if (kUseEmissiveLights && lightType == 1)
         {
             // Emissive light samplers have an option to exclusively sample the upper hemisphere.
             valid = generateEmissiveSample(sg, ls);
         }
-        if (kUseAnalyticLights && lightType == (uint)LightSampleType::Analytic)
+        if (kUseAnalyticLights && lightType == 2)
         {
             valid = generateAnalyticLightSample(sceneSphere, sg, ls);
         }
         if (!valid) return false;
 
         // Account for light type selection.
-        ls.setType(lightType);
-        ls.pdf *= selectionPdf;
+        ls.pdf     *= selectionPdf;
         ls.emitPdf *= selectionPdf;
-        ls.Li /= selectionPdf;
+        ls.Li      /= selectionPdf;
+        ls.setIsAnalytic(kUseAnalyticLights && lightType == 2);
 
         return true;
     }

@@ -117,14 +117,14 @@ private:
         // Sampling parameters
         uint32_t    sampleGenerator = SAMPLE_GENERATOR_TINY_UNIFORM; ///< Pseudorandom sample generator type.
         bool        useBSDFSampling = true;                     ///< Use BRDF importance sampling, otherwise cosine-weighted hemisphere sampling.
-        bool        useRussianRoulette = false;                 ///< Use russian roulette to terminate low throughput paths.
+        bool        useRussianRoulette = true;                  ///< Use russian roulette to terminate paths.
         bool        useNEE = true;                              ///< Use next-event estimation (NEE). This enables shadow ray(s) from each path vertex.
         bool        useMIS = true;                              ///< Use multiple importance sampling (MIS) when NEE is enabled.
         bool        useBPT = true;                              ///< Use bidirectional path tracing.
         bool        lightTraceOnly = false;                     ///< Only use light tracing. Disables camera tracing.
         bool        debugBPT = false;                           ///< Output specific paths for debugging BPT.
         bool        debugMIS = false;                           ///< Output MIS weights.
-        MISHeuristic misHeuristic = MISHeuristic::Balance;      ///< MIS heuristic.
+        MISHeuristic misHeuristic = MISHeuristic::PowerTwo;     ///< MIS heuristic.
         float       misPowerExponent = 2.f;                     ///< MIS exponent for the power heuristic. This is only used when 'PowerExp' is chosen.
         EmissiveLightSamplerType emissiveSampler = EmissiveLightSamplerType::Power;  ///< Emissive light sampler to use for NEE.
         bool        useRTXDI = false;                           ///< Use RTXDI for direct illumination.

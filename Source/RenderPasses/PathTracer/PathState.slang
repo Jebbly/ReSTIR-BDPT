@@ -65,6 +65,7 @@ enum class PathFlags
     deltaOnlyPath               = 0x1000,   ///< There was no non-delta events along the path so far.
 
     finiteLight                 = 0x2000,   ///< Whether the light sub-path came from an infinite source.
+    analyticLight               = 0x4000,   ///< Whether the light sub-path came from an analytic light.
 
     // Bits 15 to kPathFlagsBitCount are still unused.
 };
@@ -133,6 +134,7 @@ struct PathState
     bool isDeltaTransmissionPath() { return hasFlag(PathFlags::deltaTransmissionPath); }
     bool isDeltaOnlyPath() { return hasFlag(PathFlags::deltaOnlyPath); }
     bool isFiniteLight() { return hasFlag(PathFlags::finiteLight); }
+    bool isAnalyticLight() { return hasFlag(PathFlags::analyticLight); }
 
     // Check if the scatter event is samplable by the light sampling technique.
     bool isLightSamplable() { return !isDelta(); }
@@ -159,6 +161,7 @@ struct PathState
     [mutating] void setDeltaTransmissionPath(bool value = true) { setFlag(PathFlags::deltaTransmissionPath, value); }
     [mutating] void setDeltaOnlyPath(bool value = true) { setFlag(PathFlags::deltaOnlyPath, value); }
     [mutating] void setFiniteLight(bool value = true) { setFlag(PathFlags::finiteLight, value); }
+    [mutating] void setAnalyticLight(bool value = true) { setFlag(PathFlags::analyticLight, value); }
 
     bool hasFlag(PathFlags flag)
     {
