@@ -84,6 +84,11 @@ struct PathTracerParams
     float   lodBias = 0.f;              ///< LOD bias applied to secondary hits.
     float   specularRoughnessThreshold = 0.25f; ///< Specular reflection events are only classified as specular if the material's roughness value is equal or smaller than this threshold. Otherwise they are classified diffuse.
 
+    uint maxSurfaceBounces      = 10;
+    uint maxDiffuseBounces      = 10;
+    uint maxSpecularBounces     = 10;
+    uint maxTransmissionBounces = 10;
+
     // Runtime values
     uint2   frameDim = { 0, 0 };        ///< Frame dimension in pixels.
     uint2   screenTiles = { 0, 0 };     ///< Number of screen-tiles. Screen tiles may extend outside the frame.

@@ -213,10 +213,10 @@ void PathTracer::parseProperties(const Properties& props)
     {
         // Rendering parameters
         if (key == kSamplesPerPixel) mStaticParams.samplesPerPixel = value;
-        else if (key == kMaxSurfaceBounces) mStaticParams.maxSurfaceBounces = value;
-        else if (key == kMaxDiffuseBounces) mStaticParams.maxDiffuseBounces = value;
-        else if (key == kMaxSpecularBounces) mStaticParams.maxSpecularBounces = value;
-        else if (key == kMaxTransmissionBounces) mStaticParams.maxTransmissionBounces = value;
+        else if (key == kMaxSurfaceBounces) mParams.maxSurfaceBounces = value;
+        else if (key == kMaxDiffuseBounces) mParams.maxDiffuseBounces = value;
+        else if (key == kMaxSpecularBounces) mParams.maxSpecularBounces = value;
+        else if (key == kMaxTransmissionBounces) mParams.maxTransmissionBounces = value;
 
         // Sampling parameters
         else if (key == kSampleGenerator) mStaticParams.sampleGenerator = value;
@@ -259,20 +259,20 @@ void PathTracer::parseProperties(const Properties& props)
     if (props.has(kMaxSurfaceBounces))
     {
         // Initialize bounce counts to 'maxSurfaceBounces' if they weren't explicitly set.
-        if (!props.has(kMaxDiffuseBounces)) mStaticParams.maxDiffuseBounces = mStaticParams.maxSurfaceBounces;
-        if (!props.has(kMaxSpecularBounces)) mStaticParams.maxSpecularBounces = mStaticParams.maxSurfaceBounces;
-        if (!props.has(kMaxTransmissionBounces)) mStaticParams.maxTransmissionBounces = mStaticParams.maxSurfaceBounces;
+        if (!props.has(kMaxDiffuseBounces)) mParams.maxDiffuseBounces = mParams.maxSurfaceBounces;
+        if (!props.has(kMaxSpecularBounces)) mParams.maxSpecularBounces = mParams.maxSurfaceBounces;
+        if (!props.has(kMaxTransmissionBounces)) mParams.maxTransmissionBounces = mParams.maxSurfaceBounces;
     }
     else
     {
         // Initialize surface bounces.
-        mStaticParams.maxSurfaceBounces = std::max(mStaticParams.maxDiffuseBounces, std::max(mStaticParams.maxSpecularBounces, mStaticParams.maxTransmissionBounces));
+        mParams.maxSurfaceBounces = std::max(mParams.maxDiffuseBounces, std::max(mParams.maxSpecularBounces, mParams.maxTransmissionBounces));
     }
 
     bool maxSurfaceBouncesNeedsAdjustment =
-        mStaticParams.maxSurfaceBounces < mStaticParams.maxDiffuseBounces ||
-        mStaticParams.maxSurfaceBounces < mStaticParams.maxSpecularBounces ||
-        mStaticParams.maxSurfaceBounces < mStaticParams.maxTransmissionBounces;
+        mParams.maxSurfaceBounces < mParams.maxDiffuseBounces ||
+        mParams.maxSurfaceBounces < mParams.maxSpecularBounces ||
+        mParams.maxSurfaceBounces < mParams.maxTransmissionBounces;
 
     // Show a warning if maxSurfaceBounces will be adjusted in validateOptions().
     if (props.has(kMaxSurfaceBounces) && maxSurfaceBouncesNeedsAdjustment)
@@ -305,14 +305,14 @@ void PathTracer::validateOptions()
         }
     };
 
-    clampBounces(mStaticParams.maxSurfaceBounces, kMaxSurfaceBounces);
-    clampBounces(mStaticParams.maxDiffuseBounces, kMaxDiffuseBounces);
-    clampBounces(mStaticParams.maxSpecularBounces, kMaxSpecularBounces);
-    clampBounces(mStaticParams.maxTransmissionBounces, kMaxTransmissionBounces);
+    clampBounces(mParams.maxSurfaceBounces, kMaxSurfaceBounces);
+    clampBounces(mParams.maxDiffuseBounces, kMaxDiffuseBounces);
+    clampBounces(mParams.maxSpecularBounces, kMaxSpecularBounces);
+    clampBounces(mParams.maxTransmissionBounces, kMaxTransmissionBounces);
 
     // Make sure maxSurfaceBounces is at least as many as any of diffuse, specular or transmission.
-    uint32_t minSurfaceBounces = std::max(mStaticParams.maxDiffuseBounces, std::max(mStaticParams.maxSpecularBounces, mStaticParams.maxTransmissionBounces));
-    mStaticParams.maxSurfaceBounces = std::max(mStaticParams.maxSurfaceBounces, minSurfaceBounces);
+    uint32_t minSurfaceBounces = std::max(mParams.maxDiffuseBounces, std::max(mParams.maxSpecularBounces, mParams.maxTransmissionBounces));
+    mParams.maxSurfaceBounces = std::max(mParams.maxSurfaceBounces, minSurfaceBounces);
 
     if (mStaticParams.primaryLodMode == TexLODMode::RayCones)
     {
@@ -338,10 +338,10 @@ Properties PathTracer::getProperties() const
 
     // Rendering parameters
     props[kSamplesPerPixel] = mStaticParams.samplesPerPixel;
-    props[kMaxSurfaceBounces] = mStaticParams.maxSurfaceBounces;
-    props[kMaxDiffuseBounces] = mStaticParams.maxDiffuseBounces;
-    props[kMaxSpecularBounces] = mStaticParams.maxSpecularBounces;
-    props[kMaxTransmissionBounces] = mStaticParams.maxTransmissionBounces;
+    props[kMaxSurfaceBounces] = mParams.maxSurfaceBounces;
+    props[kMaxDiffuseBounces] = mParams.maxDiffuseBounces;
+    props[kMaxSpecularBounces] = mParams.maxSpecularBounces;
+    props[kMaxTransmissionBounces] = mParams.maxTransmissionBounces;
 
     // Sampling parameters
     props[kSampleGenerator] = mStaticParams.sampleGenerator;
@@ -521,24 +521,24 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
     widget.tooltip("Number of samples per pixel. One path is traced for each sample.\n\n"
         "When the '" + kInputSampleCount + "' input is connected, the number of samples per pixel is loaded from the texture.");
 
-    if (widget.var("Max surface bounces", mStaticParams.maxSurfaceBounces, 0u, kMaxBounces))
+    if (widget.var("Max surface bounces", mParams.maxSurfaceBounces, 0u, kMaxBounces))
     {
         // Allow users to change the max surface bounce parameter in the UI to clamp all other surface bounce parameters.
-        mStaticParams.maxDiffuseBounces = std::min(mStaticParams.maxDiffuseBounces, mStaticParams.maxSurfaceBounces);
-        mStaticParams.maxSpecularBounces = std::min(mStaticParams.maxSpecularBounces, mStaticParams.maxSurfaceBounces);
-        mStaticParams.maxTransmissionBounces = std::min(mStaticParams.maxTransmissionBounces, mStaticParams.maxSurfaceBounces);
+        mParams.maxDiffuseBounces = std::min(mParams.maxDiffuseBounces, mParams.maxSurfaceBounces);
+        mParams.maxSpecularBounces = std::min(mParams.maxSpecularBounces, mParams.maxSurfaceBounces);
+        mParams.maxTransmissionBounces = std::min(mParams.maxTransmissionBounces, mParams.maxSurfaceBounces);
         dirty = true;
     }
     widget.tooltip("Maximum number of surface bounces (diffuse + specular + transmission).\n"
         "Note that specular reflection events from a material with a roughness greater than specularRoughnessThreshold are also classified as diffuse events.");
 
-    dirty |= widget.var("Max diffuse bounces", mStaticParams.maxDiffuseBounces, 0u, kMaxBounces);
+    dirty |= widget.var("Max diffuse bounces", mParams.maxDiffuseBounces, 0u, kMaxBounces);
     widget.tooltip("Maximum number of diffuse bounces.\n0 = direct only\n1 = one indirect bounce etc.");
 
-    dirty |= widget.var("Max specular bounces", mStaticParams.maxSpecularBounces, 0u, kMaxBounces);
+    dirty |= widget.var("Max specular bounces", mParams.maxSpecularBounces, 0u, kMaxBounces);
     widget.tooltip("Maximum number of specular bounces.\n0 = direct only\n1 = one indirect bounce etc.");
 
-    dirty |= widget.var("Max transmission bounces", mStaticParams.maxTransmissionBounces, 0u, kMaxBounces);
+    dirty |= widget.var("Max transmission bounces", mParams.maxTransmissionBounces, 0u, kMaxBounces);
     widget.tooltip("Maximum number of transmission bounces.\n0 = no transmission\n1 = one transmission bounce etc.");
 
     // Sampling options.
@@ -754,7 +754,7 @@ PathTracer::TracePass::TracePass(ref<Device> pDevice, const std::string& name, c
     desc.addShaderLibrary(kTracePassFilename);
     if (pDevice->getType() == Device::Type::D3D12 && useSER)
         desc.addCompilerArguments({ "-Xdxc", "-enable-lifetime-markers" });
-    desc.setMaxPayloadSize(176); // This is conservative but the required minimum is 140 bytes.
+    desc.setMaxPayloadSize(208); // This is conservative but the required minimum is 192 bytes.
     desc.setMaxAttributeSize(pScene->getRaytracingMaxAttributeSize());
     desc.setMaxTraceRecursionDepth(1);
     if (!pScene->hasProceduralGeometry()) desc.setRtPipelineFlags(RtPipelineFlags::SkipProceduralPrimitives);
@@ -926,7 +926,7 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
             mVarsChanged = true;
         }
 
-        const size_t lightVertexCount = mParams.lightSubpathCount * std::max(1u, mStaticParams.maxSurfaceBounces);
+        const size_t lightVertexCount = mParams.lightSubpathCount * std::max(1u, mParams.maxSurfaceBounces);
         if (!mpLightVertices || mpLightVertices->getElementCount() != lightVertexCount || mVarsChanged)
         {
             mpLightVertices    = mpDevice->createStructuredBuffer(var["pathTracer"]["lightVertices"], lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
@@ -1475,10 +1475,6 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
 
     // Path tracer configuration.
     defines.add("SAMPLES_PER_PIXEL", (owner.mFixedSampleCount ? std::to_string(samplesPerPixel) : "0")); // 0 indicates a variable sample count
-    defines.add("MAX_SURFACE_BOUNCES", std::to_string(maxSurfaceBounces));
-    defines.add("MAX_DIFFUSE_BOUNCES", std::to_string(maxDiffuseBounces));
-    defines.add("MAX_SPECULAR_BOUNCES", std::to_string(maxSpecularBounces));
-    defines.add("MAX_TRANSMISSON_BOUNCES", std::to_string(maxTransmissionBounces));
     defines.add("ADJUST_SHADING_NORMALS", adjustShadingNormals ? "1" : "0");
     defines.add("USE_BSDF_SAMPLING", useBSDFSampling ? "1" : "0");
     defines.add("USE_NEE", (useBPT || useNEE) ? "1" : "0");

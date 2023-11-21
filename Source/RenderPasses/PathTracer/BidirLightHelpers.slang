@@ -361,6 +361,9 @@ struct LightSampler
 
         if (!kUseEnvLight) return false;
 
+        ls.setIsDelta(false);
+        ls.setIsFinite(false);
+
         // Sample environment map.
         EnvMapSample lightSample;
         if (!envMapSampler.sample(sampleNext2D(sg), lightSample)) return false;
@@ -373,8 +376,6 @@ struct LightSampler
         ls.emitPdf = lightSample.pdf * getSceneSpherePdf(sceneSphere);
         ls.Li = lightSample.pdf > 0.f ? lightSample.Le / lightSample.pdf : float3(0);
         ls.cosLight = 1.f;
-        ls.setIsDelta(false);
-        ls.setIsFinite(false);
 
         return any(ls.Li > 0.f);
     }
@@ -391,6 +392,9 @@ struct LightSampler
 
         if (!kUseEnvLight) return false;
 
+        ls.setIsDelta(false);
+        ls.setIsFinite(false);
+
         // Sample environment map.
         EnvMapSample lightSample;
         if (!envMapSampler.sample(sampleNext2D(sg), lightSample)) return false;
@@ -403,8 +407,6 @@ struct LightSampler
         ls.emitPdf = ls.pdf * getSceneSpherePdf(sceneSphere);
         ls.Li = ls.emitPdf > 0.f ? lightSample.Le / ls.emitPdf : float3(0);
         ls.cosLight = 1.f;
-        ls.setIsDelta(false);
-        ls.setIsFinite(false);
 
         return any(ls.Li > 0.f);
     }
@@ -428,6 +430,9 @@ struct LightSampler
         TriangleLightSample tls;
         if (!emissiveSampler.sampleLight(vertex.posW, vertex.getOrientedFaceNormal(), upperHemisphere, sg, tls)) return false;
 
+        ls.setIsDelta(false);
+        ls.setIsFinite(true);
+
         // Setup returned sample.
         ls.Li = tls.pdf > 0.f ? tls.Le / tls.pdf : float3(0);
         ls.pdf = tls.pdf;
@@ -439,8 +444,6 @@ struct LightSampler
         float3 toLight = lightPos - ls.origin;
         ls.distance = length(toLight);
         ls.dir = normalize(toLight);
-        ls.setIsDelta(false);
-        ls.setIsFinite(true);
 
         return any(ls.Li > 0.f);
     }
@@ -458,6 +461,9 @@ struct LightSampler
         TriangleLightSample tls;
         if (!emissiveSampler.sampleLight(sg, tls)) return false;
 
+        ls.setIsDelta(false);
+        ls.setIsFinite(true);
+
         // Setup returned sample.
         ls.Li = tls.pdf > 0.f ? tls.Le / tls.emitPdf : float3(0);
         ls.pdf = tls.pdf;
@@ -467,8 +473,6 @@ struct LightSampler
         ls.origin = computeRayOrigin(tls.posW, tls.normalW);
         ls.distance = kMaxLightDistance;
         ls.dir = tls.dir;
-        ls.setIsDelta(false);
-        ls.setIsFinite(true);
 
         return any(ls.Li > 0.f);
     }
@@ -487,9 +491,7 @@ struct LightSampler
     bool generateAnalyticLightSample(const ShadingData vertex, const float4 sceneSphere, inout SampleGenerator sg, out LightSample ls)
     {
         ls = {}; // Default initialization to avoid divergence at returns.
-        #if 0
-        return false;
-        #else
+
         uint lightCount = gScene.getLightCount();
         if (!kUseAnalyticLights || lightCount == 0) return false;
 
@@ -504,7 +506,6 @@ struct LightSampler
         ls.emitPdf /= lightCount;
 
         return any(ls.Li > 0.f);
-        #endif
     }
 
     /** Generates a light sample on the analytic lights.

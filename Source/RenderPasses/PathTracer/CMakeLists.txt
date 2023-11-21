@@ -1,6 +1,7 @@
 add_plugin(PathTracer)
 
 target_sources(PathTracer PRIVATE
+    BidirLightHelpers.slang
     ColorType.slang
     GeneratePaths.cs.slang
     GuideData.slang

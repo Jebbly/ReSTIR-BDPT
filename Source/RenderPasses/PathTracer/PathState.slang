@@ -95,15 +95,17 @@ struct PathState
     // Scatter ray
     float3      origin;                 ///< Origin of the scatter ray.
     float3      dir;                    ///< Scatter ray normalized direction.
-    float       pdf;                    ///< Pdf for generating the scatter ray.
-    float3      normal;                 ///< Shading normal at the scatter ray origin.
+    float       pathPdf;                ///< Pdf for generating the path.
+    float3      normal;                 ///< Geometry normal at the scatter ray origin.
     HitInfo     hit;                    ///< Hit information for the scatter ray. This is populated at committed triangle hits.
 
     float3      thp;                    ///< Path throughput.
-    float3      L;                      ///< Accumulated path contribution.
+    float3      L;                      ///< Radiance of the selected sample.
 
-    float dVCM;                         ///< Partial MIS quantities, used to compute MIS weights.
-    float dVC;                          ///< Partial MIS quantities, used to compute MIS weights.
+    float       W;                      ///< Reservoir weight.
+    float       dVCM;                   ///< Partial MIS quantities, used to compute MIS weights.
+    float       dVC;                    ///< Partial MIS quantities, used to compute MIS weights.
+    float       dVM;                    ///< Partial MIS quantities, used to compute MIS weights.
 
     GuideData   guideData;              ///< Denoiser guide data.
     InteriorList interiorList;          ///< Interior list. Keeping track of a stack of materials with medium properties.

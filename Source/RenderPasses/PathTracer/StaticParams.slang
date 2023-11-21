@@ -38,10 +38,6 @@ __exported import Rendering.Materials.TexLODTypes;
 
 static const uint kUseViewDir = USE_VIEW_DIR;
 static const uint kSamplesPerPixel = SAMPLES_PER_PIXEL;
-static const uint kMaxSurfaceBounces = MAX_SURFACE_BOUNCES;
-static const uint kMaxDiffuseBounces = MAX_DIFFUSE_BOUNCES;
-static const uint kMaxSpecularBounces = MAX_SPECULAR_BOUNCES;
-static const uint kMaxTransmissionBounces = MAX_TRANSMISSON_BOUNCES;
 static const bool kAdjustShadingNormals = ADJUST_SHADING_NORMALS;
 static const bool kUseBSDFSampling = USE_BSDF_SAMPLING;
 static const bool kUseNEE = USE_NEE;

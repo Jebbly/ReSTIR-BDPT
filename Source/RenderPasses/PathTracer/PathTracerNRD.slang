@@ -87,7 +87,7 @@ extension PathTracer
             float primaryHitDist = length(sd.posW - path.origin);
             path.sceneLength += float16_t(primaryHitDist);
             // Hijack pdf that we don't need.
-            path.pdf += primaryHitDist;
+            path.pathPdf += primaryHitDist;
 
             // Set the active lobes only to delta reflection on the first bounce.
             sd.mtl.setActiveLobes((uint)LobeType::DeltaReflection);
@@ -107,7 +107,7 @@ extension PathTracer
             {
                 const float3 emission = path.L;
                 const float3 reflectance = getMaterialReflectanceForDeltaPaths(materialType, hasDeltaLobes, sd, bsdfProperties);
-                const float primaryHitDist = path.pdf;
+                const float primaryHitDist = path.pathPdf;
                 const float hitDist = float(path.sceneLength) - primaryHitDist;
                 writeNRDDeltaReflectionGuideBuffers(outputNRD, kUseNRDDemodulation, pixel, reflectance, emission, bsdfProperties.guideNormal, bsdfProperties.roughness, float(path.sceneLength), hitDist);
 
@@ -132,12 +132,12 @@ extension PathTracer
         path.origin = sd.computeRayOrigin();
 
         // Hijack pdf that we don't need.
-        float primaryHitDist = path.pdf;
+        float primaryHitDist = path.pathPdf;
 
         // Generate the next path segment or terminate.
         bool valid = generateScatterRay(sd, mi, path);
 
-        path.pdf = primaryHitDist;
+        path.pathPdf = primaryHitDist;
 
         if (!valid)
         {
@@ -163,7 +163,7 @@ extension PathTracer
             {
                 const float3 emission = path.L;
                 const float3 reflectance = getMaterialReflectanceForDeltaPaths(materialType, hasDeltaLobes, sd, bsdfProperties);
-                const float primaryHitDist = path.pdf;
+                const float primaryHitDist = path.pathPdf;
                 const float hitDist = float(path.sceneLength) - primaryHitDist;
                 writeNRDDeltaReflectionGuideBuffers(outputNRD, kUseNRDDemodulation, pixel, reflectance, emission, bsdfProperties.guideNormal, bsdfProperties.roughness, float(path.sceneLength), hitDist);
 
