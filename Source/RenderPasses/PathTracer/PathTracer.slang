@@ -584,7 +584,7 @@ struct PathTracer
         {
             const float cosOut = abs(dot(path.dir, path.normal));
 
-            if (isDeltaLobe || result.pdf <= 0.f)
+            if (isDeltaLobe)
             {
                 path.dVCM = 0.f;
                 path.dVC *= evalMIS(1.f, cosOut);
@@ -599,8 +599,8 @@ struct PathTracer
                 else
                     revPdf = evalRevScatterPdf(sd, mi, path.dir) * contProb;
 
-                path.dVCM = evalMIS(1.f, 1.f / fwdPdf);
                 path.dVC  = evalMIS(1.f, cosOut / fwdPdf) * (path.dVC * evalMIS(1.f, revPdf) + path.dVCM + getMisVmWeightFactor());
+                path.dVCM = evalMIS(1.f, 1.f / fwdPdf);
             }
         }
 
@@ -1006,7 +1006,7 @@ struct PathTracer
         {
             if (!kTraceFromLight || !isPrimaryHit || path.isFiniteLight())
                 path.dVCM *= evalMIS(1.f, hitDist * hitDist);
-            const float invCos = 1.f / max(kMinCosTheta, abs(dot(sd.V, sd.faceN)));
+            const float invCos = 1.f / abs(dot(sd.V, sd.faceN));
             path.dVCM *= evalMIS(1.f, invCos);
             path.dVC  *= evalMIS(1.f, invCos);
             path.dVM  *= evalMIS(1.f, invCos);
