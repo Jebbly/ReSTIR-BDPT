@@ -752,51 +752,10 @@ struct PathTracer
      * @param[in] sd Shading data.
      * @param[in] mi Material instance.
      * @param[in,out] path PathState object.
-     * @param[in] lightVertex light subpath vertex to merge with.
-     */
-    void mergeWithLightSubpath(const ShadingData sd, const IMaterialInstance mi, inout PathState path, const LightSubpathVertex lightVertex, const float weight = 1.f)
-    {
-        if ((path.getVertexIndex() + lightVertex.vertexIndex) - 1 > params.maxSurfaceBounces)
-            return;
-
-        if (length(sd.posW - lightVertex.getPosW()) >= params.mergeRadius)
-            return;
-
-        const float3 dir = -lightVertex.rayDirection;
-        const float cosCamera = dot(dir, sd.getOrientedFaceNormal());
-
-        // Reject sample if not in the hemisphere of a BSDF lobe.
-        const uint lobeTypes = mi.getLobeTypes(sd);
-        const bool hasReflection   = lobeTypes & uint(LobeType::Reflection);
-        const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
-        if ((cosCamera <= kMinCosTheta && !hasTransmission) || (cosCamera >= -kMinCosTheta && !hasReflection))
-            return;
-
-        // evaluate bsdf at camera vertex
-        const float3 f = mi.eval(sd, dir, path.sg) * lightVertex.L * weight / getEtaVCM();
-        if (!any(f > 0)) return;
-
-        const float cameraBsdfFwdPdfW = mi.evalPdf(sd, dir, kUseBSDFSampling);
-        const float cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, dir);
-
-        // evaluate MIS weight
-        const float wLight = lightVertex.dVCM * getMisVcWeightFactor() + lightVertex.dVM * evalMIS(1.f, cameraBsdfFwdPdfW);
-        const float wCamera = path.dVCM * getMisVcWeightFactor() + path.dVM * evalMIS(1.f, cameraBsdfRevPdfW);
-        const float misWeight = 1.f / (wLight + 1.f + wCamera);
-
-        addToPathContribution(path, f, misWeight, lightVertex.vertexIndex+1);
-    }
-
-    /**
-     * Evaluates the indirect illumination by merging with a random light subpath vertex.
-     * This function samples a light vertex uniformly from lightVertices.
-     * @param[in] sd Shading data.
-     * @param[in] mi Material instance.
-     * @param[in,out] path PathState object.
      */
     void mergeWithLightSubpaths(const ShadingData sd, const IMaterialInstance mi, inout PathState path)
     {
-        int3 o = int3(lerp(float3(0, 0, 0), float3(-1, -1, -1), float3(frac(sd.posW / (2.f * params.mergeRadius)) < 0.5f)));
+        const int3 o = int3(lerp(float3(0, 0, 0), float3(-1, -1, -1), float3(frac(sd.posW / (2.f * params.mergeRadius)) < 0.5f)));
         for (int x = 0; x < 2; x++)
         {
             for (int y = 0; y < 2; y++)
@@ -807,12 +766,41 @@ struct PathTracer
                     if (cellIndex == -1)
                         continue;
 
-                    const uint offset = photonMap.getCellDataOffset(cellIndex);
                     const uint count  = photonMap.getCellDataSize(cellIndex);
                     if (count == 0)
                         continue;
 
-                    mergeWithLightSubpath(sd, mi, path, lightVertexCache[offset], count);
+                    const LightSubpathVertex lightVertex = lightVertexCache[photonMap.getCellDataOffset(cellIndex)];
+
+                    if ((path.getVertexIndex() + lightVertex.vertexIndex) - 1 > params.maxSurfaceBounces)
+                        continue;
+
+                    if (length(sd.posW - lightVertex.getPosW()) >= params.mergeRadius)
+                        continue;
+
+                    const float3 dir = -lightVertex.rayDirection;
+                    const float cosCamera = dot(dir, sd.getOrientedFaceNormal());
+
+                    // Reject sample if not in the hemisphere of a BSDF lobe.
+                    const uint lobeTypes = mi.getLobeTypes(sd);
+                    const bool hasReflection = lobeTypes & uint(LobeType::Reflection);
+                    const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
+                    if ((cosCamera <= kMinCosTheta && !hasTransmission) || (cosCamera >= -kMinCosTheta && !hasReflection))
+                        continue;
+
+                    // evaluate bsdf at camera vertex
+                    const float3 f = mi.eval(sd, dir, path.sg) * lightVertex.L * count / getEtaVCM();
+                    if (!any(f > 0)) continue;
+
+                    const float cameraBsdfFwdPdfW = mi.evalPdf(sd, dir, kUseBSDFSampling);
+                    const float cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, dir);
+
+                    // evaluate MIS weight
+                    const float wLight = lightVertex.dVCM * getMisVcWeightFactor() + lightVertex.dVM * evalMIS(1.f, cameraBsdfFwdPdfW);
+                    const float wCamera = path.dVCM * getMisVcWeightFactor() + path.dVM * evalMIS(1.f, cameraBsdfRevPdfW);
+                    const float misWeight = 1.f / (wLight + 1.f + wCamera);
+
+                    addToPathContribution(path, f, misWeight, lightVertex.vertexIndex + 1);
                 }
             }
         }
