@@ -37,6 +37,7 @@ import PathTracer;
 import PathState;
 import ColorType;
 import Params;
+import PhotonMap;
 
 // Shared memory variables.
 // TODO: Can we declare these inside PathGenerator?
@@ -81,6 +82,9 @@ struct PathGenerator
     RWByteAddressBuffer lightImage;                 ///< Input light traced image. Only valid when kUseBPT == true. Added to the output when kSamplesPerPixel == 1.
     RWByteAddressBuffer lightVertices;              ///< Diffuse light sub-path vertices.
     RWByteAddressBuffer lightVertexCount;           ///< Number of items in lightVertices.
+
+    LightVertexCache lightVertexCache;              ///< Light vertex cache.
+    PhotonMap photonMap;                            ///< Photon map.
 
     // Render settings that depend on the scene.
     // TODO: Move into scene defines.

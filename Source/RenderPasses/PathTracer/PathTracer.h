@@ -102,6 +102,7 @@ private:
     void generatePaths(RenderContext* pRenderContext, const RenderData& renderData);
     void tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass, const uint2 dispatchDims);
     void resolvePass(RenderContext* pRenderContext, const RenderData& renderData);
+    void buildPhotonMap(RenderContext* pRenderContext, const RenderData& renderData);
 
     /** Static configuration. Changing any of these options require shader recompilation.
     */
@@ -116,7 +117,8 @@ private:
         bool        useRussianRoulette = true;                  ///< Use russian roulette to terminate paths.
         bool        useNEE = true;                              ///< Use next-event estimation (NEE). This enables shadow ray(s) from each path vertex.
         bool        useMIS = true;                              ///< Use multiple importance sampling (MIS) when NEE is enabled.
-        bool        useBPT = true;                              ///< Use bidirectional path tracing.
+        bool        useBPT = true;                              ///< Use bidirectional path tracing. Automatically enables NEE and MIS.
+        bool        useVM  = true;                              ///< Use vertex merging when using BPT.
         bool        lightTraceOnly = false;                     ///< Only use light tracing. Disables camera tracing.
         bool        debugBPT = false;                           ///< Output specific paths for debugging BPT.
         bool        debugMIS = false;                           ///< Output MIS weights.
@@ -179,6 +181,8 @@ private:
 
     ref<ComputePass>                mpGeneratePaths;            ///< Fullscreen compute pass generating paths starting at primary hits.
     ref<ComputePass>                mpResolvePass;              ///< Sample resolve pass.
+    ref<ComputePass>                mpComputePhotonOffsetsPass; ///< Compute photon offsets pass.
+    ref<ComputePass>                mpSortPhotonsPass;          ///< Sort photons pass.
     ref<ComputePass>                mpReflectTypes;             ///< Helper for reflecting structured buffer types.
 
     std::unique_ptr<TracePass>      mpTracePass;                ///< Main trace pass.
@@ -190,6 +194,11 @@ private:
     ref<Buffer>                     mpLightImage;               ///< Light trace image. Light subpath contributions are atomically added to this.
     ref<Buffer>                     mpLightVertices;            ///< Light sub-path vertices.
     ref<Buffer>                     mpLightVertexCount;         ///< Light vertex counter.
+    ref<Buffer>                     mpLightVertexIndices;       ///< Photon grid cell data indices, for sorting.
+    ref<Buffer>                     mpPhotonCellChecksums;      ///< Photon grid cell checksums.
+    ref<Buffer>                     mpPhotonCellSizes;          ///< Photon grid cell sizes.
+    ref<Buffer>                     mpPhotonCellOffsets;        ///< Photon grid cell offsets.
+    ref<Buffer>                     mpPhotonCellData;           ///< Photon grid cell data.
     ref<Buffer>                     mpSampleColor;              ///< Compact per-sample color buffer. This is used only if spp > 1.
     ref<Buffer>                     mpSampleGuideData;          ///< Compact per-sample denoiser guide data.
     ref<Buffer>                     mpSampleNRDRadiance;        ///< Compact per-sample NRD radiance data.

@@ -35,6 +35,7 @@ namespace
     const std::string kGeneratePathsFilename = "RenderPasses/PathTracer/GeneratePaths.cs.slang";
     const std::string kTracePassFilename = "RenderPasses/PathTracer/TracePass.rt.slang";
     const std::string kResolvePassFilename = "RenderPasses/PathTracer/ResolvePass.cs.slang";
+    const std::string kBuildPhotonMapPassFilename = "RenderPasses/PathTracer/BuildPhotonMapPass.cs.slang";
     const std::string kReflectTypesFile = "RenderPasses/PathTracer/ReflectTypes.cs.slang";
 
     // Render pass inputs and outputs.
@@ -122,6 +123,8 @@ namespace
     const std::string kUseRussianRoulette = "useRussianRoulette";
     const std::string kUseNEE = "useNEE";
     const std::string kUseMIS = "useMIS";
+    const std::string kUseBPT = "useBPT";
+    const std::string kUseVM  = "useVM";
     const std::string kMISHeuristic = "misHeuristic";
     const std::string kMISPowerExponent = "misPowerExponent";
     const std::string kEmissiveSampler = "emissiveSampler";
@@ -225,6 +228,8 @@ void PathTracer::parseProperties(const Properties& props)
         else if (key == kUseRussianRoulette) mStaticParams.useRussianRoulette = value;
         else if (key == kUseNEE) mStaticParams.useNEE = value;
         else if (key == kUseMIS) mStaticParams.useMIS = value;
+        else if (key == kUseBPT) mStaticParams.useBPT = value;
+        else if (key == kUseVM) mStaticParams.useVM = value;
         else if (key == kMISHeuristic) mStaticParams.misHeuristic = value;
         else if (key == kMISPowerExponent) mStaticParams.misPowerExponent = value;
         else if (key == kEmissiveSampler) mStaticParams.emissiveSampler = value;
@@ -350,6 +355,8 @@ Properties PathTracer::getProperties() const
     props[kUseRussianRoulette] = mStaticParams.useRussianRoulette;
     props[kUseNEE] = mStaticParams.useNEE;
     props[kUseMIS] = mStaticParams.useMIS;
+    props[kUseBPT] = mStaticParams.useBPT;
+    props[kUseVM] = mStaticParams.useVM;
     props[kMISHeuristic] = mStaticParams.misHeuristic;
     props[kMISPowerExponent] = mStaticParams.misPowerExponent;
     props[kEmissiveSampler] = mStaticParams.emissiveSampler;
@@ -457,9 +464,21 @@ void PathTracer::execute(RenderContext* pRenderContext, const RenderData& render
         // clear the light image
         pRenderContext->clearUAV(mpLightImage->getUAV().get(), float4(0.f));
         pRenderContext->clearUAV(mpLightVertexCount->getUAV().get(), uint4(0.f));
+        if (mStaticParams.useVM)
+        {
+            pRenderContext->clearUAV(mpPhotonCellChecksums->getUAV().get(), uint4(0.f));
+            pRenderContext->clearUAV(mpPhotonCellSizes->getUAV().get(), uint4(0.f));
+            pRenderContext->clearUAV(mpPhotonCellOffsets->getUAV().get(), uint4(0.f));
+        }
 
         FALCOR_ASSERT(mpLightTracePass);
         tracePass(pRenderContext, renderData, *mpLightTracePass, uint2(mParams.frameDim.x, (mParams.lightSubpathCount + mParams.frameDim.x-1) / mParams.frameDim.x));
+
+        // Build photon hash grid
+        if (mStaticParams.useVM)
+        {
+            buildPhotonMap(pRenderContext, renderData);
+        }
     }
 
     // Generate paths at primary hits.
@@ -566,41 +585,45 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
 
     if (mStaticParams.useBPT)
     {
+        dirty |= widget.var("Light sub-path count", mParams.lightSubpathCount, 1u, 16000000u);
+        widget.tooltip("Number of light sub-paths to trace when BPT is enabled.");
+
         dirty |= widget.checkbox("Light trace only", mStaticParams.lightTraceOnly);
         widget.tooltip("Only use light tracing.\nThis option disables tracing paths from the camera.");
+
+        dirty |= widget.checkbox("Vertex merging (VM)", mStaticParams.useVM);
+        widget.tooltip("Enable vertex merging.");
+
+        if (mStaticParams.useVM)
+        {
+            dirty |= widget.var("Vertex merge radius", mParams.mergeRadius, 1e-9f, 1.f);
+            widget.tooltip("Photon radius.");
+
+            dirty |= widget.var("Hash grid cells", mParams.cellCount, 1000u, 16000000u);
+            widget.tooltip("Number of cells in the photon hash grid.");
+        }
     }
     else
     {
         dirty |= widget.checkbox("Next-event estimation (NEE)", mStaticParams.useNEE);
         widget.tooltip("Use next-event estimation.\nThis option enables direct illumination sampling at each path vertex.");
-    }
 
-    if (mStaticParams.useNEE || mStaticParams.useBPT)
-    {
-        // BPT always uses MIS
-        if (!mStaticParams.useBPT)
+        if (mStaticParams.useNEE)
         {
             dirty |= widget.checkbox("Multiple importance sampling (MIS)", mStaticParams.useMIS);
             widget.tooltip("When enabled, BSDF sampling is combined with light sampling for the environment map and emissive lights.\n"
                 "Note that MIS has currently no effect on analytic lights.");
         }
-
-        if (mStaticParams.useMIS || mStaticParams.useBPT)
-        {
-            dirty |= widget.dropdown("MIS heuristic", mStaticParams.misHeuristic);
-
-            if (mStaticParams.misHeuristic == MISHeuristic::PowerExp)
-            {
-                dirty |= widget.var("MIS power exponent", mStaticParams.misPowerExponent, 0.01f, 10.f);
-            }
-
-        }
     }
 
-    if (mStaticParams.useBPT)
+    if ((mStaticParams.useNEE && mStaticParams.useMIS) || mStaticParams.useBPT)
     {
-        dirty |= widget.var("Light sub-path count", mParams.lightSubpathCount, 1u, 10000000u);
-        widget.tooltip("Number of light sub-paths to trace when BPT is enabled.");
+        dirty |= widget.dropdown("MIS heuristic", mStaticParams.misHeuristic);
+
+        if (mStaticParams.misHeuristic == MISHeuristic::PowerExp)
+        {
+            dirty |= widget.var("MIS power exponent", mStaticParams.misPowerExponent, 0.01f, 10.f);
+        }
     }
 
     if ((mStaticParams.useNEE || mStaticParams.useBPT) && mpScene && mpScene->useEmissiveLights())
@@ -887,6 +910,20 @@ void PathTracer::updatePrograms()
         desc.addShaderLibrary(kReflectTypesFile).csEntry("main");
         mpReflectTypes = ComputePass::create(mpDevice, desc, defines, false);
     }
+    if (!mpComputePhotonOffsetsPass)
+    {
+        ProgramDesc desc = baseDesc;
+        desc.addShaderLibrary(kBuildPhotonMapPassFilename).csEntry("main");
+        mpComputePhotonOffsetsPass = ComputePass::create(mpDevice, desc, defines, false);
+    }
+    if (!mpSortPhotonsPass)
+    {
+        ProgramDesc desc = baseDesc;
+        desc.addShaderLibrary(kBuildPhotonMapPassFilename).csEntry("main");
+        Falcor::DefineList tmpDefs = defines;
+        tmpDefs.add("SORT_PASS");
+        mpSortPhotonsPass = ComputePass::create(mpDevice, desc, tmpDefs, false);
+    }
 
     auto preparePass = [&](ref<ComputePass> pass)
     {
@@ -900,6 +937,9 @@ void PathTracer::updatePrograms()
     preparePass(mpGeneratePaths);
     preparePass(mpResolvePass);
     preparePass(mpReflectTypes);
+    preparePass(mpComputePhotonOffsetsPass);
+    defines.add("SORT_PASS");
+    preparePass(mpSortPhotonsPass);
 
     mVarsChanged = true;
     mRecompile = false;
@@ -915,6 +955,7 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
     const uint32_t sampleCount = tileCount * kScreenTileDim.x * kScreenTileDim.y * spp;
     const uint32_t screenPixelCount = mParams.frameDim.x * mParams.frameDim.y;
     const uint32_t pathCount = screenPixelCount * spp;
+    const size_t lightVertexCount = mParams.lightSubpathCount * std::max(1u, mParams.maxSurfaceBounces);
 
     auto var = mpReflectTypes->getRootVar();
 
@@ -926,11 +967,20 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
             mVarsChanged = true;
         }
 
-        const size_t lightVertexCount = mParams.lightSubpathCount * std::max(1u, mParams.maxSurfaceBounces);
         if (!mpLightVertices || mpLightVertices->getElementCount() != lightVertexCount || mVarsChanged)
         {
-            mpLightVertices    = mpDevice->createStructuredBuffer(var["pathTracer"]["lightVertices"], lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-            mpLightVertexCount = mpDevice->createBuffer(16, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpLightVertices    = mpDevice->createStructuredBuffer(var["pathTracer"]["lightVertexCache"]["lightVertices"], lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpLightVertexCount = mpDevice->createStructuredBuffer(var["pathTracer"]["lightVertexCache"]["lightVertexCount"], 2, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpPhotonCellData      = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellData"],    lightVertexCount,  ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpLightVertexIndices  = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["dataIndices"], lightVertexCount,  ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mVarsChanged = true;
+        }
+
+        if (!mpPhotonCellChecksums || mpPhotonCellChecksums->getElementCount() != mParams.cellCount || mVarsChanged)
+        {
+            mpPhotonCellChecksums = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellChecksums"]  , mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpPhotonCellSizes     = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellSizes"]      , mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpPhotonCellOffsets   = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellDataOffsets"], mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
             mVarsChanged = true;
         }
     }
@@ -1167,9 +1217,16 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["sampleOffset"] = mpSampleOffset; // Can be nullptr
         var["sampleColor"] = mpSampleColor;
         var["sampleGuideData"] = mpSampleGuideData;
+
         var["lightImage"] = mpLightImage;
-        var["lightVertices"] = mpLightVertices;
-        var["lightVertexCount"] = mpLightVertexCount;
+        var["lightVertexCache"]["lightVertices"] = mpLightVertices;
+        var["lightVertexCache"]["lightVertexCount"] = mpLightVertexCount;
+
+        var["photonMap"]["dataIndices"]     = mpLightVertexIndices;
+        var["photonMap"]["cellChecksums"]   = mpPhotonCellChecksums;
+        var["photonMap"]["cellSizes"]       = mpPhotonCellSizes;
+        var["photonMap"]["cellDataOffsets"] = mpPhotonCellOffsets;
+        var["photonMap"]["cellData"]        = mpPhotonCellData;
     }
 
     // Bind runtime data.
@@ -1469,6 +1526,56 @@ void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& re
     mpResolvePass->execute(pRenderContext, { mParams.frameDim, 1u });
 }
 
+void PathTracer::buildPhotonMap(RenderContext* pRenderContext, const RenderData& renderData)
+{
+    if (!mStaticParams.useBPT || !mStaticParams.useVM) return;
+
+    FALCOR_PROFILE(pRenderContext, "buildPhotonMap");
+
+    const size_t lightVertexCount = mParams.lightSubpathCount * std::max(1u, mParams.maxSurfaceBounces);
+    {
+        // Bind resources.
+        auto var = mpComputePhotonOffsetsPass->getRootVar()["CB"]["gBuildPass"];
+        var["params"].setBlob(mParams);
+
+        if (mVarsChanged)
+        {
+            var["photonMap"]["cellData"] = mpPhotonCellData;
+            var["photonMap"]["dataIndices"] = mpLightVertexIndices;
+            var["photonMap"]["cellChecksums"] = mpPhotonCellChecksums;
+            var["photonMap"]["cellSizes"] = mpPhotonCellSizes;
+            var["photonMap"]["cellDataOffsets"] = mpPhotonCellOffsets;
+
+            var["lightVertexCache"]["lightVertices"] = mpLightVertices;
+            var["lightVertexCache"]["lightVertexCount"] = mpLightVertexCount;
+        }
+
+        // Launch one thread per cell.
+        mpComputePhotonOffsetsPass->execute(pRenderContext, { 4096u, (mParams.cellCount + 4095u)/4096u, 1u });
+    }
+
+    {
+        // Bind resources.
+        auto var = mpSortPhotonsPass->getRootVar()["CB"]["gBuildPass"];
+        var["params"].setBlob(mParams);
+
+        if (mVarsChanged)
+        {
+            var["photonMap"]["cellData"] = mpPhotonCellData;
+            var["photonMap"]["dataIndices"] = mpLightVertexIndices;
+            var["photonMap"]["cellChecksums"] = mpPhotonCellChecksums;
+            var["photonMap"]["cellSizes"] = mpPhotonCellSizes;
+            var["photonMap"]["cellDataOffsets"] = mpPhotonCellOffsets;
+
+            var["lightVertexCache"]["lightVertices"] = mpLightVertices;
+            var["lightVertexCache"]["lightVertexCount"] = mpLightVertexCount;
+        }
+
+        // Launch one thread per light subpath vertex.
+        mpSortPhotonsPass->execute(pRenderContext, { 4096u, (lightVertexCount + 4095u)/4096u, 1u });
+    }
+}
+
 DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
 {
     DefineList defines;
@@ -1480,6 +1587,7 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("USE_NEE", (useBPT || useNEE) ? "1" : "0");
     defines.add("USE_MIS", (useBPT || useMIS) ? "1" : "0");
     defines.add("USE_BPT", useBPT ? "1" : "0");
+    defines.add("USE_VM", (useVM && useBPT) ? "1" : "0");
     defines.add("DEBUG_MIS", debugMIS ? "1" : "0");
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");

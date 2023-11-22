@@ -1,5 +1,5 @@
 /***************************************************************************
- # Copyright (c) 2015-22, NVIDIA CORPORATION. All rights reserved.
+ # Copyright (c) 2015-23, NVIDIA CORPORATION. All rights reserved.
  #
  # Redistribution and use in source and binary forms, with or without
  # modification, are permitted provided that the following conditions
@@ -25,35 +25,41 @@
  # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
-__exported import Rendering.Materials.TexLODTypes;
+import Params;
+import PhotonMap;
 
-/** Translation of defines set by the host to compile-time constants used to
-    configure the path tracer without overhead from dynamic control flow.
-    This will eventually be replaced by specialization constants in Slang.
+/** Compute shader for building the photon map.
 */
+struct BuildPhotonMapPass
+{
+    // Resources
+    PathTracerParams params;           ///< Runtime parameters.
+    PhotonMap photonMap;               ///< Photon map.
+    LightVertexCache lightVertexCache; ///< Light vertex cache.
 
-#ifndef SAMPLES_PER_PIXEL
-#error StaticParams.slang is missing defines
-#endif
+    /** Entry point for resolve pass.
+        \param[in] pixel Pixel coordinates.
+    */
+    void execute(const uint2 pixel)
+    {
+        const uint index = pixel.y * 4096u + pixel.x;
+    #ifdef SORT_PASS
+        if (index < lightVertexCache.size())
+            photonMap.sortPhotons(lightVertexCache, index);
+    #else
+        if (index < params.cellCount)
+            photonMap.computeCellOffsets(index);
+    #endif
+    }
+};
 
-static const uint kUseViewDir = USE_VIEW_DIR;
-static const uint kSamplesPerPixel = SAMPLES_PER_PIXEL;
-static const bool kAdjustShadingNormals = ADJUST_SHADING_NORMALS;
-static const bool kUseBSDFSampling = USE_BSDF_SAMPLING;
-static const bool kUseNEE = USE_NEE;
-static const bool kUseMIS = USE_MIS;
-static const bool kUseBPT = USE_BPT;
-static const bool kUseVM = USE_VM;
-static const bool kDebugMIS = DEBUG_MIS;
-static const bool kDebugBPT = DEBUG_BPT;
-static const bool kLightTraceOnly = LIGHT_TRACE_ONLY;
-static const bool kUseRussianRoulette = USE_RUSSIAN_ROULETTE;
-static const bool kUseRTXDI = USE_RTXDI;
-static const bool kUseAlphaTest = USE_ALPHA_TEST;
-static const bool kUseLightsInDielectricVolumes = USE_LIGHTS_IN_DIELECTRIC_VOLUMES;
-static const bool kDisableCaustics = DISABLE_CAUSTICS;
-static const TexLODMode kPrimaryLodMode = TexLODMode(PRIMARY_LOD_MODE);
-static const bool kUseNRDDemodulation = USE_NRD_DEMODULATION;
-static const uint kColorFormat = COLOR_FORMAT;
-static const uint kMISHeuristic = MIS_HEURISTIC;
-static const float kMISPowerExponent = MIS_POWER_EXPONENT;
+cbuffer CB
+{
+    BuildPhotonMapPass gBuildPass;
+}
+
+[numthreads(64, 1, 1)]
+void main(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    gBuildPass.execute(dispatchThreadId.xy);
+}

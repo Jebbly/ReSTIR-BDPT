@@ -44,6 +44,7 @@ import LoadShadingData;
 import ColorType;
 import NRDHelpers;
 import BidirLightHelpers;
+import PhotonMap;
 __exported import PathState;
 __exported import Params;
 
@@ -66,41 +67,27 @@ struct PathTracer
         [mutating] bool traceVisibilityRay(const Ray ray);
     };
 
-    struct LightSubpathVertex
-    {
-        PackedHitInfo packedHit;
-        float3 L;               ///< Throughput at the vertex.
-        uint vertexIndex;       ///< Index of the vertex in the light sub-path
-        float3 rayOrigin;       ///< origin of the ray we traced to find the vertex.
-        float dVCM;             ///< dVCM at the vertex.
-        float3 rayDirection;    ///< direction of the ray we traced to find the vertex.
-        float dVC;              ///< dVC at the vertex.
-        float dVM;              ///< dVM at the vertex.
-        float pathPdf;          ///< Sampling pdf of the subpath (product solid-angle measure)
-        uint _pad1;
-        uint _pad2;
-    };
-
-    PathTracerParams params;                              ///< Runtime parameters.
+    PathTracerParams params;                               ///< Runtime parameters.
 
     // Samplers
-    LightSampler lightSampler;                            ///< Light sampler.
+    LightSampler lightSampler;                             ///< Light sampler.
 
     // Inputs
-    Texture2D<PackedHitInfo> vbuffer;                     ///< Fullscreen V-buffer for the primary hits.
-    Texture2D<float3> viewDir;                            ///< Optional view direction. Only valid when kUseViewDir == true.
-    Texture2D<uint> sampleCount;                          ///< Optional input sample count buffer. Only valid when kSamplesPerPixel == 0.
-    Texture2D<uint> sampleOffset;                         ///< Output offset into per-sample buffers. Only valid when kSamplesPerPixel == 0.
-    RWByteAddressBuffer lightImage;                       ///< Input light traced image. Only valid when kUseBPT == true. Added to the output when kSamplesPerPixel == 1.
+    Texture2D<PackedHitInfo> vbuffer;                      ///< Fullscreen V-buffer for the primary hits.
+    Texture2D<float3> viewDir;                             ///< Optional view direction. Only valid when kUseViewDir == true.
+    Texture2D<uint> sampleCount;                           ///< Optional input sample count buffer. Only valid when kSamplesPerPixel == 0.
+    Texture2D<uint> sampleOffset;                          ///< Output offset into per-sample buffers. Only valid when kSamplesPerPixel == 0.
+    RWByteAddressBuffer lightImage;                        ///< Input light traced image. Only valid when kUseBPT == true. Added to the output when kSamplesPerPixel == 1.
 
     // Outputs
-    RWStructuredBuffer<ColorType> sampleColor;            ///< Output per-sample color if kSamplesPerPixel != 1.
-    RWStructuredBuffer<GuideData> sampleGuideData;        ///< Output per-sample guide data.
-    NRDBuffers outputNRD;                                 ///< Output NRD data.
+    RWStructuredBuffer<ColorType> sampleColor;             ///< Output per-sample color if kSamplesPerPixel != 1.
+    RWStructuredBuffer<GuideData> sampleGuideData;         ///< Output per-sample guide data.
+    NRDBuffers outputNRD;                                  ///< Output NRD data.
 
-    RWTexture2D<float4> outputColor;                      ///< Output color buffer if kSamplesPerPixel == 1.
-    RWStructuredBuffer<LightSubpathVertex> lightVertices; ///< Diffuse light sub-path vertices.
-    RWStructuredBuffer<uint> lightVertexCount;            ///< Number of items in lightVertices.
+    RWTexture2D<float4> outputColor;                       ///< Output color buffer if kSamplesPerPixel == 1.
+
+    LightVertexCache lightVertexCache;                     ///< Light vertex cache.
+    PhotonMap photonMap;                                   ///< Photon map.
 
     /*******************************************************************
                                 Static members
@@ -112,58 +99,12 @@ struct PathTracer
     static const bool kUseHairMaterial   = USE_HAIR_MATERIAL;
 
     // Additional specialization.
-    static const bool kOutputGuideData   = OUTPUT_GUIDE_DATA;
-    static const bool kUseBPT            = USE_BPT;
-    static const bool kDebugMIS          = DEBUG_MIS;
-    static const bool kDebugBPT          = DEBUG_BPT;
+    static const bool kOutputGuideData = OUTPUT_GUIDE_DATA;
     #ifdef LIGHT_TRACE_PASS
-    static const bool kTraceFromLight    = true;
+    static const bool kTraceFromLight = true;
     #else
-    static const bool kTraceFromLight    = false;
+    static const bool kTraceFromLight = false;
     #endif
-
-    float getMisVmWeightFactor() { return 0; }
-    float getMisVcWeightFactor() { return 0; }
-
-    float getImageToSolidAngleFactor(const float3 dir, out float cosCamera)
-    {
-        cosCamera = dot(dir, normalize(gScene.camera.data.cameraW));
-        const float imagePlaneDist = params.frameDim.y * (gScene.camera.data.focalLength / gScene.camera.data.frameHeight);
-        const float imagePointToCameraDist = imagePlaneDist / cosCamera;
-        return (imagePointToCameraDist * imagePointToCameraDist) / cosCamera;
-    }
-
-    /**
-     * Returns the shading normal and eta corrections for light tracing.
-     */
-    float getAdjointCorrection(const ShadingData sd, const IMaterialInstance mi, const float3 wo) {
-        float cosOut = dot(sd.faceN, wo);
-        float cosIn  = dot(sd.faceN, sd.V);
-
-        float factor = 1.f;
-
-        // shading normal correction.
-        const float num   = abs(dot(sd.frame.N, sd.V) * cosOut);
-        const float denom = abs(dot(sd.frame.N, wo) * cosIn);
-        if (denom >= kMinCosTheta)
-            factor = num / denom;
-
-        if (cosIn * cosOut < 0.f)
-        {
-            // eta factor correction.
-            float eta = mi.getProperties(sd).eta;
-            factor *= 1.f / (eta * eta);
-        }
-
-        return factor;
-    }
-
-    float getContinuationProbability()
-    {
-        if (!kUseRussianRoulette || (kUseBPT && kLightTraceOnly))
-            return 1.f;
-        return params.contProb;
-    }
 
     /** Evaluates the currently configured heuristic for multiple importance sampling (MIS).
         \param[in] n Number of samples taken from the sampling strategy.
@@ -207,6 +148,51 @@ struct PathTracer
         float q1 = evalMIS(n1, p1);
         float qs = q0 + q1;
         return qs > 0 ? q0 / qs : 0.f;
+    }
+
+
+    float getEtaVCM() { return (params.mergeRadius * params.mergeRadius) * M_PI * params.lightSubpathCount; }
+    float getMisVmWeightFactor() { return kUseVM ? evalMIS(1.f, getEtaVCM()) : 0.f; }
+    float getMisVcWeightFactor() { return evalMIS(1.f, 1.f / getEtaVCM()); }
+
+    float getImageToSolidAngleFactor(const float3 dir, out float cosCamera)
+    {
+        cosCamera = dot(dir, normalize(gScene.camera.data.cameraW));
+        const float imagePlaneDist = params.frameDim.y * (gScene.camera.data.focalLength / gScene.camera.data.frameHeight);
+        const float imagePointToCameraDist = imagePlaneDist / cosCamera;
+        return (imagePointToCameraDist * imagePointToCameraDist) / cosCamera;
+    }
+
+    /**
+     * Returns the shading normal and eta corrections for light tracing.
+     */
+    float getAdjointCorrection(const ShadingData sd, const IMaterialInstance mi, const float3 wo) {
+        float cosOut = dot(sd.faceN, wo);
+        float cosIn  = dot(sd.faceN, sd.V);
+
+        float factor = 1.f;
+
+        // shading normal correction.
+        const float num   = abs(dot(sd.frame.N, sd.V) * cosOut);
+        const float denom = abs(dot(sd.frame.N, wo) * cosIn);
+        if (denom >= kMinCosTheta)
+            factor = num / denom;
+
+        if (cosIn * cosOut < 0.f)
+        {
+            // eta factor correction.
+            float eta = mi.getProperties(sd).eta;
+            factor *= 1.f / (eta * eta);
+        }
+
+        return factor;
+    }
+
+    float getContinuationProbability()
+    {
+        if (!kUseRussianRoulette || (kUseBPT && kLightTraceOnly))
+            return 1.f;
+        return params.contProb;
     }
 
     /** Helper to compute the MIS weight when an emissive surface is hit via BSDF sampling.
@@ -421,6 +407,7 @@ struct PathTracer
 
             path.dVCM = evalMIS(1.f, ls.pdf / ls.emitPdf);
             path.dVC = ls.getIsDelta() ? 0 : evalMIS(1.f, ls.cosLight / ls.emitPdf);
+            path.dVM = path.dVC * getMisVcWeightFactor();
         }
         else
         {
@@ -438,7 +425,8 @@ struct PathTracer
                 float cosCamera;
                 const float cameraPdfW = getImageToSolidAngleFactor(path.dir, cosCamera);
                 path.dVCM = evalMIS(1.f, params.lightSubpathCount / cameraPdfW);
-                path.dVC = 0;
+                path.dVC = 0.f;
+                path.dVM = 0.f;
             }
 
             // Create sample generator.
@@ -543,7 +531,12 @@ struct PathTracer
                 return;
 
             if (!kDebugMIS && params.debugLightVertexCount != -1)
-                misWeight = 1.f;
+            {
+                if (kUseVM && lightVertices > 1)
+                    misWeight = 0.5f;
+                else
+                    misWeight = 1.f;
+            }
         }
 
         const float3 f = kDebugMIS ? misWeight : (path.thp * radiance * misWeight);
@@ -608,6 +601,7 @@ struct PathTracer
             {
                 path.dVCM = 0.f;
                 path.dVC *= evalMIS(1.f, cosOut);
+                path.dVM *= evalMIS(1.f, cosOut);
             }
             else
             {
@@ -620,6 +614,7 @@ struct PathTracer
                     revPdf = evalRevScatterPdf(sd, mi, path.dir) * contProb;
 
                 path.dVC  = evalMIS(1.f, cosOut / fwdPdf) * (path.dVC * evalMIS(1.f, revPdf) + path.dVCM + getMisVmWeightFactor());
+                path.dVM  = evalMIS(1.f, cosOut / fwdPdf) * (path.dVM * evalMIS(1.f, revPdf) + path.dVCM + getMisVcWeightFactor() + 1.f);
                 path.dVCM = evalMIS(1.f, 1.f / fwdPdf);
             }
         }
@@ -752,20 +747,82 @@ struct PathTracer
     }
 
     /**
-     * Evaluates the indirect illumination from light subpaths.
-     * This function samples a light vertex uniformly from gLightVertices.
+     * Evaluates the indirect illumination by merging with a random light subpath vertex.
+     * This function samples a light vertex uniformly from lightVertices.
      * @param[in] sd Shading data.
      * @param[in] mi Material instance.
      * @param[in,out] state PathState object.
      * @param[in,out] vq Visibility query.
      */
-    void connectToLightSubpath<VisibilityQuery : IVisibilityQuery>( const ShadingData sd, const IMaterialInstance mi, inout PathState path, inout VisibilityQuery vq )
+    void mergeWithLightSubpaths(const ShadingData sd, const IMaterialInstance mi, inout PathState path)
     {
-        const uint numVertices = lightVertexCount[0];
+        int3 o = int3(lerp(float3(0, 0, 0), float3(-1, -1, -1), float3(frac(sd.posW / (2.f * params.mergeRadius)) < 0.5f)));
+        for (int x = 0; x < 2; x++)
+        {
+            for (int y = 0; y < 2; y++)
+            {
+                for (int z = 0; z < 2; z++)
+                {
+                    const uint cellIndex = photonMap.getCellIndex<false>(sd.posW, params.mergeRadius, params.cellCount, int3(x, y, z) + o);
+                    if (cellIndex == -1)
+                        continue;
+
+                    const uint2 range = photonMap.getCellDataRange(cellIndex);
+                    for (uint i = range.x; i < range.y; i++)
+                    {
+                        const LightSubpathVertex lightVertex = photonMap.getPhoton(i);
+
+                        if ((path.getVertexIndex() + lightVertex.vertexIndex) - 1 > params.maxSurfaceBounces)
+                            continue;
+
+                        if (length(sd.posW - lightVertex.getPosW()) >= params.mergeRadius)
+                            continue;
+
+                        const float3 dir = -lightVertex.rayDirection;
+                        const float cosCamera = dot(dir, sd.getOrientedFaceNormal());
+
+                        // Reject sample if not in the hemisphere of a BSDF lobe.
+                        const uint lobeTypes = mi.getLobeTypes(sd);
+                        const bool hasReflection   = lobeTypes & uint(LobeType::Reflection);
+                        const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
+                        if ((cosCamera <= kMinCosTheta && !hasTransmission) || (cosCamera >= -kMinCosTheta && !hasReflection))
+                            continue;
+
+                        // evaluate bsdf at camera vertex
+                        const float3 f = mi.eval(sd, dir, path.sg) * lightVertex.L / getEtaVCM();
+                        if (!any(f > 0)) continue;
+
+                        const float cameraBsdfFwdPdfW = mi.evalPdf(sd, dir, kUseBSDFSampling);
+                        const float cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, dir);
+
+                        // evaluate MIS weight
+                        const float wLight = lightVertex.dVCM * getMisVcWeightFactor() + lightVertex.dVM * evalMIS(1.f, cameraBsdfFwdPdfW);
+                        const float wCamera = path.dVCM * getMisVcWeightFactor() + path.dVM * evalMIS(1.f, cameraBsdfRevPdfW);
+                        const float misWeight = 1.f / (wLight + 1.f + wCamera);
+
+                        addToPathContribution(path, f, misWeight, lightVertex.vertexIndex+1);
+                    }
+                }
+            }
+        }
+
+    }
+
+    /**
+     * Evaluates the indirect illumination by connecting to a random light subpath vertex.
+     * This function samples a light vertex uniformly from lightVertices.
+     * @param[in] sd Shading data.
+     * @param[in] mi Material instance.
+     * @param[in,out] state PathState object.
+     * @param[in,out] vq Visibility query.
+     */
+    void connectToLightSubpath<VisibilityQuery : IVisibilityQuery>(const ShadingData sd, const IMaterialInstance mi, inout PathState path, inout VisibilityQuery vq)
+    {
+        const uint numVertices = lightVertexCache.size();
         if (numVertices == 0)
             return;
 
-        const LightSubpathVertex lightVertex = lightVertices[min(uint(sampleNext1D(path.sg) * numVertices), numVertices - 1)];
+        const LightSubpathVertex lightVertex = lightVertexCache[min(uint(sampleNext1D(path.sg) * numVertices), numVertices - 1u)];
 
         if (path.getVertexIndex() + lightVertex.vertexIndex > params.maxSurfaceBounces)
             return;
@@ -823,6 +880,7 @@ struct PathTracer
         ray.dir = computeRayOrigin(lightSd, -toLight) - ray.origin;
         ray.tMax = sqrt(max(dot(ray.dir, ray.dir), kMinLightDistSqr));
         ray.dir /= ray.tMax;
+        logTraceRay(PixelStatsRayType::Visibility);
         bool V = vq.traceVisibilityRay(ray);
         if (!V) return;
 
@@ -838,7 +896,7 @@ struct PathTracer
 
     /** Connect a light sub-path to the camera to form a full path. Splats the contribution to lightImage.
      */
-    void connectToCamera<VisibilityQuery : IVisibilityQuery>( const ShadingData sd, const IMaterialInstance mi, inout PathState path, inout VisibilityQuery vq )
+    void connectToCamera<VisibilityQuery : IVisibilityQuery>(const ShadingData sd, const IMaterialInstance mi, inout PathState path, inout VisibilityQuery vq)
     {
         if (gScene.camera.data.focalLength == 0.0f)
         {
@@ -884,6 +942,7 @@ struct PathTracer
             return;
 
         // Test visibility by tracing a shadow ray.
+        logTraceRay(PixelStatsRayType::Visibility);
         bool V = vq.traceVisibilityRay(Ray(computeRayOrigin(sd, toCamera), toCamera, 0, sqrt(dist2)));
         if (!V)
             return;
@@ -900,14 +959,15 @@ struct PathTracer
         v.L = path.thp;
         v.dVCM = path.dVCM;
         v.dVC = path.dVC;
+        v.dVM = path.dVM;
         v.rayOrigin = path.origin;
         v.rayDirection = path.dir;
         v.vertexIndex = path.getVertexIndex();
         v.pathPdf = path.pathPdf;
+        v.hitDist = length(sd.posW - path.origin);
 
-        uint i;
-        InterlockedAdd(lightVertexCount[0], 1, i);
-        lightVertices[i] = v;
+        const uint i = lightVertexCache.addVertex(v);
+        if (kUseVM) photonMap.addPhoton(i, sd.posW, params.mergeRadius, params.cellCount);
     }
 
     /** Handle hits on dielectrics.
@@ -1219,6 +1279,11 @@ struct PathTracer
                 if (kUseBPT)
                 {
                     connectToLightSubpath(sd, mi, path, vq);
+
+                    if (kUseVM)
+                    {
+                        mergeWithLightSubpaths(sd, mi, path);
+                    }
                 }
             }
         }
@@ -1373,6 +1438,9 @@ struct PathTracer
         path.terminate();
     }
 
+    /** Atomically write path contribution to light image buffer.
+        The light image is copied to the final image during camera tracing.
+    */
     void writeLightImageOutput(const uint2 pixel)
     {
         if (!kTraceFromLight && kUseBPT && kSamplesPerPixel == 1)
