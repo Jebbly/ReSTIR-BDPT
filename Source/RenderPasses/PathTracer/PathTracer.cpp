@@ -35,7 +35,6 @@ namespace
     const std::string kGeneratePathsFilename = "RenderPasses/PathTracer/GeneratePaths.cs.slang";
     const std::string kTracePassFilename = "RenderPasses/PathTracer/TracePass.rt.slang";
     const std::string kResolvePassFilename = "RenderPasses/PathTracer/ResolvePass.cs.slang";
-    const std::string kBuildPhotonMapPassFilename = "RenderPasses/PathTracer/BuildPhotonMapPass.cs.slang";
     const std::string kReflectTypesFile = "RenderPasses/PathTracer/ReflectTypes.cs.slang";
 
     // Render pass inputs and outputs.
@@ -466,19 +465,11 @@ void PathTracer::execute(RenderContext* pRenderContext, const RenderData& render
         pRenderContext->clearUAV(mpLightVertexCount->getUAV().get(), uint4(0.f));
         if (mStaticParams.useVM)
         {
-            pRenderContext->clearUAV(mpPhotonCellChecksums->getUAV().get(), uint4(0.f));
             pRenderContext->clearUAV(mpPhotonCellSizes->getUAV().get(), uint4(0.f));
-            pRenderContext->clearUAV(mpPhotonCellOffsets->getUAV().get(), uint4(0.f));
         }
 
         FALCOR_ASSERT(mpLightTracePass);
         tracePass(pRenderContext, renderData, *mpLightTracePass, uint2(mParams.frameDim.x, (mParams.lightSubpathCount + mParams.frameDim.x-1) / mParams.frameDim.x));
-
-        // Build photon hash grid
-        if (mStaticParams.useVM)
-        {
-            buildPhotonMap(pRenderContext, renderData);
-        }
     }
 
     // Generate paths at primary hits.
@@ -910,20 +901,6 @@ void PathTracer::updatePrograms()
         desc.addShaderLibrary(kReflectTypesFile).csEntry("main");
         mpReflectTypes = ComputePass::create(mpDevice, desc, defines, false);
     }
-    if (!mpComputePhotonOffsetsPass)
-    {
-        ProgramDesc desc = baseDesc;
-        desc.addShaderLibrary(kBuildPhotonMapPassFilename).csEntry("main");
-        mpComputePhotonOffsetsPass = ComputePass::create(mpDevice, desc, defines, false);
-    }
-    if (!mpSortPhotonsPass)
-    {
-        ProgramDesc desc = baseDesc;
-        desc.addShaderLibrary(kBuildPhotonMapPassFilename).csEntry("main");
-        Falcor::DefineList tmpDefs = defines;
-        tmpDefs.add("SORT_PASS");
-        mpSortPhotonsPass = ComputePass::create(mpDevice, desc, tmpDefs, false);
-    }
 
     auto preparePass = [&](ref<ComputePass> pass)
     {
@@ -937,9 +914,6 @@ void PathTracer::updatePrograms()
     preparePass(mpGeneratePaths);
     preparePass(mpResolvePass);
     preparePass(mpReflectTypes);
-    preparePass(mpComputePhotonOffsetsPass);
-    defines.add("SORT_PASS");
-    preparePass(mpSortPhotonsPass);
 
     mVarsChanged = true;
     mRecompile = false;
@@ -971,16 +945,13 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
         {
             mpLightVertices    = mpDevice->createStructuredBuffer(var["pathTracer"]["lightVertexCache"]["lightVertices"], lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
             mpLightVertexCount = mpDevice->createStructuredBuffer(var["pathTracer"]["lightVertexCache"]["lightVertexCount"], 2, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-            mpPhotonCellData      = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellData"],    lightVertexCount,  ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-            mpLightVertexIndices  = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["dataIndices"], lightVertexCount,  ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
             mVarsChanged = true;
         }
 
-        if (!mpPhotonCellChecksums || mpPhotonCellChecksums->getElementCount() != mParams.cellCount || mVarsChanged)
+        if (!mpPhotonCellSizes || mpPhotonCellSizes->getElementCount() != mParams.cellCount || mVarsChanged)
         {
-            mpPhotonCellChecksums = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellChecksums"]  , mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-            mpPhotonCellSizes     = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellSizes"]      , mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-            mpPhotonCellOffsets   = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellDataOffsets"], mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpPhotonCellSizes     = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellSizes"]  , mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpPhotonCellOffsets   = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellOffsets"], mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
             mVarsChanged = true;
         }
     }
@@ -1222,11 +1193,8 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["lightVertexCache"]["lightVertices"] = mpLightVertices;
         var["lightVertexCache"]["lightVertexCount"] = mpLightVertexCount;
 
-        var["photonMap"]["dataIndices"]     = mpLightVertexIndices;
-        var["photonMap"]["cellChecksums"]   = mpPhotonCellChecksums;
-        var["photonMap"]["cellSizes"]       = mpPhotonCellSizes;
-        var["photonMap"]["cellDataOffsets"] = mpPhotonCellOffsets;
-        var["photonMap"]["cellData"]        = mpPhotonCellData;
+        var["photonMap"]["cellSizes"]   = mpPhotonCellSizes;
+        var["photonMap"]["cellOffsets"] = mpPhotonCellOffsets;
     }
 
     // Bind runtime data.
@@ -1524,56 +1492,6 @@ void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& re
 
     // Launch one thread per pixel.
     mpResolvePass->execute(pRenderContext, { mParams.frameDim, 1u });
-}
-
-void PathTracer::buildPhotonMap(RenderContext* pRenderContext, const RenderData& renderData)
-{
-    if (!mStaticParams.useBPT || !mStaticParams.useVM) return;
-
-    FALCOR_PROFILE(pRenderContext, "buildPhotonMap");
-
-    const size_t lightVertexCount = mParams.lightSubpathCount * std::max(1u, mParams.maxSurfaceBounces);
-    {
-        // Bind resources.
-        auto var = mpComputePhotonOffsetsPass->getRootVar()["CB"]["gBuildPass"];
-        var["params"].setBlob(mParams);
-
-        if (mVarsChanged)
-        {
-            var["photonMap"]["cellData"] = mpPhotonCellData;
-            var["photonMap"]["dataIndices"] = mpLightVertexIndices;
-            var["photonMap"]["cellChecksums"] = mpPhotonCellChecksums;
-            var["photonMap"]["cellSizes"] = mpPhotonCellSizes;
-            var["photonMap"]["cellDataOffsets"] = mpPhotonCellOffsets;
-
-            var["lightVertexCache"]["lightVertices"] = mpLightVertices;
-            var["lightVertexCache"]["lightVertexCount"] = mpLightVertexCount;
-        }
-
-        // Launch one thread per cell.
-        mpComputePhotonOffsetsPass->execute(pRenderContext, { 4096u, (mParams.cellCount + 4095u)/4096u, 1u });
-    }
-
-    {
-        // Bind resources.
-        auto var = mpSortPhotonsPass->getRootVar()["CB"]["gBuildPass"];
-        var["params"].setBlob(mParams);
-
-        if (mVarsChanged)
-        {
-            var["photonMap"]["cellData"] = mpPhotonCellData;
-            var["photonMap"]["dataIndices"] = mpLightVertexIndices;
-            var["photonMap"]["cellChecksums"] = mpPhotonCellChecksums;
-            var["photonMap"]["cellSizes"] = mpPhotonCellSizes;
-            var["photonMap"]["cellDataOffsets"] = mpPhotonCellOffsets;
-
-            var["lightVertexCache"]["lightVertices"] = mpLightVertices;
-            var["lightVertexCache"]["lightVertexCount"] = mpLightVertexCount;
-        }
-
-        // Launch one thread per light subpath vertex.
-        mpSortPhotonsPass->execute(pRenderContext, { 4096u, (lightVertexCount + 4095u)/4096u, 1u });
-    }
 }
 
 DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const

@@ -1,7 +1,6 @@
 add_plugin(PathTracer)
 
 target_sources(PathTracer PRIVATE
-    PhotonMap.slang
     BidirLightHelpers.slang
     ColorType.slang
     GeneratePaths.cs.slang
@@ -14,6 +13,7 @@ target_sources(PathTracer PRIVATE
     PathTracer.cpp
     PathTracer.h
     PathTracerNRD.slang
+    PhotonMap.slang
     ReflectTypes.cs.slang
     ResolvePass.cs.slang
     StaticParams.slang
