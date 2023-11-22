@@ -134,12 +134,28 @@ struct PathTracer
     }
 
     /**
-     * Returns the shading normal correction for light tracing.
+     * Returns the shading normal and eta corrections for light tracing.
      */
-    float getShadingNormalCorrection(const ShadingData sd, const float3 wo) {
-        const float num = abs(dot(sd.frame.N, sd.V) * dot(sd.faceN, wo));
-        const float denom = abs(dot(sd.frame.N, wo) * dot(sd.faceN, sd.V));
-        return denom >= kMinCosTheta ? num / denom : 1;
+    float getAdjointCorrection(const ShadingData sd, const IMaterialInstance mi, const float3 wo) {
+        float cosOut = dot(sd.faceN, wo);
+        float cosIn  = dot(sd.faceN, sd.V);
+
+        float factor = 1.f;
+
+        // shading normal correction.
+        const float num   = abs(dot(sd.frame.N, sd.V) * cosOut);
+        const float denom = abs(dot(sd.frame.N, wo) * cosIn);
+        if (denom >= kMinCosTheta)
+            factor = num / denom;
+
+        if (cosIn * cosOut < 0.f)
+        {
+            // eta factor correction.
+            float eta = mi.getProperties(sd).eta;
+            factor *= 1.f / (eta * eta);
+        }
+
+        return factor;
     }
 
     float getContinuationProbability()
@@ -576,7 +592,11 @@ struct PathTracer
     {
         BSDFSample result;
         bool valid = mi.sample(sd, path.sg, result, kUseBSDFSampling);
-        if (valid) valid = generateScatterRay(result, sd, mi, path);
+        if (valid)
+        {
+            if (kTraceFromLight) result.weight *= getAdjointCorrection(sd, mi, result.wo);
+            valid = generateScatterRay(result, sd, mi, path);
+        }
 
         const bool isDeltaLobe = result.isLobe(LobeType::DeltaReflection) || result.isLobe(LobeType::DeltaTransmission);
 
@@ -720,12 +740,6 @@ struct PathTracer
                     path.setInsideDielectricVolume(!path.interiorList.isEmpty());
                 }
             }
-
-            if (kTraceFromLight && !bs.isLobe(LobeType::DiffuseTransmission))
-            {
-                float eta = mi.getProperties(sd).eta;
-                path.thp *= 1.f / (eta*eta);
-            }
         }
 
         // Save the normal used for NEE. This is needed for MIS.
@@ -778,7 +792,7 @@ struct PathTracer
             const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
             if ((cosLight <= kMinCosTheta && !hasTransmission) || (cosLight >= -kMinCosTheta && !hasReflection))
                 return;
-            f *= lightMi.eval(lightSd, -toLight, path.sg) * getShadingNormalCorrection(lightSd, -toLight);
+            f *= lightMi.eval(lightSd, -toLight, path.sg) * getAdjointCorrection(lightSd, lightMi, -toLight);
 
             lightBsdfFwdPdfW = lightMi.evalPdf(lightSd, -toLight, kUseBSDFSampling);
             lightBsdfRevPdfW = evalRevScatterPdf(lightSd, lightMi, -toLight);
@@ -826,9 +840,14 @@ struct PathTracer
      */
     void connectToCamera<VisibilityQuery : IVisibilityQuery>( const ShadingData sd, const IMaterialInstance mi, inout PathState path, inout VisibilityQuery vq )
     {
+        if (gScene.camera.data.focalLength == 0.0f)
+        {
+            // TODO: ortho camera
+            return;
+        }
+
         float3 toCamera = gScene.camera.getPosition() - sd.posW;
         const float dist2 = max(dot(toCamera, toCamera), kMinLightDistSqr);
-        const float dist = sqrt(dist2);
         toCamera = normalize(toCamera);
 
         // Reject sample if not in the hemisphere of a BSDF lobe.
@@ -838,12 +857,6 @@ struct PathTracer
         float NdotL = dot(sd.getOrientedFaceNormal(), toCamera);
         if ((NdotL <= kMinCosTheta && !hasTransmission) || (NdotL >= -kMinCosTheta && !hasReflection))
             return;
-
-        if (gScene.camera.data.focalLength == 0.0f)
-        {
-            // TODO: ortho camera
-            return;
-        }
 
         float cosCamera;
         const float imageToSolidAngleFactor = getImageToSolidAngleFactor(-toCamera, cosCamera);
@@ -866,15 +879,12 @@ struct PathTracer
         const float misWeight = kLightTraceOnly ? 1.f : evalLightTraceMIS(path, bsdfRevPdfW, imageToSurfaceFactor);
 
         // Compute full path contribution
-        float3 radiance = path.thp * mi.eval(sd, toCamera, path.sg) * getShadingNormalCorrection(sd, toCamera) * (imageToSolidAngleFactor * invDist2) / params.lightSubpathCount;
+        float3 radiance = path.thp * mi.eval(sd, toCamera, path.sg) * getAdjointCorrection(sd, mi, toCamera) * (imageToSolidAngleFactor * invDist2) / params.lightSubpathCount;
         if (!any(radiance > 0))
             return;
 
-        // Get origin with offset applied in direction of the geometry normal to avoid self-intersection.
-        const float3 origin = sd.computeRayOrigin(NdotL >= 0.f);
-
         // Test visibility by tracing a shadow ray.
-        bool V = vq.traceVisibilityRay(Ray(origin, toCamera, 0, dist));
+        bool V = vq.traceVisibilityRay(Ray(computeRayOrigin(sd, toCamera), toCamera, 0, sqrt(dist2)));
         if (!V)
             return;
 
@@ -1005,7 +1015,7 @@ struct PathTracer
         if (kUseBPT)
         {
             if (!kTraceFromLight || !isPrimaryHit || path.isFiniteLight())
-                path.dVCM *= evalMIS(1.f, hitDist * hitDist);
+                path.dVCM *= evalMIS(1.f, max(kMinLightDistSqr, hitDist * hitDist));
             const float invCos = 1.f / abs(dot(sd.V, sd.faceN));
             path.dVCM *= evalMIS(1.f, invCos);
             path.dVC  *= evalMIS(1.f, invCos);

@@ -555,7 +555,7 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
 
     dirty |= widget.checkbox("Russian roulette", mStaticParams.useRussianRoulette);
     widget.tooltip("Use russian roulette to terminate low throughput paths.");
-    if (mStaticParams.useRussianRoulette && !(mStaticParams.useBPT && mStaticParams.lightTraceOnly))
+    if (mStaticParams.useRussianRoulette)
     {
         dirty |= widget.var("Continuation probability", mParams.contProb, 0.f, 1.f);
         widget.tooltip("Probability of continuing the path at each vertex.");
