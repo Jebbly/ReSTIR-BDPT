@@ -95,14 +95,13 @@ struct PathState
     // Scatter ray
     float3      origin;                 ///< Origin of the scatter ray.
     float3      dir;                    ///< Scatter ray normalized direction.
-    float       pathPdf;                ///< Pdf for generating the path.
     float3      normal;                 ///< Geometry normal at the scatter ray origin.
     HitInfo     hit;                    ///< Hit information for the scatter ray. This is populated at committed triangle hits.
 
     float3      thp;                    ///< Path throughput.
-    float3      L;                      ///< Radiance of the selected sample.
+    float3      L;                      ///< Radiance estimate, divided by pdf
 
-    float       W;                      ///< Reservoir weight.
+    float       pathPdf;                ///< Pdf for generating the path. This is the product of solid-angle BSDF sampling probabilites at each vertex.
     float       dVCM;                   ///< Partial MIS quantities, used to compute MIS weights.
     float       dVC;                    ///< Partial MIS quantities, used to compute MIS weights.
     float       dVM;                    ///< Partial MIS quantities, used to compute MIS weights.

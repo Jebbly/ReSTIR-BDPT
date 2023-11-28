@@ -783,7 +783,7 @@ struct PathTracer
 
                     // Reject sample if not in the hemisphere of a BSDF lobe.
                     const uint lobeTypes = mi.getLobeTypes(sd);
-                    const bool hasReflection = lobeTypes & uint(LobeType::Reflection);
+                    const bool hasReflection   = lobeTypes & uint(LobeType::Reflection);
                     const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
                     if ((cosCamera <= kMinCosTheta && !hasTransmission) || (cosCamera >= -kMinCosTheta && !hasReflection))
                         continue;

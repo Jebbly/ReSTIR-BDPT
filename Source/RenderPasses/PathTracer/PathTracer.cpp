@@ -768,7 +768,7 @@ PathTracer::TracePass::TracePass(ref<Device> pDevice, const std::string& name, c
     desc.addShaderLibrary(kTracePassFilename);
     if (pDevice->getType() == Device::Type::D3D12 && useSER)
         desc.addCompilerArguments({ "-Xdxc", "-enable-lifetime-markers" });
-    desc.setMaxPayloadSize(208); // This is conservative but the required minimum is 192 bytes.
+    desc.setMaxPayloadSize(192); // This is conservative but the required minimum is 192 bytes.
     desc.setMaxAttributeSize(pScene->getRaytracingMaxAttributeSize());
     desc.setMaxTraceRecursionDepth(1);
     if (!pScene->hasProceduralGeometry()) desc.setRtPipelineFlags(RtPipelineFlags::SkipProceduralPrimitives);

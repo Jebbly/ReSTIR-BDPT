@@ -79,11 +79,9 @@ struct PathPayload
 
         p.packed[4].xyz = asuint(path.L);
         p.packed[4].w   = asuint(path.pathPdf);
-
-        p.packed[5].x = asuint(path.W);
-        p.packed[5].y = asuint(path.dVCM);
-        p.packed[5].z = asuint(path.dVC);
-        p.packed[5].w = asuint(path.dVM);
+        p.packed[5].x = asuint(path.dVCM);
+        p.packed[5].y = asuint(path.dVC);
+        p.packed[5].z = asuint(path.dVM);
 
         p.hit = path.hit.getData();
         p.guideData = path.guideData;
@@ -112,11 +110,9 @@ struct PathPayload
 
         path.L       = asfloat(p.packed[4].xyz);
         path.pathPdf = asfloat(p.packed[4].w);
-
-        path.W    = asfloat(p.packed[5].x);
-        path.dVCM = asfloat(p.packed[5].y);
-        path.dVC  = asfloat(p.packed[5].z);
-        path.dVM  = asfloat(p.packed[5].w);
+        path.dVCM = asfloat(p.packed[5].x);
+        path.dVC  = asfloat(p.packed[5].y);
+        path.dVM  = asfloat(p.packed[5].z);
 
         path.hit = HitInfo(p.hit);
         path.guideData = p.guideData;
