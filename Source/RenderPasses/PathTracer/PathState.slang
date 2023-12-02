@@ -26,6 +26,7 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 import Utils.Math.PackedFormats;
+import Utils.Color.ColorHelpers;
 __exported import Scene.HitInfo;
 __exported import Utils.Math.Ray;
 __exported import Utils.Sampling.SampleGenerator;
@@ -87,9 +88,9 @@ struct ReconnectionVertex
     float3        contribution;   ///< Unweighted contribution of the suffix
     float         connectionDist; ///< Distance towards the last prefix vertex
     float         connectionCos;  ///< Cosine term towards the last prefix vertex
-    uint          prefixLength;   ///< Number of segments in the prefix
     float         prefixPdf;      ///< Sampling pdf of the prefix
-    uint pad;
+    uint          prefixLength;   ///< Number of segments in the prefix
+    uint          dummy;
 };
 
 struct PathSample
@@ -127,8 +128,7 @@ struct PathState
 
     PathSample  sample;                 ///< Selected path sample
     float       sampleWeight;           ///< Integration weight for the selected sample.
-
-    float3      L;                      ///< Accumulated radiance
+    float3      prefixThroughput;       ///< Prefix throughput, used to compute suffix contributions.
 
     GuideData   guideData;              ///< Denoiser guide data.
     InteriorList interiorList;          ///< Interior list. Keeping track of a stack of materials with medium properties.
@@ -138,8 +138,10 @@ struct PathState
 
     float3 getSampleRadiance()
     {
-        return L;
-        //return sample.contribution * sampleWeight;
+        const float f = luminance(sample.contribution);
+        if (f > 0.f)
+            return sample.contribution * sampleWeight / f;
+        return 0.f;
     }
 
     bool isTerminated() { return !isActive(); }

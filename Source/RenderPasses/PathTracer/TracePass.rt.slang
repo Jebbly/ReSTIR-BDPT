@@ -54,7 +54,7 @@ struct DummyAttribs { uint dummy; };
 
 struct PathPayload
 {
-    uint4 packed[6];
+    uint4 packed[11];
 
     PackedHitInfo hit;
     GuideData guideData;
@@ -77,11 +77,29 @@ struct PathPayload
         p.packed[3].xyz = asuint(path.throughput);
         p.packed[3].w = path.bounceCounters;
 
-        p.packed[4].xyz = asuint(path.L);
-        p.packed[4].w   = asuint(path.pathPdf);
-        p.packed[5].x = asuint(path.dVCM);
-        p.packed[5].y = asuint(path.dVC);
-        p.packed[5].z = asuint(path.dVM);
+        p.packed[4].x = asuint(path.sampleWeight);
+
+        p.packed[5].x = asuint(path.pathPdf);
+        p.packed[5].y = asuint(path.dVCM);
+        p.packed[5].z = asuint(path.dVC);
+        p.packed[5].w = asuint(path.dVM);
+
+        p.packed[6].xyz = asuint(path.sample.contribution);
+        p.packed[6].w = path.sample.pathLength;
+
+        p.packed[7] = path.sample.rcv.hit;
+
+        p.packed[8].xyz = asuint(path.sample.rcv.suffixDir);
+        p.packed[8].w   = asuint(path.sample.rcv.suffixDist);
+
+        p.packed[9].xyz = asuint(path.sample.rcv.contribution);
+        p.packed[9].w   = asuint(path.sample.rcv.connectionDist);
+
+        p.packed[10].x = asuint(path.sample.rcv.connectionCos);
+        p.packed[10].y = asuint(path.sample.rcv.prefixPdf);
+        p.packed[10].z = path.sample.rcv.prefixLength;
+
+        p.packed[11].xyz = asuint(path.prefixThroughput);
 
         p.hit = path.hit.getData();
         p.guideData = path.guideData;
@@ -108,11 +126,29 @@ struct PathPayload
         path.throughput = asfloat(p.packed[3].xyz);
         path.bounceCounters = p.packed[3].w;
 
-        path.L       = asfloat(p.packed[4].xyz);
-        path.pathPdf = asfloat(p.packed[4].w);
-        path.dVCM = asfloat(p.packed[5].x);
-        path.dVC  = asfloat(p.packed[5].y);
-        path.dVM  = asfloat(p.packed[5].z);
+        path.sampleWeight = asfloat(p.packed[4].x);
+
+        path.pathPdf = asfloat(p.packed[5].x);
+        path.dVCM    = asfloat(p.packed[5].y);
+        path.dVC     = asfloat(p.packed[5].z);
+        path.dVM     = asfloat(p.packed[5].w);
+
+        path.sample.contribution = asfloat(p.packed[6].xyz);
+        path.sample.pathLength = p.packed[6].w;
+
+        path.sample.rcv.hit = p.packed[7];
+
+        path.sample.rcv.suffixDir  = asfloat(p.packed[8].xyz);
+        path.sample.rcv.suffixDist = asfloat(p.packed[8].w);
+
+        path.sample.rcv.contribution   = asfloat(p.packed[9].xyz);
+        path.sample.rcv.connectionDist = asfloat(p.packed[9].w);
+
+        path.sample.rcv.connectionCos = asfloat(p.packed[10].x);
+        path.sample.rcv.prefixPdf     = asfloat(p.packed[10].y);
+        path.sample.rcv.prefixLength  = p.packed[10].z;
+
+        path.prefixThroughput = asfloat(p.packed[11].xyz);
 
         path.hit = HitInfo(p.hit);
         path.guideData = p.guideData;

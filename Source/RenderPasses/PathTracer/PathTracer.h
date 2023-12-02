@@ -118,6 +118,7 @@ private:
         bool        useMIS = true;                              ///< Use multiple importance sampling (MIS) when NEE is enabled.
         bool        useBPT = true;                              ///< Use bidirectional path tracing. Automatically enables NEE and MIS.
         bool        useVM  = true;                              ///< Use vertex merging when using BPT.
+        bool        useFastVM  = true;                          ///< Only merge with a single photon grid cell.
         bool        lightTraceOnly = false;                     ///< Only use light tracing. Disables camera tracing.
         bool        debugBPT = false;                           ///< Output specific paths for debugging BPT.
         bool        debugMIS = false;                           ///< Output MIS weights.

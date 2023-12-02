@@ -96,7 +96,7 @@ extension PathTracer
         {
             // Use path's radiance field to accumulate emission along the path since the radiance is not used for denoiser guide paths.
             // No need for accumulating emission at the primary hit since the primary hit emission is coming from GBuffer.
-            path.L += (path.throughput / path.pathPdf) * bsdfProperties.emission;
+            path.sample.contribution += (path.throughput / path.pathPdf) * bsdfProperties.emission;
 
             // Terminate after scatter ray on last vertex has been processed or non-delta lobe exists.
             const bool lastVertex = hasFinishedSurfaceBounces(path);
@@ -105,7 +105,7 @@ extension PathTracer
 
             if (lastVertex || hasNonDeltaLobes || isEmissive)
             {
-                const float3 emission = path.L;
+                const float3 emission = path.sample.contribution;
                 const float3 reflectance = getMaterialReflectanceForDeltaPaths(materialType, hasDeltaLobes, sd, bsdfProperties);
                 const float primaryHitDist = path.pathPdf;
                 const float hitDist = float(path.sceneLength) - primaryHitDist;
@@ -161,7 +161,7 @@ extension PathTracer
 
             if (semiOpaque)
             {
-                const float3 emission = path.L;
+                const float3 emission = path.sample.contribution;
                 const float3 reflectance = getMaterialReflectanceForDeltaPaths(materialType, hasDeltaLobes, sd, bsdfProperties);
                 const float primaryHitDist = path.pathPdf;
                 const float hitDist = float(path.sceneLength) - primaryHitDist;
@@ -223,7 +223,7 @@ extension PathTracer
         {
             // Use path's radiance field to accumulate emission along the path since the radiance is not used for denoiser guide paths.
             // No need for accumulating emission at the primary hit since the primary hit emission is coming from GBuffer.
-            path.L += (path.throughput / path.pathPdf) * bsdfProperties.emission;
+            path.sample.contribution += (path.throughput / path.pathPdf) * bsdfProperties.emission;
         }
 
         // Terminate the delta transmission path.
@@ -244,7 +244,7 @@ extension PathTracer
 
         if (lastVertex || semiOpaque)
         {
-            float3 emission = path.L;
+            float3 emission = path.sample.contribution;
             writeNRDDeltaTransmissionGuideBuffers(outputNRD, kUseNRDDemodulation, pixel, getMaterialReflectanceForDeltaPaths(materialType, hasDeltaLobes, sd, bsdfProperties), emission, bsdfProperties.guideNormal, bsdfProperties.roughness, float(path.sceneLength), sd.posW);
 
             path.terminate();
@@ -269,7 +269,7 @@ extension PathTracer
 
         if (!valid)
         {
-            float3 emission = path.L;
+            float3 emission = path.sample.contribution;
             writeNRDDeltaTransmissionGuideBuffers(outputNRD, kUseNRDDemodulation, pixel, getMaterialReflectanceForDeltaPaths(materialType, hasDeltaLobes, sd, bsdfProperties), emission, bsdfProperties.guideNormal, bsdfProperties.roughness, float(path.sceneLength), sd.posW);
 
             path.terminate();

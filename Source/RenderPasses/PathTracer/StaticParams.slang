@@ -44,6 +44,7 @@ static const bool kUseNEE = USE_NEE;
 static const bool kUseMIS = USE_MIS;
 static const bool kUseBPT = USE_BPT;
 static const bool kUseVM = USE_VM;
+static const bool kUseFastVM = USE_FAST_VM;
 static const bool kDebugMIS = DEBUG_MIS;
 static const bool kDebugBPT = DEBUG_BPT;
 static const bool kLightTraceOnly = LIGHT_TRACE_ONLY;

@@ -40,6 +40,7 @@ import RenderPasses.Shared.Denoising.NRDHelpers;
 import Utils.Color.ColorHelpers;
 import Utils.Geometry.GeometryHelpers;
 import Utils.Debug.PixelDebug;
+import Utils.Math.MathHelpers;
 import LoadShadingData;
 import ColorType;
 import NRDHelpers;
@@ -413,8 +414,9 @@ struct PathTracer
         else
         {
             path.throughput = float3(1.f);
-            path.L = 0;
+            path.sample.contribution = 0.f;
             path.sampleWeight = 0.f;
+            path.prefixThroughput = 0.f;
 
             // Create primary ray.
             Ray cameraRay = gScene.camera.computeRayPinhole(pixel, params.frameDim);
@@ -519,6 +521,9 @@ struct PathTracer
     */
     void addToPathContribution( inout PathState path, const float3 contribution, const float integrationWeight, float misWeight, const uint lightVertices )
     {
+        if (!any(contribution > 0) || any(isnan(contribution)) || any(isinf(contribution)))
+            return;
+
         if (kDebugBPT)
         {
             const uint viewVertices = path.getVertexIndex() + 1;
@@ -535,11 +540,28 @@ struct PathTracer
             }
         }
 
-        const float3 L = kDebugMIS ? misWeight : contribution * (integrationWeight * misWeight);
-        if (!any(L > 0) || any(isnan(L)) || any(isinf(L)))
+        if (kDebugMIS)
+        {
+            path.sample.contribution += misWeight;
+            path.sampleWeight = 1.f;
+            return;
+        }
+
+        // Stream the path through this pixel's reservoir
+        float W = luminance(contribution) * misWeight * integrationWeight;
+        if (!(W > 0) || isnan(W) || isinf(W))
             return;
 
-        path.L += L;
+        path.sampleWeight += W;
+        if (sampleNext1D(path.sg) * path.sampleWeight >= W)
+            return;
+
+        path.sample.contribution = contribution;
+        path.sample.pathLength = path.getVertexIndex() + lightVertices;
+        if (any(path.prefixThroughput > 0))
+        {
+            path.sample.rcv.contribution = contribution / path.prefixThroughput;
+        }
     }
 
     /** Atomically add radiance to the light image buffer.
@@ -760,9 +782,59 @@ struct PathTracer
      * @param[in] mi Material instance.
      * @param[in,out] path PathState object.
      */
+    void mergeWithLightSubpath(const ShadingData sd, const IMaterialInstance mi, inout PathState path, const LightSubpathVertex lightVertex, const float weight)
+    {
+        if ((path.getVertexIndex() + lightVertex.vertexIndex) - 1 > params.maxSurfaceBounces)
+            return;
+
+        if (length(sd.posW - lightVertex.getPosW()) >= params.mergeRadius)
+            return;
+
+        const float3 dir = -lightVertex.rayDirection;
+        const float cosCamera = dot(dir, sd.getOrientedFaceNormal());
+
+        // Reject sample if not in the hemisphere of a BSDF lobe.
+        const uint lobeTypes = mi.getLobeTypes(sd);
+        const bool hasReflection   = lobeTypes & uint(LobeType::Reflection);
+        const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
+        if ((cosCamera <= kMinCosTheta && !hasTransmission) || (cosCamera >= -kMinCosTheta && !hasReflection))
+            return;
+
+        // evaluate bsdf at camera vertex
+        const float3 f = path.throughput * mi.eval(sd, dir, path.sg) * lightVertex.L;
+        if (!any(f > 0)) return;
+
+        const float sampleWeight = weight / (lightVertex.pathPdf * getEtaVCM());
+
+        const float cameraBsdfFwdPdfW = mi.evalPdf(sd, dir, kUseBSDFSampling);
+        const float cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, dir);
+
+        // evaluate MIS weight
+        const float wLight = lightVertex.dVCM * getMisVcWeightFactor() + lightVertex.dVM * evalMIS(1.f, cameraBsdfFwdPdfW);
+        const float wCamera = path.dVCM * getMisVcWeightFactor() + path.dVM * evalMIS(1.f, cameraBsdfRevPdfW);
+        const float misWeight = 1.f / (wLight + 1.f + wCamera);
+
+        addToPathContribution(path, f, sampleWeight, misWeight, lightVertex.vertexIndex + 1);
+    }
+
+    /**
+     * Evaluates the indirect illumination by merging with a random light subpath vertex.
+     * This function samples a light vertex uniformly from lightVertices.
+     * @param[in] sd Shading data.
+     * @param[in] mi Material instance.
+     * @param[in,out] path PathState object.
+     */
     void mergeWithLightSubpaths(const ShadingData sd, const IMaterialInstance mi, inout PathState path)
     {
-        const int3 o = int3(lerp(float3(0, 0, 0), float3(-1, -1, -1), float3(frac(sd.posW / (2.f * params.mergeRadius)) < 0.5f)));
+        const int3 o = int3( lerp(
+            float3( 0,  0,  0),
+            float3(-1, -1, -1),
+            float3(frac(sd.posW / (2.f * params.mergeRadius)) < 0.5f) ));
+
+        uint cell = -1;
+        float cellW = 0.f;
+
+        // Iterate the 8 neighbor grid cells and merge with the photons in them.
         for (int x = 0; x < 2; x++)
         {
             for (int y = 0; y < 2; y++)
@@ -777,43 +849,31 @@ struct PathTracer
                     if (count == 0)
                         continue;
 
-                    const LightSubpathVertex lightVertex = lightVertexCache[photonMap.getCellOffset(cellIndex)];
-
-                    if ((path.getVertexIndex() + lightVertex.vertexIndex) - 1 > params.maxSurfaceBounces)
-                        continue;
-
-                    if (length(sd.posW - lightVertex.getPosW()) >= params.mergeRadius)
-                        continue;
-
-                    const float3 dir = -lightVertex.rayDirection;
-                    const float cosCamera = dot(dir, sd.getOrientedFaceNormal());
-
-                    // Reject sample if not in the hemisphere of a BSDF lobe.
-                    const uint lobeTypes = mi.getLobeTypes(sd);
-                    const bool hasReflection   = lobeTypes & uint(LobeType::Reflection);
-                    const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
-                    if ((cosCamera <= kMinCosTheta && !hasTransmission) || (cosCamera >= -kMinCosTheta && !hasReflection))
-                        continue;
-
-                    // evaluate bsdf at camera vertex
-                    const float3 f = path.throughput * mi.eval(sd, dir, path.sg) * lightVertex.L;
-                    if (!any(f > 0)) continue;
-
-                    const float sampleWeight = count / (lightVertex.pathPdf * getEtaVCM());
-
-                    const float cameraBsdfFwdPdfW = mi.evalPdf(sd, dir, kUseBSDFSampling);
-                    const float cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, dir);
-
-                    // evaluate MIS weight
-                    const float wLight = lightVertex.dVCM * getMisVcWeightFactor() + lightVertex.dVM * evalMIS(1.f, cameraBsdfFwdPdfW);
-                    const float wCamera = path.dVCM * getMisVcWeightFactor() + path.dVM * evalMIS(1.f, cameraBsdfRevPdfW);
-                    const float misWeight = 1.f / (wLight + 1.f + wCamera);
-
-                    addToPathContribution(path, f, sampleWeight, misWeight, lightVertex.vertexIndex + 1);
+                    if (kUseFastVM)
+                    {
+                        // pick one photon to merge with, with probability proportional to its count
+                        cellW += count;
+                        if (sampleNext1D(path.sg)*cellW < count)
+                            cell = cellIndex;
+                    }
+                    else
+                    {
+                        // merge with all photons
+                        const LightSubpathVertex lightVertex = lightVertexCache[photonMap.getCellOffset(cellIndex)];
+                        mergeWithLightSubpath(sd, mi, path, lightVertex, float(count));
+                    }
                 }
             }
         }
 
+        if (kUseFastVM)
+        {
+            if (cell != -1)
+            {
+                const LightSubpathVertex lightVertex = lightVertexCache[photonMap.getCellOffset(cell)];
+                mergeWithLightSubpath(sd, mi, path, lightVertex, cellW);
+            }
+        }
     }
 
     /**

@@ -587,6 +587,9 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useVM)
         {
+            dirty |= widget.checkbox("Fast vertex merging", mStaticParams.useFastVM);
+            widget.tooltip("Only merge with a single grid cell, instead\nof all 8 neighbor grid cells.");
+
             dirty |= widget.var("Vertex merge radius", mParams.mergeRadius, 1e-9f, 1.f);
             widget.tooltip("Photon radius.");
 
@@ -768,7 +771,7 @@ PathTracer::TracePass::TracePass(ref<Device> pDevice, const std::string& name, c
     desc.addShaderLibrary(kTracePassFilename);
     if (pDevice->getType() == Device::Type::D3D12 && useSER)
         desc.addCompilerArguments({ "-Xdxc", "-enable-lifetime-markers" });
-    desc.setMaxPayloadSize(192); // This is conservative but the required minimum is 192 bytes.
+    desc.setMaxPayloadSize(272); // This is conservative but the required minimum is 264 bytes.
     desc.setMaxAttributeSize(pScene->getRaytracingMaxAttributeSize());
     desc.setMaxTraceRecursionDepth(1);
     if (!pScene->hasProceduralGeometry()) desc.setRtPipelineFlags(RtPipelineFlags::SkipProceduralPrimitives);
@@ -1506,6 +1509,7 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("USE_MIS", (useBPT || useMIS) ? "1" : "0");
     defines.add("USE_BPT", useBPT ? "1" : "0");
     defines.add("USE_VM", (useVM && useBPT) ? "1" : "0");
+    defines.add("USE_FAST_VM", (useVM && useBPT && useFastVM) ? "1" : "0");
     defines.add("DEBUG_MIS", debugMIS ? "1" : "0");
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");

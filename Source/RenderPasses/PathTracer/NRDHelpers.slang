@@ -93,7 +93,7 @@ void setNRDPrimaryHitSeparatedRadiance(NRDBuffers outputNRD, const bool useNRDDe
     {
         if (useNRDDemodulation && path.isDeltaReflectionPrimaryHit())
         {
-            outputNRD.samplePrimaryHitNEEOnDelta[outSampleIdx] = float4(path.L, 0);
+            outputNRD.samplePrimaryHitNEEOnDelta[outSampleIdx] = float4(path.getSampleRadiance(), 0);
         }
         else
         {
