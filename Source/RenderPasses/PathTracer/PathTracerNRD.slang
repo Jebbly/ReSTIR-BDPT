@@ -96,7 +96,7 @@ extension PathTracer
         {
             // Use path's radiance field to accumulate emission along the path since the radiance is not used for denoiser guide paths.
             // No need for accumulating emission at the primary hit since the primary hit emission is coming from GBuffer.
-            path.L += path.thp * bsdfProperties.emission;
+            path.L += (path.throughput / path.pathPdf) * bsdfProperties.emission;
 
             // Terminate after scatter ray on last vertex has been processed or non-delta lobe exists.
             const bool lastVertex = hasFinishedSurfaceBounces(path);
@@ -223,7 +223,7 @@ extension PathTracer
         {
             // Use path's radiance field to accumulate emission along the path since the radiance is not used for denoiser guide paths.
             // No need for accumulating emission at the primary hit since the primary hit emission is coming from GBuffer.
-            path.L += path.thp * bsdfProperties.emission;
+            path.L += (path.throughput / path.pathPdf) * bsdfProperties.emission;
         }
 
         // Terminate the delta transmission path.

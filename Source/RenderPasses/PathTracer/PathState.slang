@@ -79,6 +79,26 @@ enum class BounceType
     Transmission            = 2,    ///< Transmission (all kinds).
 };
 
+struct ReconnectionVertex
+{
+    PackedHitInfo hit;            ///< Hit information for the vertex
+    float3        suffixDir;      ///< Direction towards the next vertex in the suffix
+    float         suffixDist;     ///< Distance towards the next vertex in the suffix (used to reconstruct the ray for getting shading data)
+    float3        contribution;   ///< Unweighted contribution of the suffix
+    float         connectionDist; ///< Distance towards the last prefix vertex
+    float         connectionCos;  ///< Cosine term towards the last prefix vertex
+    uint          prefixLength;   ///< Number of segments in the prefix
+    float         prefixPdf;      ///< Sampling pdf of the prefix
+    uint pad;
+};
+
+struct PathSample
+{
+    float3             contribution; ///< Unweighted path contribution
+    uint               pathLength;   ///< Number of segments in the full path.
+    ReconnectionVertex rcv;          ///< Suffix reconnection vertex
+};
+
 // TODO: Compact encoding to reduce live registers, e.g. packed HitInfo, packed normals.
 /** Live state for the path tracer.
 */
@@ -98,19 +118,29 @@ struct PathState
     float3      normal;                 ///< Geometry normal at the scatter ray origin.
     HitInfo     hit;                    ///< Hit information for the scatter ray. This is populated at committed triangle hits.
 
-    float3      thp;                    ///< Path throughput.
-    float3      L;                      ///< Radiance estimate, divided by pdf
+    float3      throughput;             ///< Path throughput. Does not include sampling pdfs.
 
-    float       pathPdf;                ///< Pdf for generating the path. This is the product of solid-angle BSDF sampling probabilites at each vertex.
+    float       pathPdf;                ///< Pdf for generating the path. This is the product of solid-angle BSDF sampling probabilites and russian roulette probabilites over previous vertices.
     float       dVCM;                   ///< Partial MIS quantities, used to compute MIS weights.
     float       dVC;                    ///< Partial MIS quantities, used to compute MIS weights.
     float       dVM;                    ///< Partial MIS quantities, used to compute MIS weights.
+
+    PathSample  sample;                 ///< Selected path sample
+    float       sampleWeight;           ///< Integration weight for the selected sample.
+
+    float3      L;                      ///< Accumulated radiance
 
     GuideData   guideData;              ///< Denoiser guide data.
     InteriorList interiorList;          ///< Interior list. Keeping track of a stack of materials with medium properties.
     SampleGenerator sg;                 ///< Sample generator state. Typically 4-16B.
 
     // Accessors
+
+    float3 getSampleRadiance()
+    {
+        return L;
+        //return sample.contribution * sampleWeight;
+    }
 
     bool isTerminated() { return !isActive(); }
     bool isActive() { return hasFlag(PathFlags::active); }

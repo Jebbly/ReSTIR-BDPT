@@ -74,7 +74,7 @@ struct PathPayload
         p.packed[2].xyz = asuint(path.normal);
         p.packed[2].w = uint(path.rejectedHits) | ((f32tof16(path.sceneLength) & 0xffff) << 16);
 
-        p.packed[3].xyz = asuint(path.thp);
+        p.packed[3].xyz = asuint(path.throughput);
         p.packed[3].w = path.bounceCounters;
 
         p.packed[4].xyz = asuint(path.L);
@@ -105,7 +105,7 @@ struct PathPayload
         path.rejectedHits = uint16_t(p.packed[2].w & 0xffff);
         path.sceneLength = float16_t(f16tof32(p.packed[2].w >> 16));
 
-        path.thp = asfloat(p.packed[3].xyz);
+        path.throughput = asfloat(p.packed[3].xyz);
         path.bounceCounters = p.packed[3].w;
 
         path.L       = asfloat(p.packed[4].xyz);

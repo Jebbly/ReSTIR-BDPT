@@ -71,12 +71,12 @@ struct PhotonMap
     RWStructuredBuffer<uint> cellSizes;   ///< Number of photons in each cell.
     RWStructuredBuffer<uint> cellOffsets; ///< Index in cellData where each cell starts. First element is the total number of elements.
 
-    uint getCellDataOffset(const uint cellIndex)
+    uint getCellOffset(const uint cellIndex)
     {
         return cellOffsets[cellIndex];
     }
 
-    uint getCellDataSize(const uint cellIndex)
+    uint getCellPhotonCount(const uint cellIndex)
     {
         return cellSizes[cellIndex];
     }

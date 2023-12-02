@@ -212,8 +212,8 @@ struct PathTracer
         else
         {
             // Compute MIS weight by combining this with BSDF sampling.
-            // Note we can assume path.pdf > 0.f since we shouldn't have got here otherwise.
-            return evalMIS(1, path.pathPdf, 1, lightPdfW);
+            // Note we can assume the bsdf pdf (in dVC) is nonzero since we shouldn't have got here otherwise.
+            return evalMIS(1, path.dVC, 1, lightPdfW);
         }
     }
 
@@ -397,7 +397,8 @@ struct PathTracer
             LightSample ls;
             lightSampler.generateLightSample(params.sceneSphere, path.sg, ls);
 
-            path.thp = ls.Li;
+            path.throughput = ls.contrib;
+            path.sampleWeight = ls.weight;
             path.origin = ls.origin;
             path.dir = ls.dir;
             path.pathPdf = ls.emitPdf;
@@ -411,14 +412,17 @@ struct PathTracer
         }
         else
         {
-            path.thp = float3(1.f);
+            path.throughput = float3(1.f);
+            path.L = 0;
+            path.sampleWeight = 0.f;
 
             // Create primary ray.
             Ray cameraRay = gScene.camera.computeRayPinhole(pixel, params.frameDim);
             if (kUseViewDir) cameraRay.dir = -viewDir[pixel];
             path.origin = cameraRay.origin;
             path.dir = cameraRay.dir;
-            path.pathPdf = kUseBPT ? 1.f : 0.f;
+            path.pathPdf = 1.f;
+            path.dVC = 0.f;
 
             if (kUseBPT)
             {
@@ -506,22 +510,14 @@ struct PathTracer
             select(terminatedByRussianRoulette, 0x8, 0x0);
     }
 
-    /** Update the path throughouput.
-        \param[in,out] path Path state.
-        \param[in] weight Vertex throughput.
-    */
-    void updatePathThroughput(inout PathState path, const float3 weight)
-    {
-        path.thp *= weight;
-    }
-
     /** Add radiance to the path contribution.
         \param[in,out] path Path state.
-        \param[in] radiance Vertex radiance.
-        \param[in] misWeight sample MIS weight.
+        \param[in] contribution Unweighted path contribution.
+        \param[in] integrationWeight Integration weight, excluding MIS. Typically this is the reciprocal of the path's sampling /pdf
+        \param[in] misWeight MIS weight.
         \param[in] lightVertices number of light vertices in the path.
     */
-    void addToPathContribution( inout PathState path, const float3 radiance, float misWeight, const uint lightVertices )
+    void addToPathContribution( inout PathState path, const float3 contribution, const float integrationWeight, float misWeight, const uint lightVertices )
     {
         if (kDebugBPT)
         {
@@ -539,20 +535,21 @@ struct PathTracer
             }
         }
 
-        const float3 f = kDebugMIS ? misWeight : (path.thp * radiance * misWeight);
-        if (!any(f > 0) || any(isnan(f)))
+        const float3 L = kDebugMIS ? misWeight : contribution * (integrationWeight * misWeight);
+        if (!any(L > 0) || any(isnan(L)) || any(isinf(L)))
             return;
 
-        path.L += f;
+        path.L += L;
     }
 
     /** Atomically add radiance to the light image buffer.
         \param[in] pixel pixel index.
-        \param[in] radiance Vertex radiance.
+        \param[in] contribution Unweighted path contribution.
+        \param[in] integrationWeight Integration weight, excluding MIS. Typically this is the reciprocal of the path's sampling pdf
         \param[in] misWeight sample MIS weight.
         \param[in] lightVertices number of light vertices in the path.
     */
-    void addToLightImage( const uint2 pixel, const float3 radiance, float misWeight, const uint lightVertices )
+    void addToLightImage(const uint2 pixel, const float3 contribution, const float integrationWeight, float misWeight, const uint lightVertices )
     {
         if (kDebugBPT)
         {
@@ -565,14 +562,14 @@ struct PathTracer
                 misWeight = 1.f;
         }
 
-        const float3 f = kDebugMIS ? misWeight : radiance * misWeight;
-        if (!any(f > 0) || any(isnan(f)))
+        const float3 L = kDebugMIS ? misWeight : contribution * (integrationWeight * misWeight);
+        if (!any(L > 0) || any(isnan(L)))
             return;
 
         const uint addr = sizeof(float3) * (pixel.y * params.frameDim.x + pixel.x);
-        lightImage.InterlockedAddF32(addr + 0, f.r);
-        lightImage.InterlockedAddF32(addr + 4, f.g);
-        lightImage.InterlockedAddF32(addr + 8, f.b);
+        lightImage.InterlockedAddF32(addr + 0, L.r);
+        lightImage.InterlockedAddF32(addr + 4, L.g);
+        lightImage.InterlockedAddF32(addr + 8, L.b);
     }
 
     /** Generates a new scatter ray using BSDF importance sampling.
@@ -593,6 +590,7 @@ struct PathTracer
 
         const bool isDeltaLobe = result.isLobe(LobeType::DeltaReflection) || result.isLobe(LobeType::DeltaTransmission);
 
+        // Update MIS weight quantities
         if (kUseBPT && valid)
         {
             const float cosOut = abs(dot(path.dir, path.normal));
@@ -674,11 +672,20 @@ struct PathTracer
         const bool isCurvePolyTubeHit = isTriangleHit && isHairMaterial;
 
         path.dir = bs.wo;
-        updatePathThroughput(path, bs.weight);
-        if (kUseBPT)
-            path.pathPdf *= (bs.pdf > 0.f ? bs.pdf : 1.f) * getContinuationProbability();
-        else
-            path.pathPdf = bs.pdf * getContinuationProbability();
+
+        float3 f = bs.weight;
+        if (bs.pdf > 0.f)
+        {
+            path.pathPdf *= bs.pdf;
+            f *= bs.pdf; // multiply out pdf
+        }
+        path.throughput *= f;
+
+        if (!kUseBPT)
+        {
+            // hijack dVC to store the pdf in dVC for calculating MIS for NEE
+            path.dVC = bs.pdf * getContinuationProbability();
+        }
 
         path.clearEventFlags();
 
@@ -741,7 +748,7 @@ struct PathTracer
         path.normal = sd.getOrientedFaceNormal();
 
         // Mark the path as valid only if it has a non-zero throughput.
-        bool valid = any(path.thp > 0.f);
+        bool valid = any(path.throughput > 0.f);
 
         return valid;
     }
@@ -766,11 +773,11 @@ struct PathTracer
                     if (cellIndex == -1)
                         continue;
 
-                    const uint count  = photonMap.getCellDataSize(cellIndex);
+                    const uint count  = photonMap.getCellPhotonCount(cellIndex);
                     if (count == 0)
                         continue;
 
-                    const LightSubpathVertex lightVertex = lightVertexCache[photonMap.getCellDataOffset(cellIndex)];
+                    const LightSubpathVertex lightVertex = lightVertexCache[photonMap.getCellOffset(cellIndex)];
 
                     if ((path.getVertexIndex() + lightVertex.vertexIndex) - 1 > params.maxSurfaceBounces)
                         continue;
@@ -789,8 +796,10 @@ struct PathTracer
                         continue;
 
                     // evaluate bsdf at camera vertex
-                    const float3 f = mi.eval(sd, dir, path.sg) * lightVertex.L * count / getEtaVCM();
+                    const float3 f = path.throughput * mi.eval(sd, dir, path.sg) * lightVertex.L;
                     if (!any(f > 0)) continue;
+
+                    const float sampleWeight = count / (lightVertex.pathPdf * getEtaVCM());
 
                     const float cameraBsdfFwdPdfW = mi.evalPdf(sd, dir, kUseBSDFSampling);
                     const float cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, dir);
@@ -800,7 +809,7 @@ struct PathTracer
                     const float wCamera = path.dVCM * getMisVcWeightFactor() + path.dVM * evalMIS(1.f, cameraBsdfRevPdfW);
                     const float misWeight = 1.f / (wLight + 1.f + wCamera);
 
-                    addToPathContribution(path, f, misWeight, lightVertex.vertexIndex + 1);
+                    addToPathContribution(path, f, sampleWeight, misWeight, lightVertex.vertexIndex + 1);
                 }
             }
         }
@@ -836,7 +845,7 @@ struct PathTracer
         const float cosLight = -dot(toLight, lightSd.getOrientedFaceNormal());
         const float cosCamera = dot(toLight, sd.getOrientedFaceNormal());
 
-        float3 f = lightVertex.L * (numVertices / float(params.lightSubpathCount));
+        float3 contribution = path.throughput * lightVertex.L;
 
         // evaluate bsdf at light vertex
         float lightBsdfFwdPdfW, lightBsdfRevPdfW;
@@ -848,12 +857,12 @@ struct PathTracer
             const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
             if ((cosLight <= kMinCosTheta && !hasTransmission) || (cosLight >= -kMinCosTheta && !hasReflection))
                 return;
-            f *= lightMi.eval(lightSd, -toLight, path.sg) * getAdjointCorrection(lightSd, lightMi, -toLight);
+            contribution *= lightMi.eval(lightSd, -toLight, path.sg) * getAdjointCorrection(lightSd, lightMi, -toLight) / abs(cosLight); // divide by cosine term since its handled in the integration weight
 
             lightBsdfFwdPdfW = lightMi.evalPdf(lightSd, -toLight, kUseBSDFSampling);
             lightBsdfRevPdfW = evalRevScatterPdf(lightSd, lightMi, -toLight);
         }
-        if (!any(f > 0)) return;
+        if (!any(contribution > 0)) return;
 
         // evaluate bsdf at camera vertex
         float cameraBsdfFwdPdfW, cameraBsdfRevPdfW;
@@ -864,12 +873,12 @@ struct PathTracer
             const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
             if ((cosCamera <= kMinCosTheta && !hasTransmission) || (cosCamera >= -kMinCosTheta && !hasReflection))
                 return;
-            f *= mi.eval(sd, toLight, path.sg);
+            contribution *= mi.eval(sd, toLight, path.sg);
 
             cameraBsdfFwdPdfW = mi.evalPdf(sd, toLight, kUseBSDFSampling);
             cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, toLight);
         }
-        if (!any(f > 0)) return;
+        if (!any(contribution > 0)) return;
 
         // Test visibility by tracing a shadow ray.
         Ray ray = {};
@@ -884,13 +893,15 @@ struct PathTracer
         if (!V) return;
 
         const float invDist2 = 1.f / dist2;
-        f *= invDist2;
 
-        const float wLight  = evalMIS(1.f, cameraBsdfFwdPdfW * cosLight * invDist2) * (getMisVmWeightFactor() + lightVertex.dVCM + lightVertex.dVC * evalMIS(1.f, lightBsdfRevPdfW));
-        const float wCamera = evalMIS(1.f, lightBsdfFwdPdfW * cosCamera * invDist2) * (getMisVmWeightFactor() + path.dVCM + path.dVC * evalMIS(1.f, cameraBsdfRevPdfW));
+        const float wLight  = evalMIS(1.f, cameraBsdfFwdPdfW * abs(cosLight) * invDist2) * (getMisVmWeightFactor() + lightVertex.dVCM + lightVertex.dVC * evalMIS(1.f, lightBsdfRevPdfW));
+        const float wCamera = evalMIS(1.f, lightBsdfFwdPdfW * abs(cosCamera) * invDist2) * (getMisVmWeightFactor() + path.dVCM + path.dVC * evalMIS(1.f, cameraBsdfRevPdfW));
         const float misWeight = 1.f / (wLight + 1.f + wCamera);
 
-        addToPathContribution(path, f, misWeight, lightVertex.vertexIndex+1);
+        float sampleWeight = (1.f / (lightVertex.pathPdf * path.pathPdf)) * abs(cosLight) * invDist2;
+        sampleWeight *= numVertices / float(params.lightSubpathCount);
+
+        addToPathContribution(path, contribution, sampleWeight, misWeight, lightVertex.vertexIndex+1);
     }
 
     /** Connect a light sub-path to the camera to form a full path. Splats the contribution to lightImage.
@@ -924,21 +935,26 @@ struct PathTracer
         if (any(pixel < 0) || any(pixel >= params.frameDim) || cosCamera <= 0)
             return;
 
+        // Compute full path contribution. Note we divide the cosine term out of the BSDF since it's handled in the integration weight.
+        const float cosOut = abs(dot(sd.faceN, toCamera));
+        float3 contribution = path.throughput * (mi.eval(sd, toCamera, path.sg)/cosOut) * getAdjointCorrection(sd, mi, toCamera);
+        if (!any(contribution > 0))
+            return;
+
         const float invDist2 = 1.f / dist2;
-        const float imageToSurfaceFactor = imageToSolidAngleFactor * abs(dot(sd.faceN, toCamera)) * invDist2;
+        const float imageToSurfaceFactor = imageToSolidAngleFactor * cosOut * invDist2;
 
         // Compute MIS weight
         float bsdfRevPdfW;
         if (path.getVertexIndex() == 1 && path.isAnalyticLight())
+        {
             bsdfRevPdfW = 0.f;
+        }
         else
+        {
             bsdfRevPdfW = evalRevScatterPdf(sd, mi, toCamera) * getContinuationProbability();
+        }
         const float misWeight = kLightTraceOnly ? 1.f : evalLightTraceMIS(path, bsdfRevPdfW, imageToSurfaceFactor);
-
-        // Compute full path contribution
-        float3 radiance = path.thp * mi.eval(sd, toCamera, path.sg) * getAdjointCorrection(sd, mi, toCamera) * (imageToSolidAngleFactor * invDist2) / params.lightSubpathCount;
-        if (!any(radiance > 0))
-            return;
 
         // Test visibility by tracing a shadow ray.
         logTraceRay(PixelStatsRayType::Visibility);
@@ -946,7 +962,9 @@ struct PathTracer
         if (!V)
             return;
 
-        addToLightImage(pixel, radiance, misWeight, path.getVertexIndex()+1);
+        float sampleWeight = (imageToSolidAngleFactor * cosOut * invDist2) / (params.lightSubpathCount * path.pathPdf);
+
+        addToLightImage(pixel, contribution, sampleWeight, misWeight, path.getVertexIndex()+1);
     }
 
     /** Appends the current path vertex to the lightVertices buffer.
@@ -955,13 +973,13 @@ struct PathTracer
     {
         LightSubpathVertex v = {};
         v.packedHit = path.hit.data;
-        v.L = path.thp;
+        v.L = path.throughput;
+        v.vertexIndex = path.getVertexIndex();
+        v.rayOrigin = path.origin;
         v.dVCM = path.dVCM;
+        v.rayDirection = path.dir;
         v.dVC = path.dVC;
         v.dVM = path.dVM;
-        v.rayOrigin = path.origin;
-        v.rayDirection = path.dir;
-        v.vertexIndex = path.getVertexIndex();
         v.pathPdf = path.pathPdf;
         v.hitDist = length(sd.posW - path.origin);
 
@@ -1017,7 +1035,7 @@ struct PathTracer
             path.terminate();
             return true;
         }
-        path.thp /= contProb;
+        path.pathPdf *= contProb;
         return false;
     }
 
@@ -1091,7 +1109,7 @@ struct PathTracer
             const uint materialID = path.interiorList.getTopMaterialID();
             let material = gScene.materials.getMaterial(materialID);
             let vp = material.getHomogeneousVolumeProperties(gScene.materials, materialID);
-            updatePathThroughput(path, HomogeneousVolumeSampler::evalTransmittance(vp, hitDist));
+            path.throughput *= HomogeneousVolumeSampler::evalTransmittance(vp, hitDist);
         }
 
         // Reject false hits in nested dielectrics.
@@ -1161,9 +1179,9 @@ struct PathTracer
                 }
 
                 // Accumulate emitted radiance weighted by path throughput and MIS weight.
-                addToPathContribution(path, bsdfProperties.emission, misWeight, 0);
+                addToPathContribution(path, path.throughput * bsdfProperties.emission, 1.f / path.pathPdf, misWeight, 0);
 
-                attenuatedEmission = path.thp * misWeight * bsdfProperties.emission;
+                attenuatedEmission = path.throughput * bsdfProperties.emission * (misWeight / path.pathPdf);
             }
         }
 
@@ -1219,8 +1237,9 @@ struct PathTracer
                         if (applyRTXDI)
                         {
                             // Query final sample from RTXDI.
-                            validSample = gRTXDI.getFinalSample(path.getPixel(), ls.dir, ls.distance, ls.Li);
+                            validSample = gRTXDI.getFinalSample(path.getPixel(), ls.dir, ls.distance, ls.contrib);
                             ls.origin = path.origin;
+                            ls.weight = 1.f;
                         }
                         else
                         {
@@ -1250,9 +1269,8 @@ struct PathTracer
                                 misWeight = evalDirectMIS(path, scatterPdf, revScatterPdf, abs(dot(sd.faceN, ls.dir)), ls);
                             }
 
-                            float3 weight = mi.eval(sd, ls.dir, path.sg);
-                            float3 Lr = weight * ls.Li;
-                            if (any(Lr > 0.f) && misWeight > 0.f)
+                            float3 contribution = path.throughput * mi.eval(sd, ls.dir, path.sg) * ls.contrib;
+                            if (any(contribution > 0.f) && misWeight > 0.f)
                             {
                                 Ray ray = ls.getVisibilityRay();
 
@@ -1268,7 +1286,7 @@ struct PathTracer
 
                                 logTraceRay(PixelStatsRayType::Visibility);
                                 bool visible = vq.traceVisibilityRay(ray);
-                                if (visible) addToPathContribution(path, Lr, misWeight, 1);
+                                if (visible) addToPathContribution(path, contribution, ls.weight / path.pathPdf, misWeight, 1);
                             }
                         }
                     }
@@ -1298,6 +1316,7 @@ struct PathTracer
         // Generate the next path segment or terminate.
         bool valid = generateScatterRay(sd, mi, path);
 
+        // Determine whether to terminate, and output guide data.
         if (kTraceFromLight)
         {
             // Terminate caustics paths.
@@ -1369,7 +1388,7 @@ struct PathTracer
             // that RTXDI cannot handle, such as transmission, delta or volume scattering events.
             if (kUseRTXDI && path.getVertexIndex() == 2 && !path.isTransmission() && !path.isDelta()) computeEnv = false;
 
-            float3 emitterRadiance = 0.f;
+            float3 pathRadiance = 0.f;
 
             if (computeEnv)
             {
@@ -1388,8 +1407,8 @@ struct PathTracer
                 }
 
                 float3 Le = lightSampler.envMapSampler.eval(path.dir);
-                addToPathContribution(path, Le, misWeight, 0);
-                emitterRadiance = misWeight * Le;
+                addToPathContribution(path, path.throughput * Le, 1.f / path.pathPdf, misWeight, 0);
+                pathRadiance = path.throughput * Le * (misWeight / path.pathPdf);
 
                 if (kOutputGuideData && path.getVertexIndex() == 2
                     && (path.getBounces(BounceType::Specular) == 1
@@ -1416,7 +1435,7 @@ struct PathTracer
         #if defined(DELTA_REFLECTION_PASS)
             if (path.isDeltaReflectionPrimaryHit())
             {
-                writeNRDDeltaReflectionGuideBuffers(outputNRD, kUseNRDDemodulation, path.getPixel(), 0.f, path.thp * emitterRadiance, -path.dir, 0.f, kNRDInvalidPathLength, kNRDInvalidPathLength);
+                writeNRDDeltaReflectionGuideBuffers(outputNRD, kUseNRDDemodulation, path.getPixel(), 0.f, pathRadiance, -path.dir, 0.f, kNRDInvalidPathLength, kNRDInvalidPathLength);
             }
             else
             {
@@ -1425,7 +1444,7 @@ struct PathTracer
         #elif defined(DELTA_TRANSMISSION_PASS)
             if (path.isDeltaTransmissionPath())
             {
-                writeNRDDeltaTransmissionGuideBuffers(outputNRD, kUseNRDDemodulation, path.getPixel(), 0.f, path.thp * emitterRadiance, -path.dir, 0.f, kNRDInvalidPathLength, path.origin + path.dir * kNRDInvalidPathLength);
+                writeNRDDeltaTransmissionGuideBuffers(outputNRD, kUseNRDDemodulation, path.getPixel(), 0.f, pathRadiance, -path.dir, 0.f, kNRDInvalidPathLength, path.origin + path.dir * kNRDInvalidPathLength);
             }
             else
             {
@@ -1459,7 +1478,9 @@ struct PathTracer
         if (kTraceFromLight)
             return;
 
-        assert(!any(isnan(path.L)));
+        const float3 L = path.getSampleRadiance();
+
+        assert(!any(isnan(L)));
 
         // Log path length.
         logPathLength(getTerminatedPathLength(path));
@@ -1467,15 +1488,16 @@ struct PathTracer
         const uint2 pixel = path.getPixel();
         const uint outIdx = params.getSampleOffset(pixel, sampleOffset) + path.getSampleIdx();
 
+
         if (kSamplesPerPixel == 1)
         {
             // Write color directly to frame buffer.
-            outputColor[pixel] = float4(path.L, 1.f);
+            outputColor[pixel] = float4(L, 1.f);
         }
         else
         {
             // Write color to per-sample buffer.
-            sampleColor[outIdx].set(path.L);
+            sampleColor[outIdx].set(L);
         }
 
         if (kOutputGuideData)
@@ -1494,7 +1516,7 @@ struct PathTracer
             else if (path.isDeltaTransmissionPath()) data.setPathType(NRDPathType::DeltaTransmission);
             else data.setPathType(NRDPathType::Residual);
 
-            data.setRadiance(path.L);
+            data.setRadiance(L);
 
             outputNRD.sampleRadiance[outIdx] = data;
         }

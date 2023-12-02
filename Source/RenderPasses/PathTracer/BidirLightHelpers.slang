@@ -46,6 +46,7 @@ import Utils.Geometry.GeometryHelpers;
 import PathState;
 import Params;
 import LoadShadingData;
+import Utils.Debug.PixelDebug;
 
 static const float kMinLightDistSqr  = 1e-9f;
 static const float kMaxLightDistance = FLT_MAX;
@@ -69,7 +70,8 @@ float getSceneSpherePdf(const float4 sceneSphere)
  */
 struct LightSample
 {
-    float3 Li;      ///< Incident radiance at the shading point (unshadowed). This is already divided by the pdf.
+    float3 contrib; ///< Unweighted path contribution
+    float weight;   ///< Integration weight. This is usually the reciprocal of the pdf w.r.t. solid-angle at the shading point
     float pdf;      ///< Pdf with respect to solid angle at the shading point.
     float emitPdf;  ///< Emission pdf with respect to solid angle at the light surface. This is already multiplied by the area-measure light sampling pdf.
     float cosLight; ///< Cosine term at the light surface for area lights, or 1 for non-area lights.
@@ -77,6 +79,8 @@ struct LightSample
     float distance; ///< Ray distance for visibility evaluation (shortened to avoid self-intersection).
     float3 dir;     ///< Ray direction for visibility evaluation (normalized).
     uint flags;
+
+    float3 getRadiance() { return contrib * weight; }
 
     Ray getVisibilityRay() { return Ray(origin, dir, 0.f, distance); }
 
@@ -120,7 +124,7 @@ bool finalizeAreaLightSample(const Optional<ShadingData> sd, const float3 posW, 
     // The area lights are single-sided by default, so radiance is zero when seen from the back-facing side.
     ls.cosLight = dot(normalW, -ls.dir);
     if (ls.cosLight <= 0.f) return false;
-    ls.Li *= surfaceArea * ls.cosLight / distSqr;
+    ls.weight = surfaceArea * ls.cosLight / distSqr;
 
     ls.emitPdf = ls.cosLight * M_1_PI / surfaceArea;
 
@@ -149,7 +153,7 @@ bool sampleRectAreaLight(const Optional<ShadingData> sd, const LightData light, 
     // TODO: normalW is not correctly oriented for mesh instances that have flipped triangle winding.
     const float3 normalW = normalize(mul(light.transMatIT, float4(0.f, 0.f, 1.f, 0.f)).xyz);
 
-    ls.Li = light.intensity;
+    ls.contrib = light.intensity;
 
     return finalizeAreaLightSample(sd, posW, normalW, light.surfaceArea, ls);
 }
@@ -173,7 +177,7 @@ bool sampleSphereAreaLight(const Optional<ShadingData> sd, const LightData light
     // Setup world space normal.
     const float3 normalW = normalize(mul(light.transMatIT, float4(pos, 0.f)).xyz);
 
-    ls.Li = light.intensity;
+    ls.contrib = light.intensity;
 
     return finalizeAreaLightSample(sd, posW, normalW, light.surfaceArea, ls);
 }
@@ -197,7 +201,7 @@ bool sampleDiscAreaLight(const Optional<ShadingData> sd, const LightData light, 
     // Setup world space normal.
     const float3 normalW = normalize(mul(light.transMatIT, float4(0.f, 0.f, 1.f, 0.f)).xyz);
 
-    ls.Li = light.intensity;
+    ls.contrib = light.intensity;
 
     return finalizeAreaLightSample(sd, posW, normalW, light.surfaceArea, ls);
 }
@@ -229,7 +233,8 @@ bool sampleDistantLight(const Optional<ShadingData> sd, const LightData light, c
     // But because the angle is intended to affect penumbra size, but not
     // perceived brigthness, we treat intensity as radiance.
     float solidAngle = (float)M_2PI * (1.f - light.cosSubtendedAngle);
-    ls.Li = light.intensity;
+    ls.contrib = light.intensity;
+    ls.weight = 1.f;
     ls.pdf = 1.f / solidAngle;
     ls.emitPdf = getSceneSpherePdf(sceneSphere) * ls.pdf;
     return true;
@@ -253,7 +258,8 @@ bool sampleDirectionalLight(const Optional<ShadingData> sd, const LightData ligh
     ls.dir = -light.dirW;
 
     // Setup incident radiance. For directional lights there is no falloff or cosine term.
-    ls.Li = light.intensity;
+    ls.contrib = light.intensity;
+    ls.weight = 1.f;
 
     // For a directional light, the PDF with respect to solid angle is a Dirac function. Set to zero.
     ls.pdf = 0.f;
@@ -297,7 +303,8 @@ bool samplePointLight(const Optional<ShadingData> sd, const LightData light, out
     }
 
     // Compute incident radiance at shading point.
-    ls.Li = light.intensity * falloff / distSqr;
+    ls.contrib = light.intensity;
+    ls.weight = falloff / distSqr;
 
     // For a point light, the PDF with respect to solid angle is a Dirac function. Set to zero.
     ls.pdf = 0.f;
@@ -374,10 +381,11 @@ struct LightSampler
         ls.distance = kRayTMax;
         ls.dir = lightSample.dir;
         ls.emitPdf = lightSample.pdf * getSceneSpherePdf(sceneSphere);
-        ls.Li = lightSample.pdf > 0.f ? lightSample.Le / lightSample.pdf : float3(0);
+        ls.contrib = lightSample.Le;
+        ls.weight = lightSample.pdf > 0.f ? 1.f / lightSample.pdf : 0.f;
         ls.cosLight = 1.f;
 
-        return any(ls.Li > 0.f);
+        return any(ls.contrib > 0.f) && ls.weight > 0.f;
     }
 
     /** Generates a light sample on the environment map.
@@ -405,10 +413,11 @@ struct LightSampler
         ls.distance = kRayTMax;
         ls.dir = -lightSample.dir;
         ls.emitPdf = ls.pdf * getSceneSpherePdf(sceneSphere);
-        ls.Li = ls.emitPdf > 0.f ? lightSample.Le / ls.emitPdf : float3(0);
+        ls.contrib = lightSample.Le;
+        ls.weight = ls.emitPdf > 0.f ? 1.f / ls.emitPdf : 0.f;
         ls.cosLight = 1.f;
 
-        return any(ls.Li > 0.f);
+        return any(ls.contrib > 0.f) && ls.weight > 0.f;
     }
 
     // ------------------------------------------------------------------------------------------
@@ -434,7 +443,8 @@ struct LightSampler
         ls.setIsFinite(true);
 
         // Setup returned sample.
-        ls.Li = tls.pdf > 0.f ? tls.Le / tls.pdf : float3(0);
+        ls.contrib = tls.Le;
+        ls.weight = tls.pdf > 0.f ? 1.f / tls.pdf : 0.f;
         ls.pdf = tls.pdf;
         ls.emitPdf = tls.emitPdf;
         ls.cosLight = abs(dot(tls.normalW, tls.dir));
@@ -445,7 +455,7 @@ struct LightSampler
         ls.distance = length(toLight);
         ls.dir = normalize(toLight);
 
-        return any(ls.Li > 0.f);
+        return any(ls.contrib > 0.f) && ls.weight > 0.f;
     }
 
     /** Generates a light sample on the emissive geometry.
@@ -465,7 +475,8 @@ struct LightSampler
         ls.setIsFinite(true);
 
         // Setup returned sample.
-        ls.Li = tls.pdf > 0.f ? tls.Le / tls.emitPdf : float3(0);
+        ls.contrib = tls.Le;
+        ls.weight = tls.pdf > 0.f ? 1.f / tls.emitPdf : 0;
         ls.pdf = tls.pdf;
         ls.emitPdf = tls.emitPdf;
         ls.cosLight = abs(dot(tls.normalW, tls.dir));
@@ -474,7 +485,7 @@ struct LightSampler
         ls.distance = kMaxLightDistance;
         ls.dir = tls.dir;
 
-        return any(ls.Li > 0.f);
+        return any(ls.contrib > 0.f) && ls.weight > 0.f;
     }
 
     // ------------------------------------------------------------------------------------------
@@ -505,7 +516,7 @@ struct LightSampler
         ls.pdf     /= lightCount;
         ls.emitPdf /= lightCount;
 
-        return any(ls.Li > 0.f);
+        return any(ls.contrib > 0.f) && ls.pdf > 0.f;
     }
 
     /** Generates a light sample on the analytic lights.
@@ -518,6 +529,7 @@ struct LightSampler
     {
         ls = {}; // Default initialization to avoid divergence at returns.
         #if 1
+        assert(false, "Light sub-paths from analytic lights not yet supported\n");
         return false;
         #else
         uint lightCount = gScene.getLightCount();
@@ -639,7 +651,7 @@ struct LightSampler
         // Account for light type selection.
         ls.pdf     *= selectionPdf;
         ls.emitPdf *= selectionPdf;
-        ls.Li      /= selectionPdf;
+        ls.weight  /= selectionPdf;
         ls.setIsAnalytic(kUseAnalyticLights && lightType == 2);
 
         return true;
@@ -682,7 +694,7 @@ struct LightSampler
         // Account for light type selection.
         ls.pdf     *= selectionPdf;
         ls.emitPdf *= selectionPdf;
-        ls.Li      /= selectionPdf;
+        ls.weight  /= selectionPdf;
         ls.setIsAnalytic(kUseAnalyticLights && lightType == 2);
 
         return true;
