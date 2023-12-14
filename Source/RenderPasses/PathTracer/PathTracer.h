@@ -92,7 +92,6 @@ private:
     void prepareMaterials(RenderContext* pRenderContext);
     bool prepareLighting(RenderContext* pRenderContext);
     void prepareRTXDI(RenderContext* pRenderContext);
-    void setNRDData(const ShaderVar& var, const RenderData& renderData) const;
     void bindShaderData(const ShaderVar& var, const RenderData& renderData, bool useLightSampling = true) const;
     bool renderRenderingUI(Gui::Widgets& widget);
     bool renderDebugUI(Gui::Widgets& widget);
@@ -101,7 +100,6 @@ private:
     void endFrame(RenderContext* pRenderContext, const RenderData& renderData);
     void generatePaths(RenderContext* pRenderContext, const RenderData& renderData);
     void tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass, const uint2 dispatchDims);
-    void resolvePass(RenderContext* pRenderContext, const RenderData& renderData);
 
     /** Static configuration. Changing any of these options require shader recompilation.
     */
@@ -141,9 +139,6 @@ private:
         // Output parameters
         ColorFormat colorFormat = ColorFormat::LogLuvHDR;       ///< Color format used for internal per-sample color and denoiser buffers.
 
-        // Denoising parameters
-        bool        useNRDDemodulation = true;                  ///< Global switch for NRD demodulation.
-
         DefineList getDefines(const PathTracer& owner) const;
     };
 
@@ -175,30 +170,17 @@ private:
     bool                            mOptionsChanged = false;    ///< True if the config has changed since last frame.
     bool                            mGBufferAdjustShadingNormals = false; ///< True if GBuffer/VBuffer has adjusted shading normals enabled.
     bool                            mFixedSampleCount = true;   ///< True if a fixed sample count per pixel is used. Otherwise load it from the pass sample count input.
-    bool                            mOutputGuideData = false;   ///< True if guide data should be generated as outputs.
-    bool                            mOutputNRDData = false;     ///< True if NRD diffuse/specular data should be generated as outputs.
-    bool                            mOutputNRDAdditionalData = false;   ///< True if NRD data from delta and residual paths should be generated as designated outputs rather than being included in specular NRD outputs.
 
     ref<ComputePass>                mpGeneratePaths;            ///< Fullscreen compute pass generating paths starting at primary hits.
-    ref<ComputePass>                mpResolvePass;              ///< Sample resolve pass.
     ref<ComputePass>                mpReflectTypes;             ///< Helper for reflecting structured buffer types.
 
     std::unique_ptr<TracePass>      mpTracePass;                ///< Main trace pass.
     std::unique_ptr<TracePass>      mpLightTracePass;           ///< Light trace pass.
-    std::unique_ptr<TracePass>      mpTraceDeltaReflectionPass; ///< Delta reflection trace pass (for NRD).
-    std::unique_ptr<TracePass>      mpTraceDeltaTransmissionPass;   ///< Delta transmission trace pass (for NRD).
 
-    ref<Texture>                    mpSampleOffset;             ///< Output offset into per-sample buffers to where the samples for each pixel are stored (the offset is relative the start of the tile). Only used with non-fixed sample count.
+    ref<Buffer>                     mpReservoirs;               ///< Per-pixel reservoirs.
     ref<Buffer>                     mpLightImage;               ///< Light trace image. Light subpath contributions are atomically added to this.
     ref<Buffer>                     mpLightVertices;            ///< Light sub-path vertices.
     ref<Buffer>                     mpLightVertexCount;         ///< Light vertex counter.
     ref<Buffer>                     mpPhotonCellSizes;          ///< Photon grid cell sizes.
     ref<Buffer>                     mpPhotonCellOffsets;        ///< Photon grid cell offsets.
-    ref<Buffer>                     mpSampleColor;              ///< Compact per-sample color buffer. This is used only if spp > 1.
-    ref<Buffer>                     mpSampleGuideData;          ///< Compact per-sample denoiser guide data.
-    ref<Buffer>                     mpSampleNRDRadiance;        ///< Compact per-sample NRD radiance data.
-    ref<Buffer>                     mpSampleNRDHitDist;         ///< Compact per-sample NRD hit distance data.
-    ref<Buffer>                     mpSampleNRDPrimaryHitNeeOnDelta;///< Compact per-sample NEE on delta primary vertices data.
-    ref<Buffer>                     mpSampleNRDEmission;        ///< Compact per-sample NRD emission data.
-    ref<Buffer>                     mpSampleNRDReflectance;     ///< Compact per-sample NRD reflectance data.
 };

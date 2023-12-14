@@ -34,7 +34,6 @@ namespace
 {
     const std::string kGeneratePathsFilename = "RenderPasses/PathTracer/GeneratePaths.cs.slang";
     const std::string kTracePassFilename = "RenderPasses/PathTracer/TracePass.rt.slang";
-    const std::string kResolvePassFilename = "RenderPasses/PathTracer/ResolvePass.cs.slang";
     const std::string kReflectTypesFile = "RenderPasses/PathTracer/ReflectTypes.cs.slang";
 
     // Render pass inputs and outputs.
@@ -55,28 +54,9 @@ namespace
     const std::string kOutputAlbedo = "albedo";
     const std::string kOutputSpecularAlbedo = "specularAlbedo";
     const std::string kOutputIndirectAlbedo = "indirectAlbedo";
-    const std::string kOutputGuideNormal = "guideNormal";
     const std::string kOutputReflectionPosW = "reflectionPosW";
     const std::string kOutputRayCount = "rayCount";
     const std::string kOutputPathLength = "pathLength";
-    const std::string kOutputNRDDiffuseRadianceHitDist = "nrdDiffuseRadianceHitDist";
-    const std::string kOutputNRDSpecularRadianceHitDist = "nrdSpecularRadianceHitDist";
-    const std::string kOutputNRDEmission = "nrdEmission";
-    const std::string kOutputNRDDiffuseReflectance = "nrdDiffuseReflectance";
-    const std::string kOutputNRDSpecularReflectance = "nrdSpecularReflectance";
-    const std::string kOutputNRDDeltaReflectionRadianceHitDist = "nrdDeltaReflectionRadianceHitDist";
-    const std::string kOutputNRDDeltaReflectionReflectance = "nrdDeltaReflectionReflectance";
-    const std::string kOutputNRDDeltaReflectionEmission = "nrdDeltaReflectionEmission";
-    const std::string kOutputNRDDeltaReflectionNormWRoughMaterialID = "nrdDeltaReflectionNormWRoughMaterialID";
-    const std::string kOutputNRDDeltaReflectionPathLength = "nrdDeltaReflectionPathLength";
-    const std::string kOutputNRDDeltaReflectionHitDist = "nrdDeltaReflectionHitDist";
-    const std::string kOutputNRDDeltaTransmissionRadianceHitDist = "nrdDeltaTransmissionRadianceHitDist";
-    const std::string kOutputNRDDeltaTransmissionReflectance = "nrdDeltaTransmissionReflectance";
-    const std::string kOutputNRDDeltaTransmissionEmission = "nrdDeltaTransmissionEmission";
-    const std::string kOutputNRDDeltaTransmissionNormWRoughMaterialID = "nrdDeltaTransmissionNormWRoughMaterialID";
-    const std::string kOutputNRDDeltaTransmissionPathLength = "nrdDeltaTransmissionPathLength";
-    const std::string kOutputNRDDeltaTransmissionPosW = "nrdDeltaTransmissionPosW";
-    const std::string kOutputNRDResidualRadianceHitDist = "nrdResidualRadianceHitDist";
 
     const Falcor::ChannelList kOutputChannels =
     {
@@ -84,29 +64,9 @@ namespace
         { kOutputAlbedo,                                    "",     "Output albedo (linear)", true /* optional */, ResourceFormat::RGBA8Unorm },
         { kOutputSpecularAlbedo,                            "",     "Output specular albedo (linear)", true /* optional */, ResourceFormat::RGBA8Unorm },
         { kOutputIndirectAlbedo,                            "",     "Output indirect albedo (linear)", true /* optional */, ResourceFormat::RGBA8Unorm },
-        { kOutputGuideNormal,                               "",     "Output guide normal (linear)", true /* optional */, ResourceFormat::RGBA16Float },
         { kOutputReflectionPosW,                            "",     "Output reflection pos (world space)", true /* optional */, ResourceFormat::RGBA32Float },
         { kOutputRayCount,                                  "",     "Per-pixel ray count", true /* optional */, ResourceFormat::R32Uint },
         { kOutputPathLength,                                "",     "Per-pixel path length", true /* optional */, ResourceFormat::R32Uint },
-        // NRD outputs
-        { kOutputNRDDiffuseRadianceHitDist,                 "",     "Output demodulated diffuse color (linear) and hit distance", true /* optional */, ResourceFormat::RGBA32Float },
-        { kOutputNRDSpecularRadianceHitDist,                "",     "Output demodulated specular color (linear) and hit distance", true /* optional */, ResourceFormat::RGBA32Float },
-        { kOutputNRDEmission,                               "",     "Output primary surface emission", true /* optional */, ResourceFormat::RGBA32Float },
-        { kOutputNRDDiffuseReflectance,                     "",     "Output primary surface diffuse reflectance", true /* optional */, ResourceFormat::RGBA16Float },
-        { kOutputNRDSpecularReflectance,                    "",     "Output primary surface specular reflectance", true /* optional */, ResourceFormat::RGBA16Float },
-        { kOutputNRDDeltaReflectionRadianceHitDist,         "",     "Output demodulated delta reflection color (linear)", true /* optional */, ResourceFormat::RGBA32Float },
-        { kOutputNRDDeltaReflectionReflectance,             "",     "Output delta reflection reflectance color (linear)", true /* optional */, ResourceFormat::RGBA16Float },
-        { kOutputNRDDeltaReflectionEmission,                "",     "Output delta reflection emission color (linear)", true /* optional */, ResourceFormat::RGBA32Float },
-        { kOutputNRDDeltaReflectionNormWRoughMaterialID,    "",     "Output delta reflection world normal, roughness, and material ID", true /* optional */, ResourceFormat::RGB10A2Unorm },
-        { kOutputNRDDeltaReflectionPathLength,              "",     "Output delta reflection path length", true /* optional */, ResourceFormat::R16Float },
-        { kOutputNRDDeltaReflectionHitDist,                 "",     "Output delta reflection hit distance", true /* optional */, ResourceFormat::R16Float },
-        { kOutputNRDDeltaTransmissionRadianceHitDist,       "",     "Output demodulated delta transmission color (linear)", true /* optional */, ResourceFormat::RGBA32Float },
-        { kOutputNRDDeltaTransmissionReflectance,           "",     "Output delta transmission reflectance color (linear)", true /* optional */, ResourceFormat::RGBA16Float },
-        { kOutputNRDDeltaTransmissionEmission,              "",     "Output delta transmission emission color (linear)", true /* optional */, ResourceFormat::RGBA32Float },
-        { kOutputNRDDeltaTransmissionNormWRoughMaterialID,  "",     "Output delta transmission world normal, roughness, and material ID", true /* optional */, ResourceFormat::RGB10A2Unorm },
-        { kOutputNRDDeltaTransmissionPathLength,            "",     "Output delta transmission path length", true /* optional */, ResourceFormat::R16Float },
-        { kOutputNRDDeltaTransmissionPosW,                  "",     "Output delta transmission position", true /* optional */, ResourceFormat::RGBA32Float },
-        { kOutputNRDResidualRadianceHitDist,                "",     "Output residual color (linear) and hit distance", true /* optional */, ResourceFormat::RGBA32Float },
     };
 
     // Scripting options.
@@ -139,8 +99,6 @@ namespace
     const std::string kSpecularRoughnessThreshold = "specularRoughnessThreshold";
     const std::string kPrimaryLodMode = "primaryLodMode";
     const std::string kLODBias = "lodBias";
-
-    const std::string kUseNRDDemodulation = "useNRDDemodulation";
 
     const std::string kUseSER = "useSER";
 
@@ -186,10 +144,6 @@ PathTracer::PathTracer(ref<Device> pDevice, const Properties& props)
 
     // Create sample generator.
     mpSampleGenerator = SampleGenerator::create(mpDevice, mStaticParams.sampleGenerator);
-
-    // Create resolve pass. This doesn't depend on the scene so can be created here.
-    auto defines = mStaticParams.getDefines(*this);
-    mpResolvePass = ComputePass::create(mpDevice, ProgramDesc().addShaderLibrary(kResolvePassFilename).csEntry("main"), defines, false);
 
     // Note: The other programs are lazily created in updatePrograms() because a scene needs to be present when creating them.
 
@@ -245,9 +199,6 @@ void PathTracer::parseProperties(const Properties& props)
         else if (key == kSpecularRoughnessThreshold) mParams.specularRoughnessThreshold = value;
         else if (key == kPrimaryLodMode) mStaticParams.primaryLodMode = value;
         else if (key == kLODBias) mParams.lodBias = value;
-
-        // Denoising parameters
-        else if (key == kUseNRDDemodulation) mStaticParams.useNRDDemodulation = value;
 
         // Scheduling parameters
         else if (key == kUseSER) mStaticParams.useSER = value;
@@ -373,9 +324,6 @@ Properties PathTracer::getProperties() const
     props[kPrimaryLodMode] = mStaticParams.primaryLodMode;
     props[kLODBias] = mParams.lodBias;
 
-    // Denoising parameters
-    props[kUseNRDDemodulation] = mStaticParams.useNRDDemodulation;
-
     // Scheduling parameters
     props[kUseSER] = mStaticParams.useSER;
 
@@ -457,10 +405,9 @@ void PathTracer::execute(RenderContext* pRenderContext, const RenderData& render
     // This should be called after all resources have been created.
     preparePathTracer(renderData);
 
-    // Trace light sub-paths
+    // Trace light sub-paths.
     if (mStaticParams.useBPT)
     {
-        // clear the light image
         pRenderContext->clearUAV(mpLightImage->getUAV().get(), float4(0.f));
         pRenderContext->clearUAV(mpLightVertexCount->getUAV().get(), uint4(0.f));
         if (mStaticParams.useVM)
@@ -482,20 +429,9 @@ void PathTracer::execute(RenderContext* pRenderContext, const RenderData& render
         mpRTXDI->update(pRenderContext, pMotionVectors);
     }
 
-    // Trace pass.
+    // Trace camera sub-paths.
     FALCOR_ASSERT(mpTracePass);
     tracePass(pRenderContext, renderData, *mpTracePass, mParams.frameDim);
-
-    // Launch separate passes to trace delta reflection and transmission paths to generate respective guide buffers.
-    if (mOutputNRDAdditionalData)
-    {
-        FALCOR_ASSERT(mpTraceDeltaReflectionPass && mpTraceDeltaTransmissionPass);
-        tracePass(pRenderContext, renderData, *mpTraceDeltaReflectionPass, mParams.frameDim);
-        tracePass(pRenderContext, renderData, *mpTraceDeltaTransmissionPass, mParams.frameDim);
-    }
-
-    // Resolve pass.
-    resolvePass(pRenderContext, renderData);
 
     endFrame(pRenderContext, renderData);
 }
@@ -671,12 +607,6 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
         runtimeDirty |= widget.var("TexLOD bias", mParams.lodBias, -16.f, 16.f, 0.01f);
     }
 
-    if (auto group = widget.group("Denoiser options"))
-    {
-        dirty |= widget.checkbox("Use NRD demodulation", mStaticParams.useNRDDemodulation);
-        widget.tooltip("Global switch for NRD demodulation");
-    }
-
     if (auto group = widget.group("Scheduling options"))
     {
         dirty |= widget.checkbox("Use SER", mStaticParams.useSER);
@@ -771,7 +701,7 @@ PathTracer::TracePass::TracePass(ref<Device> pDevice, const std::string& name, c
     desc.addShaderLibrary(kTracePassFilename);
     if (pDevice->getType() == Device::Type::D3D12 && useSER)
         desc.addCompilerArguments({ "-Xdxc", "-enable-lifetime-markers" });
-    desc.setMaxPayloadSize(272); // This is conservative but the required minimum is 264 bytes.
+    desc.setMaxPayloadSize(200); // This is conservative but the required minimum is 192 bytes.
     desc.setMaxAttributeSize(pScene->getRaytracingMaxAttributeSize());
     desc.setMaxTraceRecursionDepth(1);
     if (!pScene->hasProceduralGeometry()) desc.setRtPipelineFlags(RtPipelineFlags::SkipProceduralPrimitives);
@@ -837,8 +767,6 @@ void PathTracer::TracePass::prepareProgram(ref<Device> pDevice, const DefineList
 void PathTracer::resetPrograms()
 {
     mpTracePass = nullptr;
-    mpTraceDeltaReflectionPass = nullptr;
-    mpTraceDeltaTransmissionPass = nullptr;
     mpLightTracePass = nullptr;
     mpGeneratePaths = nullptr;
     mpReflectTypes = nullptr;
@@ -865,18 +793,6 @@ void PathTracer::updatePrograms()
         mpTracePass = std::make_unique<TracePass>(mpDevice, "tracePass", "", mpScene, defines, globalTypeConformances);
 
     mpTracePass->prepareProgram(mpDevice, defines);
-
-    // Create specialized trace passes.
-    if (mOutputNRDAdditionalData)
-    {
-        if (!mpTraceDeltaReflectionPass)
-            mpTraceDeltaReflectionPass = std::make_unique<TracePass>(mpDevice, "traceDeltaReflectionPass", "DELTA_REFLECTION_PASS", mpScene, defines, globalTypeConformances);
-        if (!mpTraceDeltaTransmissionPass)
-            mpTraceDeltaTransmissionPass = std::make_unique<TracePass>(mpDevice, "traceDeltaTransmissionPass", "DELTA_TRANSMISSION_PASS", mpScene, defines, globalTypeConformances);
-
-        mpTraceDeltaReflectionPass->prepareProgram(mpDevice, defines);
-        mpTraceDeltaTransmissionPass->prepareProgram(mpDevice, defines);
-    }
 
     // Create light trace pass.
     if (mStaticParams.useBPT)
@@ -915,7 +831,6 @@ void PathTracer::updatePrograms()
         pass->setVars(nullptr);
     };
     preparePass(mpGeneratePaths);
-    preparePass(mpResolvePass);
     preparePass(mpReflectTypes);
 
     mVarsChanged = true;
@@ -935,6 +850,12 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
     const size_t lightVertexCount = mParams.lightSubpathCount * std::max(1u, mParams.maxSurfaceBounces);
 
     auto var = mpReflectTypes->getRootVar();
+
+    if (!mpReservoirs || mpReservoirs->getElementCount() != mParams.frameDim.x * mParams.frameDim.y)
+    {
+        mpReservoirs = mpDevice->createStructuredBuffer(var["pathTracer"]["pathReservoirs"], mParams.frameDim.x * mParams.frameDim.y, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+        mVarsChanged = true;
+    }
 
     if (mStaticParams.useBPT)
     {
@@ -957,46 +878,6 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
             mpPhotonCellOffsets   = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellOffsets"], mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
             mVarsChanged = true;
         }
-    }
-
-    // Allocate output sample offset buffer if needed.
-    // This buffer stores the output offset to where the samples for each pixel are stored consecutively.
-    // The offsets are local to the current tile, so 16-bit format is sufficient and reduces bandwidth usage.
-    if (!mFixedSampleCount)
-    {
-        if (!mpSampleOffset || mpSampleOffset->getWidth() != mParams.frameDim.x || mpSampleOffset->getHeight() != mParams.frameDim.y)
-        {
-            FALCOR_ASSERT(kScreenTileDim.x * kScreenTileDim.y * kMaxSamplesPerPixel <= (1u << 16));
-            mpSampleOffset = mpDevice->createTexture2D(mParams.frameDim.x, mParams.frameDim.y, ResourceFormat::R16Uint, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-            mVarsChanged = true;
-        }
-    }
-
-    // Allocate per-sample buffers.
-    // For the special case of fixed 1 spp, the output is written out directly and this buffer is not needed.
-    if (!mFixedSampleCount || mStaticParams.samplesPerPixel > 1)
-    {
-        if (!mpSampleColor || mpSampleColor->getElementCount() < sampleCount || mVarsChanged)
-        {
-            mpSampleColor = mpDevice->createStructuredBuffer(var["sampleColor"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-            mVarsChanged = true;
-        }
-    }
-
-    if (mOutputGuideData && (!mpSampleGuideData || mpSampleGuideData->getElementCount() < sampleCount || mVarsChanged))
-    {
-        mpSampleGuideData = mpDevice->createStructuredBuffer(var["sampleGuideData"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-        mVarsChanged = true;
-    }
-
-    if (mOutputNRDData && (!mpSampleNRDRadiance || mpSampleNRDRadiance->getElementCount() < sampleCount || mVarsChanged))
-    {
-        mpSampleNRDRadiance = mpDevice->createStructuredBuffer(var["sampleNRDRadiance"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-        mpSampleNRDHitDist = mpDevice->createStructuredBuffer(var["sampleNRDHitDist"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-        mpSampleNRDPrimaryHitNeeOnDelta = mpDevice->createStructuredBuffer(var["sampleNRDPrimaryHitNeeOnDelta"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-        mpSampleNRDEmission = mpDevice->createStructuredBuffer(var["sampleNRDEmission"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-        mpSampleNRDReflectance = mpDevice->createStructuredBuffer(var["sampleNRDReflectance"], sampleCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-        mVarsChanged = true;
     }
 }
 
@@ -1159,28 +1040,6 @@ void PathTracer::prepareRTXDI(RenderContext* pRenderContext)
     }
 }
 
-void PathTracer::setNRDData(const ShaderVar& var, const RenderData& renderData) const
-{
-    var["sampleRadiance"] = mpSampleNRDRadiance;
-    var["sampleHitDist"] = mpSampleNRDHitDist;
-    var["samplePrimaryHitNEEOnDelta"] = mpSampleNRDPrimaryHitNeeOnDelta;
-    var["sampleEmission"] = mpSampleNRDEmission;
-    var["sampleReflectance"] = mpSampleNRDReflectance;
-    var["primaryHitEmission"] = renderData.getTexture(kOutputNRDEmission);
-    var["primaryHitDiffuseReflectance"] = renderData.getTexture(kOutputNRDDiffuseReflectance);
-    var["primaryHitSpecularReflectance"] = renderData.getTexture(kOutputNRDSpecularReflectance);
-    var["deltaReflectionReflectance"] = renderData.getTexture(kOutputNRDDeltaReflectionReflectance);
-    var["deltaReflectionEmission"] = renderData.getTexture(kOutputNRDDeltaReflectionEmission);
-    var["deltaReflectionNormWRoughMaterialID"] = renderData.getTexture(kOutputNRDDeltaReflectionNormWRoughMaterialID);
-    var["deltaReflectionPathLength"] = renderData.getTexture(kOutputNRDDeltaReflectionPathLength);
-    var["deltaReflectionHitDist"] = renderData.getTexture(kOutputNRDDeltaReflectionHitDist);
-    var["deltaTransmissionReflectance"] = renderData.getTexture(kOutputNRDDeltaTransmissionReflectance);
-    var["deltaTransmissionEmission"] = renderData.getTexture(kOutputNRDDeltaTransmissionEmission);
-    var["deltaTransmissionNormWRoughMaterialID"] = renderData.getTexture(kOutputNRDDeltaTransmissionNormWRoughMaterialID);
-    var["deltaTransmissionPathLength"] = renderData.getTexture(kOutputNRDDeltaTransmissionPathLength);
-    var["deltaTransmissionPosW"] = renderData.getTexture(kOutputNRDDeltaTransmissionPosW);
-}
-
 void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderData, bool useLightSampling) const
 {
     // Bind static resources that don't change per frame.
@@ -1188,20 +1047,15 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
     {
         if (useLightSampling && mpEnvMapSampler) mpEnvMapSampler->bindShaderData(var["lightSampler"]["envMapSampler"]);
 
-        var["sampleOffset"] = mpSampleOffset; // Can be nullptr
-        var["sampleColor"] = mpSampleColor;
-        var["sampleGuideData"] = mpSampleGuideData;
-
         var["lightImage"] = mpLightImage;
         var["lightVertexCache"]["lightVertices"] = mpLightVertices;
         var["lightVertexCache"]["lightVertexCount"] = mpLightVertexCount;
 
         var["photonMap"]["cellSizes"]   = mpPhotonCellSizes;
         var["photonMap"]["cellOffsets"] = mpPhotonCellOffsets;
-    }
 
-    // Bind runtime data.
-    setNRDData(var["outputNRD"], renderData);
+        var["pathReservoirs"] = mpReservoirs;
+    }
 
     ref<Texture> pViewDir;
     if (mpScene->getCamera()->getApertureRadius() > 0.f)
@@ -1309,37 +1163,6 @@ bool PathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& ren
     // Check if fixed sample count should be used. When the sample count input is connected we load the count from there instead.
     mFixedSampleCount = renderData[kInputSampleCount] == nullptr;
 
-    // Check if guide data should be generated.
-    mOutputGuideData = renderData[kOutputAlbedo] != nullptr || renderData[kOutputSpecularAlbedo] != nullptr
-        || renderData[kOutputIndirectAlbedo] != nullptr || renderData[kOutputGuideNormal] != nullptr
-        || renderData[kOutputReflectionPosW] != nullptr;
-
-    // Check if NRD data should be generated.
-    mOutputNRDData =
-        renderData[kOutputNRDDiffuseRadianceHitDist] != nullptr
-        || renderData[kOutputNRDSpecularRadianceHitDist] != nullptr
-        || renderData[kOutputNRDResidualRadianceHitDist] != nullptr
-        || renderData[kOutputNRDEmission] != nullptr
-        || renderData[kOutputNRDDiffuseReflectance] != nullptr
-        || renderData[kOutputNRDSpecularReflectance] != nullptr;
-
-    // Check if additional NRD data should be generated.
-    bool prevOutputNRDAdditionalData = mOutputNRDAdditionalData;
-    mOutputNRDAdditionalData =
-        renderData[kOutputNRDDeltaReflectionRadianceHitDist] != nullptr
-        || renderData[kOutputNRDDeltaTransmissionRadianceHitDist] != nullptr
-        || renderData[kOutputNRDDeltaReflectionReflectance] != nullptr
-        || renderData[kOutputNRDDeltaReflectionEmission] != nullptr
-        || renderData[kOutputNRDDeltaReflectionNormWRoughMaterialID] != nullptr
-        || renderData[kOutputNRDDeltaReflectionPathLength] != nullptr
-        || renderData[kOutputNRDDeltaReflectionHitDist] != nullptr
-        || renderData[kOutputNRDDeltaTransmissionReflectance] != nullptr
-        || renderData[kOutputNRDDeltaTransmissionEmission] != nullptr
-        || renderData[kOutputNRDDeltaTransmissionNormWRoughMaterialID] != nullptr
-        || renderData[kOutputNRDDeltaTransmissionPathLength] != nullptr
-        || renderData[kOutputNRDDeltaTransmissionPosW] != nullptr;
-    if (mOutputNRDAdditionalData != prevOutputNRDAdditionalData) mRecompile = true;
-
     // Enable pixel stats if rayCount or pathLength outputs are connected.
     if (renderData[kOutputRayCount] != nullptr || renderData[kOutputPathLength] != nullptr)
     {
@@ -1391,17 +1214,9 @@ void PathTracer::generatePaths(RenderContext* pRenderContext, const RenderData& 
 
     // Check shader assumptions.
     // We launch one thread group per screen tile, with threads linearly indexed.
-    const uint32_t tileSize = kScreenTileDim.x * kScreenTileDim.y;
-    FALCOR_ASSERT(kScreenTileDim.x == 16 && kScreenTileDim.y == 16); // TODO: Remove this temporary limitation when Slang bug has been fixed, see comments in shader.
-    FALCOR_ASSERT(kScreenTileBits.x <= 4 && kScreenTileBits.y <= 4); // Since we use 8-bit deinterleave.
-    FALCOR_ASSERT(mpGeneratePaths->getThreadGroupSize().x == tileSize);
-    FALCOR_ASSERT(mpGeneratePaths->getThreadGroupSize().y == 1 && mpGeneratePaths->getThreadGroupSize().z == 1);
 
     // Additional specialization. This shouldn't change resource declarations.
     mpGeneratePaths->addDefine("USE_VIEW_DIR", (mpScene->getCamera()->getApertureRadius() > 0 && renderData[kInputViewDir] != nullptr) ? "1" : "0");
-    mpGeneratePaths->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
-    mpGeneratePaths->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
-    mpGeneratePaths->addDefine("OUTPUT_NRD_ADDITIONAL_DATA", mOutputNRDAdditionalData ? "1" : "0");
 
     // Bind resources.
     auto var = mpGeneratePaths->getRootVar()["CB"]["gPathGenerator"];
@@ -1412,8 +1227,7 @@ void PathTracer::generatePaths(RenderContext* pRenderContext, const RenderData& 
     if (mpRTXDI) mpRTXDI->bindShaderData(mpGeneratePaths->getRootVar());
 
     // Launch one thread per pixel.
-    // The dimensions are padded to whole tiles to allow re-indexing the threads in the shader.
-    mpGeneratePaths->execute(pRenderContext, { mParams.screenTiles.x * tileSize, mParams.screenTiles.y, 1u });
+    mpGeneratePaths->execute(pRenderContext, { mParams.frameDim.x, mParams.frameDim.y, 1u });
 }
 
 void PathTracer::tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass, const uint2 dispatchDims)
@@ -1424,9 +1238,6 @@ void PathTracer::tracePass(RenderContext* pRenderContext, const RenderData& rend
 
     // Additional specialization. This shouldn't change resource declarations.
     tracePass.pProgram->addDefine("USE_VIEW_DIR", (mpScene->getCamera()->getApertureRadius() > 0 && renderData[kInputViewDir] != nullptr) ? "1" : "0");
-    tracePass.pProgram->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
-    tracePass.pProgram->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
-    tracePass.pProgram->addDefine("OUTPUT_NRD_ADDITIONAL_DATA", mOutputNRDAdditionalData ? "1" : "0");
 
     // Bind global resources.
     auto var = tracePass.pVars->getRootVar();
@@ -1443,58 +1254,6 @@ void PathTracer::tracePass(RenderContext* pRenderContext, const RenderData& rend
 
     // Full screen dispatch.
     mpScene->raytrace(pRenderContext, tracePass.pProgram.get(), tracePass.pVars, uint3(dispatchDims, 1));
-}
-
-void PathTracer::resolvePass(RenderContext* pRenderContext, const RenderData& renderData)
-{
-    if (!mOutputGuideData && !mOutputNRDData && mFixedSampleCount && mStaticParams.samplesPerPixel == 1) return;
-
-    FALCOR_PROFILE(pRenderContext, "resolvePass");
-
-    // This pass is executed when multiple samples per pixel are used.
-    // We launch one thread per pixel that computes the resolved color by iterating over the samples.
-    // The samples are arranged in tiles with pixels in Morton order, with samples stored consecutively for each pixel.
-    // With adaptive sampling, an extra sample offset lookup table computed by the path generation pass is used to
-    // locate the samples for each pixel.
-
-    // Additional specialization. This shouldn't change resource declarations.
-    mpResolvePass->addDefine("OUTPUT_GUIDE_DATA", mOutputGuideData ? "1" : "0");
-    mpResolvePass->addDefine("OUTPUT_NRD_DATA", mOutputNRDData ? "1" : "0");
-    mpResolvePass->addDefine("USE_BPT", mStaticParams.useBPT ? "1" : "0");
-
-    // Bind resources.
-    auto var = mpResolvePass->getRootVar()["CB"]["gResolvePass"];
-    var["params"].setBlob(mParams);
-    var["sampleCount"] = renderData.getTexture(kInputSampleCount); // Can be nullptr
-    var["lightImage"] = mpLightImage;
-    var["outputColor"] = renderData.getTexture(kOutputColor);
-    var["outputAlbedo"] = renderData.getTexture(kOutputAlbedo);
-    var["outputSpecularAlbedo"] = renderData.getTexture(kOutputSpecularAlbedo);
-    var["outputIndirectAlbedo"] = renderData.getTexture(kOutputIndirectAlbedo);
-    var["outputGuideNormal"] = renderData.getTexture(kOutputGuideNormal);
-    var["outputReflectionPosW"] = renderData.getTexture(kOutputReflectionPosW);
-    var["outputNRDDiffuseRadianceHitDist"] = renderData.getTexture(kOutputNRDDiffuseRadianceHitDist);
-    var["outputNRDSpecularRadianceHitDist"] = renderData.getTexture(kOutputNRDSpecularRadianceHitDist);
-    var["outputNRDDeltaReflectionRadianceHitDist"] = renderData.getTexture(kOutputNRDDeltaReflectionRadianceHitDist);
-    var["outputNRDDeltaTransmissionRadianceHitDist"] = renderData.getTexture(kOutputNRDDeltaTransmissionRadianceHitDist);
-    var["outputNRDResidualRadianceHitDist"] = renderData.getTexture(kOutputNRDResidualRadianceHitDist);
-
-    if (mVarsChanged)
-    {
-        var["sampleOffset"] = mpSampleOffset; // Can be nullptr
-        var["sampleColor"] = mpSampleColor;
-        var["sampleGuideData"] = mpSampleGuideData;
-        var["sampleNRDRadiance"] = mpSampleNRDRadiance;
-        var["sampleNRDHitDist"] = mpSampleNRDHitDist;
-        var["sampleNRDEmission"] = mpSampleNRDEmission;
-        var["sampleNRDReflectance"] = mpSampleNRDReflectance;
-
-        var["sampleNRDPrimaryHitNeeOnDelta"] = mpSampleNRDPrimaryHitNeeOnDelta;
-        var["primaryHitDiffuseReflectance"] = renderData.getTexture(kOutputNRDDiffuseReflectance);
-    }
-
-    // Launch one thread per pixel.
-    mpResolvePass->execute(pRenderContext, { mParams.frameDim, 1u });
 }
 
 DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
@@ -1519,7 +1278,6 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("USE_LIGHTS_IN_DIELECTRIC_VOLUMES", useLightsInDielectricVolumes ? "1" : "0");
     defines.add("DISABLE_CAUSTICS", disableCaustics ? "1" : "0");
     defines.add("PRIMARY_LOD_MODE", std::to_string((uint32_t)primaryLodMode));
-    defines.add("USE_NRD_DEMODULATION", useNRDDemodulation ? "1" : "0");
     defines.add("USE_SER", useSER ? "1" : "0");
     defines.add("COLOR_FORMAT", std::to_string((uint32_t)colorFormat));
     defines.add("MIS_HEURISTIC", std::to_string((uint32_t)misHeuristic));

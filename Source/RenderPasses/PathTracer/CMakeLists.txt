@@ -4,18 +4,15 @@ target_sources(PathTracer PRIVATE
     BidirLightHelpers.slang
     ColorType.slang
     GeneratePaths.cs.slang
-    GuideData.slang
     LoadShadingData.slang
-    NRDHelpers.slang
     Params.slang
+    PathReservoir.slang
     PathState.slang
     PathTracer.slang
     PathTracer.cpp
     PathTracer.h
-    PathTracerNRD.slang
     PhotonMap.slang
     ReflectTypes.cs.slang
-    ResolvePass.cs.slang
     StaticParams.slang
     TracePass.rt.slang
 )

@@ -89,6 +89,9 @@ struct PathTracerParams
     uint maxSpecularBounces     = 10;
     uint maxTransmissionBounces = 10;
 
+    float minReconnectionDistance = 1e-4f;
+    float minReconnectionRoughness = 1e-4f;
+
     // Runtime values
     uint2   frameDim = { 0, 0 };        ///< Frame dimension in pixels.
     uint2   screenTiles = { 0, 0 };     ///< Number of screen-tiles. Screen tiles may extend outside the frame.
@@ -96,50 +99,14 @@ struct PathTracerParams
     uint    frameCount = 0;             ///< Frames rendered. This is used as random seed.
     uint    seed = 0;                   ///< Random seed. This will get updated from the host depending on settings.
 
+    float4 sceneSphere;                 ///< Scene bounding sphere.
+
     uint lightSubpathCount = 1000000;   ///< Number of light sub-paths to trace.
     float contProb = 0.9f;              ///< Continuation probability when using BPT.
-    float4 sceneSphere;                 ///< Scene bounding sphere.
     int debugPathLength = -1;           ///< Path length for debugging.
     int debugLightVertexCount = -1;     ///< Number of light vertices for debugging.
     float mergeRadius = 0.0025f;        ///< Photon radius.
     uint cellCount = 10000000;          ///< Number of cells in the photon hash grid.
-
-#ifndef HOST_CODE
-    /** Computes the offset into the tiled sample buffer for a given tile.
-        The samples for all pixels are stored consecutively after this offset.
-        \param[in] tile Tile coordinates.
-        \return Offset into tiled sample buffer.
-    */
-    uint getTileOffset(const uint2 tile)
-    {
-        uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
-        uint stride = kScreenTileDim.x * kScreenTileDim.y * maxSpp;
-        uint tileIdx = tile.y * screenTiles.x + tile.x;
-        return tileIdx * stride;
-    }
-
-    /** Computes the offset into the tiled sample buffer for a given pixel.
-        \param[in] pixel Pixel on screen.
-        \param[in] sampleOffset Per-pixel sample offset within tiles. Only used if kSamplesPerPixel == 0.
-        \return Offset into tiled sample buffer.
-    */
-    uint getSampleOffset(const uint2 pixel, Texture2D<uint> sampleOffset)
-    {
-        uint2 tileID = pixel >> kScreenTileBits;
-        uint tileOffset = getTileOffset(tileID);
-
-        if (kSamplesPerPixel > 0)
-        {
-            uint tileBits = kScreenTileBits.x + kScreenTileBits.y;
-            uint pixelIdx = interleave_16bit(pixel) & ((1 << tileBits) - 1); // TODO: Use interleave_8bit() if kScreenTileBits <= 4.
-            return tileOffset + pixelIdx * kSamplesPerPixel;
-        }
-        else
-        {
-            return tileOffset + sampleOffset[pixel];
-        }
-    }
-#endif
 };
 
 END_NAMESPACE_FALCOR

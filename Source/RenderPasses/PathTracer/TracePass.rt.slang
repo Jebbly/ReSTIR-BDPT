@@ -35,7 +35,6 @@ import RenderPasses.Shared.Denoising.NRDConstants;
 import Utils.Math.PackedFormats;
 import Utils.Math.FormatConversion;
 import PathTracer;
-import PathTracerNRD;
 
 import Utils.NVAPI; // TODO(@skallweit) this is currently needed to make g_NvidiaExt visible
 
@@ -49,16 +48,23 @@ Scheduler gScheduler;
 // Define ray indices.
 static const uint kRayTypeScatter = 0;
 static const uint kMissScatter = 0;
+#ifdef LIGHT_TRACE_PASS
+static const bool kTraceFromLight = true;
+#else
+static const bool kTraceFromLight = false;
+#endif
 
 struct DummyAttribs { uint dummy; };
 
 struct PathPayload
 {
-    uint4 packed[11];
+    uint4 packed[7];
 
     PackedHitInfo hit;
-    GuideData guideData;
+    PackedHitInfo rcvHit;
     InteriorList interiorList;  ///< Interior list. Keeping track of a stack of materials with medium properties. The size depends on the config (4B/item).
+    uint replayBounces;
+    float lastPathPdf;
     SampleGenerator sg;         ///< Sample generator state. Typically 4-16B.
 
     static PathPayload pack(const PathState path)
@@ -77,33 +83,22 @@ struct PathPayload
         p.packed[3].xyz = asuint(path.throughput);
         p.packed[3].w = path.bounceCounters;
 
-        p.packed[4].x = asuint(path.sampleWeight);
+        p.packed[4].x = asuint(path.pathPdf);
+        p.packed[4].y = asuint(path.dVCM);
+        p.packed[4].z = asuint(path.dVC);
+        p.packed[4].w = asuint(path.dVM);
 
-        p.packed[5].x = asuint(path.pathPdf);
-        p.packed[5].y = asuint(path.dVCM);
-        p.packed[5].z = asuint(path.dVC);
-        p.packed[5].w = asuint(path.dVM);
+        p.packed[5].xyz = asuint(path.throughputAtRcv);
+        p.packed[5].w   = asuint(path.replayPdf);
 
-        p.packed[6].xyz = asuint(path.sample.contribution);
-        p.packed[6].w = path.sample.pathLength;
+        p.packed[6].xyz = asuint(path.rcvDirOut);
+        p.packed[6].w   = asuint(path.rcvG);
 
-        p.packed[7] = path.sample.rcv.hit;
-
-        p.packed[8].xyz = asuint(path.sample.rcv.suffixDir);
-        p.packed[8].w   = asuint(path.sample.rcv.suffixDist);
-
-        p.packed[9].xyz = asuint(path.sample.rcv.contribution);
-        p.packed[9].w   = asuint(path.sample.rcv.connectionDist);
-
-        p.packed[10].x = asuint(path.sample.rcv.connectionCos);
-        p.packed[10].y = asuint(path.sample.rcv.prefixPdf);
-        p.packed[10].z = path.sample.rcv.prefixLength;
-
-        p.packed[11].xyz = asuint(path.prefixThroughput);
-
-        p.hit = path.hit.getData();
-        p.guideData = path.guideData;
-        p.interiorList = path.interiorList;
+        p.rcvHit        = path.rcvHit.getData();
+        p.hit           = path.hit.getData();
+        p.interiorList  = path.interiorList;
+        p.replayBounces = path.replayBounces;
+        p.lastPathPdf   = path.lastPathPdf;
         p.sg = path.sg;
 
         return p;
@@ -126,38 +121,29 @@ struct PathPayload
         path.throughput = asfloat(p.packed[3].xyz);
         path.bounceCounters = p.packed[3].w;
 
-        path.sampleWeight = asfloat(p.packed[4].x);
+        path.pathPdf = asfloat(p.packed[4].x);
+        path.dVCM    = asfloat(p.packed[4].y);
+        path.dVC     = asfloat(p.packed[4].z);
+        path.dVM     = asfloat(p.packed[4].w);
 
-        path.pathPdf = asfloat(p.packed[5].x);
-        path.dVCM    = asfloat(p.packed[5].y);
-        path.dVC     = asfloat(p.packed[5].z);
-        path.dVM     = asfloat(p.packed[5].w);
+        path.throughputAtRcv = asfloat(p.packed[5].xyz);
+        path.replayPdf       = asfloat(p.packed[5].w);
 
-        path.sample.contribution = asfloat(p.packed[6].xyz);
-        path.sample.pathLength = p.packed[6].w;
+        path.rcvDirOut = asfloat(p.packed[6].xyz);
+        path.rcvG      = asfloat(p.packed[6].w);
 
-        path.sample.rcv.hit = p.packed[7];
-
-        path.sample.rcv.suffixDir  = asfloat(p.packed[8].xyz);
-        path.sample.rcv.suffixDist = asfloat(p.packed[8].w);
-
-        path.sample.rcv.contribution   = asfloat(p.packed[9].xyz);
-        path.sample.rcv.connectionDist = asfloat(p.packed[9].w);
-
-        path.sample.rcv.connectionCos = asfloat(p.packed[10].x);
-        path.sample.rcv.prefixPdf     = asfloat(p.packed[10].y);
-        path.sample.rcv.prefixLength  = p.packed[10].z;
-
-        path.prefixThroughput = asfloat(p.packed[11].xyz);
-
-        path.hit = HitInfo(p.hit);
-        path.guideData = p.guideData;
-        path.interiorList = p.interiorList;
+        path.rcvHit = HitInfo(p.rcvHit);
+        path.hit    = HitInfo(p.hit);
+        path.interiorList  = p.interiorList;
+        path.replayBounces = p.replayBounces;
+        path.lastPathPdf   = p.lastPathPdf;
         path.sg = p.sg;
 
         return path;
     }
 };
+static const uint PathPayloadSize = sizeof(PathPayload);
+
 
 struct VisibilityQuery : PathTracer::IVisibilityQuery
 {
@@ -270,13 +256,7 @@ struct ReorderingScheduler
 
         gPathTracer.setupPathLogging(path);
         VisibilityQuery vq;
-#if defined(DELTA_REFLECTION_PASS)
-        gPathTracer.handleDeltaReflectionHit(path);
-#elif defined(DELTA_TRANSMISSION_PASS)
-        gPathTracer.handleDeltaTransmissionHit(path);
-#else
         gPathTracer.handleHit(path, vq);
-#endif
 
         payload = PathPayload::pack(path);
     }
@@ -288,61 +268,62 @@ struct ReorderingScheduler
     {
         PathState path = {};
 
-        gPathTracer.generatePath(pathID, path);
+        gPathTracer.generateCanonicalPath(pathID, path);
         gPathTracer.setupPathLogging(path);
 
-#if !defined(LIGHT_TRACE_PASS)
-        if (path.isHit())
+        // Handle primary hits.
+        if (!kTraceFromLight)
         {
-            // Handle primary hits.
-
-            // Create a HitObject from a HitInfo.
-            // The created HitObject does only contain the minimal required data,
-            // most data is already passed in the path.hit object.
-            // For volume hits, a miss object is returned(and handled in the handleMiss() function).
-            HitObject hitObject;
-            RayDesc dummyRay = {};
-            DummyAttribs dummyAttribs = {};
-
-            switch (path.hit.getType())
+            if (path.isHit())
             {
-            case HitType::None:
-                hitObject = HitObject::MakeMiss(kMissScatter, dummyRay);
-                break;
-            case HitType::Volume:
-                hitObject = HitObject::MakeMiss(kMissScatter, dummyRay);
-                break;
-            default:
-            {
-                const GeometryInstanceID instanceID = path.hit.getInstanceID();
-                const GeometryInstanceData instance = gScene.getGeometryInstance(instanceID);
-                const uint primitiveIndex = path.hit.getPrimitiveIndex();
-                hitObject = HitObject::MakeHit(
-                    gScene.rtAccel,         // AccelerationStructure
-                    instance.instanceIndex, // InstanceIndex
-                    instance.geometryIndex, // GeometryIndex
-                    primitiveIndex,         // PrimitiveIndex
-                    0,                      // HitKind
-                    kRayTypeScatter,        // RayContributionToHitGroupIndex
-                    rayTypeCount,           // MultiplierForGeometryContributionToHitGroupIndex
-                    dummyRay,               // Ray
-                    dummyAttribs            // Attributes
-                );
-                break;
-            }
-            }
 
-            PathPayload payload = PathPayload::pack(path);
-            HitObject::Invoke(gScene.rtAccel, hitObject, payload);
-            path = PathPayload::unpack(payload);
+                // Create a HitObject from a HitInfo.
+                // The created HitObject does only contain the minimal required data,
+                // most data is already passed in the path.hit object.
+                // For volume hits, a miss object is returned(and handled in the handleMiss() function).
+                HitObject hitObject;
+                RayDesc dummyRay = {};
+                DummyAttribs dummyAttribs = {};
+
+                switch (path.hit.getType())
+                {
+                case HitType::None:
+                    hitObject = HitObject::MakeMiss(kMissScatter, dummyRay);
+                    break;
+                case HitType::Volume:
+                    hitObject = HitObject::MakeMiss(kMissScatter, dummyRay);
+                    break;
+                default:
+                {
+                    const GeometryInstanceID instanceID = path.hit.getInstanceID();
+                    const GeometryInstanceData instance = gScene.getGeometryInstance(instanceID);
+                    const uint primitiveIndex = path.hit.getPrimitiveIndex();
+                    hitObject = HitObject::MakeHit(
+                        gScene.rtAccel,         // AccelerationStructure
+                        instance.instanceIndex, // InstanceIndex
+                        instance.geometryIndex, // GeometryIndex
+                        primitiveIndex,         // PrimitiveIndex
+                        0,                      // HitKind
+                        kRayTypeScatter,        // RayContributionToHitGroupIndex
+                        rayTypeCount,           // MultiplierForGeometryContributionToHitGroupIndex
+                        dummyRay,               // Ray
+                        dummyAttribs            // Attributes
+                    );
+                    break;
+                }
+                }
+
+                PathPayload payload = PathPayload::pack(path);
+                HitObject::Invoke(gScene.rtAccel, hitObject, payload);
+                path = PathPayload::unpack(payload);
+            }
+            else
+            {
+                // Note the primary miss has already been handled by the separate path generation pass
+                // the path tracer runs first. Abort execution here to avoid double work.
+                return;
+            }
         }
-        else
-        {
-            // Note the primary miss has already been handled by the separate path generation pass
-            // the path tracer runs first. Abort execution here to avoid double work.
-            return;
-        }
-#endif
 
         // Trace path.
         while (path.isActive())
@@ -386,9 +367,7 @@ struct ReorderingScheduler
             path = PathPayload::unpack(payload);
         }
 
-#if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS) && !defined(LIGHT_TRACE_PASS)
-        gPathTracer.writeOutput(path);
-#endif
+        gPathTracer.finalizePath(path);
     }
 
     /** Runs the path tracer for a single pixel.
@@ -396,39 +375,46 @@ struct ReorderingScheduler
     */
     void run(uint2 pixel)
     {
-#if defined(LIGHT_TRACE_PASS)
-        tracePath(pixel.x | (pixel.y << 12) | ((-1) << 24));
-#else
-#if LIGHT_TRACE_ONLY == 0
-        // Determine number of samples to take.
-        uint samplesRemaining = kSamplesPerPixel;
-        if (kSamplesPerPixel == 0)
+        if (kTraceFromLight)
         {
-            samplesRemaining = gPathTracer.sampleCount[pixel];
+        // Only trace one light subpath per thread.
+            tracePath(pixel.x | (pixel.y << 12) | ((-1) << 24));
         }
-
-        // Loop over samples.
-        while (samplesRemaining > 0)
+        else
         {
-            samplesRemaining -= 1;
-            uint pathID = pixel.x | (pixel.y << 12) | (samplesRemaining << 24);
-            tracePath(pathID);
-
-            // Use SER to compact active threads.
+            #if LIGHT_TRACE_ONLY == 0
+            // Determine number of samples to take.
+            uint samplesRemaining = kSamplesPerPixel;
             if (kSamplesPerPixel == 0)
             {
-                bool needReorder = WaveActiveAnyTrue(samplesRemaining == 0);
-                if (samplesRemaining == 0) break;
-                if (needReorder)
+                samplesRemaining = gPathTracer.sampleCount[pixel];
+            }
+
+            gPathTracer.initializeReservoir(pixel, samplesRemaining);
+
+            // Loop over samples.
+            while (samplesRemaining > 0)
+            {
+                samplesRemaining -= 1;
+                uint pathID = pixel.x | (pixel.y << 12) | (samplesRemaining << 24);
+                tracePath(pathID);
+
+                // Use SER to compact active threads.
+                if (kSamplesPerPixel == 0)
                 {
-                    HitObject hitObject = HitObject::MakeNop();
-                    ReorderThread(hitObject);
+                    bool needReorder = WaveActiveAnyTrue(samplesRemaining == 0);
+                    if (samplesRemaining == 0) break;
+                    if (needReorder)
+                    {
+                        HitObject hitObject = HitObject::MakeNop();
+                        ReorderThread(hitObject);
+                    }
                 }
             }
+            #endif
+
+            gPathTracer.resolve(pixel);
         }
-#endif
-        gPathTracer.writeLightImageOutput(pixel);
-#endif
     }
 }
 
@@ -464,14 +450,8 @@ struct Scheduler
 
         gPathTracer.setupPathLogging(path);
 
-#if defined(DELTA_REFLECTION_PASS)
-        gPathTracer.handleDeltaReflectionHit(path);
-#elif defined(DELTA_TRANSMISSION_PASS)
-        gPathTracer.handleDeltaTransmissionHit(path);
-#else
         VisibilityQuery vq;
         gPathTracer.handleHit(path, vq);
-#endif
 
         payload = PathPayload::pack(path);
     }
@@ -503,29 +483,24 @@ struct Scheduler
     {
         PathState path = {};
 
-        gPathTracer.generatePath(pathID, path);
+        gPathTracer.generateCanonicalPath(pathID, path);
         gPathTracer.setupPathLogging(path);
 
-#if !defined(LIGHT_TRACE_PASS)
-        // Handle primary hit/miss.
-        if (path.isHit())
+        if (!kTraceFromLight)
         {
-#if defined(DELTA_REFLECTION_PASS)
-            gPathTracer.handleDeltaReflectionHit(path);
-#elif defined(DELTA_TRANSMISSION_PASS)
-            gPathTracer.handleDeltaTransmissionHit(path);
-#else
-            VisibilityQuery vq;
-            gPathTracer.handleHit(path, vq);
-#endif
+            // Handle primary hit/miss.
+            if (path.isHit())
+            {
+                VisibilityQuery vq;
+                gPathTracer.handleHit(path, vq);
+            }
+            else
+            {
+                // Note the primary miss has already been handled by the separate path generation pass
+                // the path tracer runs first. Abort execution here to avoid double work.
+                return;
+            }
         }
-        else
-        {
-            // Note the primary miss has already been handled by the separate path generation pass
-            // the path tracer runs first. Abort execution here to avoid double work.
-            return;
-        }
-#endif
 
         // Trace path.
         while (path.isActive())
@@ -533,9 +508,7 @@ struct Scheduler
             nextHit(path);
         }
 
-#if !defined(DELTA_REFLECTION_PASS) && !defined(DELTA_TRANSMISSION_PASS) && !defined(LIGHT_TRACE_PASS)
-        gPathTracer.writeOutput(path);
-#endif
+        gPathTracer.finalizePath(path);
     }
 
     /** Runs the path tracer for a single pixel.
@@ -543,27 +516,33 @@ struct Scheduler
     */
     void run(uint2 pixel)
     {
-#if defined(LIGHT_TRACE_PASS)
-        tracePath(pixel.x | (pixel.y << 12) | ((-1) << 24));
-#else
-#if LIGHT_TRACE_ONLY == 0
-        // Determine number of samples to take.
-        uint samplesRemaining = kSamplesPerPixel;
-        if (kSamplesPerPixel == 0)
+        if (kTraceFromLight)
         {
-            samplesRemaining = gPathTracer.sampleCount[pixel];
+            tracePath(pixel.x | (pixel.y << 12) | ((-1) << 24));
         }
+        else
+        {
+            #if LIGHT_TRACE_ONLY == 0
+            // Determine number of samples to take.
+            uint samplesRemaining = kSamplesPerPixel;
+            if (kSamplesPerPixel == 0)
+            {
+                samplesRemaining = gPathTracer.sampleCount[pixel];
+            }
 
-        // Loop over samples.
-        while (samplesRemaining > 0)
-        {
-            samplesRemaining -= 1;
-            uint pathID = pixel.x | (pixel.y << 12) | (samplesRemaining << 24);
-            tracePath(pathID);
+            gPathTracer.initializeReservoir(pixel, samplesRemaining);
+
+            // Loop over samples.
+            while (samplesRemaining > 0)
+            {
+                samplesRemaining -= 1;
+                uint pathID = pixel.x | (pixel.y << 12) | (samplesRemaining << 24);
+                tracePath(pathID);
+            }
+            #endif
+
+            gPathTracer.resolve(pixel);
         }
-#endif
-        gPathTracer.writeLightImageOutput(pixel);
-#endif
     }
 }
 
@@ -708,7 +687,7 @@ void rayGen()
     uint2 pixel = DispatchRaysIndex().xy;
     uint2 frameDim = DispatchRaysDimensions().xy;
 
-#if defined(LIGHT_TRACE_PASS)
+#ifdef LIGHT_TRACE_PASS
     if (pixel.y*gPathTracer.params.frameDim.x + pixel.x >= gPathTracer.params.lightSubpathCount) return;
 #else
     if (all(pixel >= frameDim)) return;

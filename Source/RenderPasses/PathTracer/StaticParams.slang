@@ -54,7 +54,6 @@ static const bool kUseAlphaTest = USE_ALPHA_TEST;
 static const bool kUseLightsInDielectricVolumes = USE_LIGHTS_IN_DIELECTRIC_VOLUMES;
 static const bool kDisableCaustics = DISABLE_CAUSTICS;
 static const TexLODMode kPrimaryLodMode = TexLODMode(PRIMARY_LOD_MODE);
-static const bool kUseNRDDemodulation = USE_NRD_DEMODULATION;
 static const uint kColorFormat = COLOR_FORMAT;
 static const uint kMISHeuristic = MIS_HEURISTIC;
 static const float kMISPowerExponent = MIS_POWER_EXPONENT;

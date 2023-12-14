@@ -27,11 +27,11 @@
  **************************************************************************/
 import Utils.Math.PackedFormats;
 import Utils.Color.ColorHelpers;
+import Scene.ShadingData;
 __exported import Scene.HitInfo;
 __exported import Utils.Math.Ray;
 __exported import Utils.Sampling.SampleGenerator;
 __exported import Rendering.Materials.InteriorList;
-__exported import GuideData;
 
 static const uint kMaxRejectedHits = 16; // Maximum number of rejected hits along a path. The path is terminated if the limit is reached to avoid getting stuck in pathological cases.
 
@@ -67,6 +67,7 @@ enum class PathFlags
 
     finiteLight                 = 0x2000,   ///< Whether the light sub-path came from an infinite source.
     analyticLight               = 0x4000,   ///< Whether the light sub-path came from an analytic light.
+    reconnectable               = 0x8000,   ///< Whether the previous vertex is rough enough to be reconnectable.
 
     // Bits 15 to kPathFlagsBitCount are still unused.
 };
@@ -78,26 +79,6 @@ enum class BounceType
     Diffuse                 = 0,    ///< Diffuse reflection.
     Specular                = 1,    ///< Specular reflection (including delta).
     Transmission            = 2,    ///< Transmission (all kinds).
-};
-
-struct ReconnectionVertex
-{
-    PackedHitInfo hit;            ///< Hit information for the vertex
-    float3        suffixDir;      ///< Direction towards the next vertex in the suffix
-    float         suffixDist;     ///< Distance towards the next vertex in the suffix (used to reconstruct the ray for getting shading data)
-    float3        contribution;   ///< Unweighted contribution of the suffix
-    float         connectionDist; ///< Distance towards the last prefix vertex
-    float         connectionCos;  ///< Cosine term towards the last prefix vertex
-    float         prefixPdf;      ///< Sampling pdf of the prefix
-    uint          prefixLength;   ///< Number of segments in the prefix
-    uint          dummy;
-};
-
-struct PathSample
-{
-    float3             contribution; ///< Unweighted path contribution
-    uint               pathLength;   ///< Number of segments in the full path.
-    ReconnectionVertex rcv;          ///< Suffix reconnection vertex
 };
 
 // TODO: Compact encoding to reduce live registers, e.g. packed HitInfo, packed normals.
@@ -119,30 +100,28 @@ struct PathState
     float3      normal;                 ///< Geometry normal at the scatter ray origin.
     HitInfo     hit;                    ///< Hit information for the scatter ray. This is populated at committed triangle hits.
 
+    float       dVCM;                   ///< Partial MIS quantities, used to compute MIS weights for vertex connection and merging strategies.
+    float       dVC;                    ///< Partial MIS quantities, used to compute MIS weight for vertex connection.
+    float       dVM;                    ///< Partial MIS quantities, used to compute MIS weight for vertex merging.
+
     float3      throughput;             ///< Path throughput. Does not include sampling pdfs.
-
     float       pathPdf;                ///< Pdf for generating the path. This is the product of solid-angle BSDF sampling probabilites and russian roulette probabilites over previous vertices.
-    float       dVCM;                   ///< Partial MIS quantities, used to compute MIS weights.
-    float       dVC;                    ///< Partial MIS quantities, used to compute MIS weights.
-    float       dVM;                    ///< Partial MIS quantities, used to compute MIS weights.
 
-    PathSample  sample;                 ///< Selected path sample
-    float       sampleWeight;           ///< Integration weight for the selected sample.
-    float3      prefixThroughput;       ///< Prefix throughput, used to compute suffix contributions.
+    float3      throughputAtRcv;        ///< Throughput at the reconnection vertex (including the BSDF at the reconnection vertex). Used to calculate the contribution of the suffix.
+    float       replayPdf;              ///< Product-solid-angle pdf of the prefix. Assigned when a suffix is found.
 
-    GuideData   guideData;              ///< Denoiser guide data.
+    float3      rcvDirOut;              ///< Cached direction from the reconnection vertex. Only valid when replayPdf > 0.
+    float       rcvG;                   ///< Cached geometry term at the reconnection vertex Only valid when replayPdf > 0.
+
+    uint        replayBounces;          ///< Number of bounces in the prefix.
+    float       lastPathPdf;            ///< Path pdf at the last vertex.
+
+    HitInfo     rcvHit;                 ///< Cached reconnection vertex. Only valid when replayPdf > 0.
+
     InteriorList interiorList;          ///< Interior list. Keeping track of a stack of materials with medium properties.
     SampleGenerator sg;                 ///< Sample generator state. Typically 4-16B.
 
     // Accessors
-
-    float3 getSampleRadiance()
-    {
-        const float f = luminance(sample.contribution);
-        if (f > 0.f)
-            return sample.contribution * sampleWeight / f;
-        return 0.f;
-    }
 
     bool isTerminated() { return !isActive(); }
     bool isActive() { return hasFlag(PathFlags::active); }
@@ -168,6 +147,7 @@ struct PathState
     bool isDeltaOnlyPath() { return hasFlag(PathFlags::deltaOnlyPath); }
     bool isFiniteLight() { return hasFlag(PathFlags::finiteLight); }
     bool isAnalyticLight() { return hasFlag(PathFlags::analyticLight); }
+    bool isReconnectable() { return hasFlag(PathFlags::reconnectable); }
 
     // Check if the scatter event is samplable by the light sampling technique.
     bool isLightSamplable() { return !isDelta(); }
@@ -179,7 +159,7 @@ struct PathState
 
     [mutating] void clearEventFlags()
     {
-        const uint bits = (uint(PathFlags::transmission) | uint(PathFlags::specular) | uint(PathFlags::delta)) << kVertexIndexBitCount;
+        const uint bits = (uint(PathFlags::transmission) | uint(PathFlags::specular) | uint(PathFlags::delta) | uint(PathFlags::reconnectable)) << kVertexIndexBitCount;
         flagsAndVertexIndex &= ~bits;
     }
 
@@ -195,6 +175,7 @@ struct PathState
     [mutating] void setDeltaOnlyPath(bool value = true) { setFlag(PathFlags::deltaOnlyPath, value); }
     [mutating] void setFiniteLight(bool value = true) { setFlag(PathFlags::finiteLight, value); }
     [mutating] void setAnalyticLight(bool value = true) { setFlag(PathFlags::analyticLight, value); }
+    [mutating] void setReconnectable(bool value = true) { setFlag(PathFlags::reconnectable, value); }
 
     bool hasFlag(PathFlags flag)
     {
@@ -247,8 +228,5 @@ struct PathState
     // Unsafe - assumes that vertex index will never be decremented below zero.
     [mutating] void decrementVertexIndex() { flagsAndVertexIndex -= 1; }
 
-    Ray getScatterRay()
-    {
-        return Ray(origin, dir, 0.f, kRayTMax);
-    }
+    Ray getScatterRay() { return Ray(origin, dir, 0.f, kRayTMax); }
 };
