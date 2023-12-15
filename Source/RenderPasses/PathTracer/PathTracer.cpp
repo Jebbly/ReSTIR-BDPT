@@ -523,11 +523,19 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useVM)
         {
+            dirty |= widget.checkbox("VM Only", mStaticParams.vmOnly);
+            widget.tooltip("Only use vertex merging.\nThis is the same as progressive photon mapping.");
+
             dirty |= widget.checkbox("Fast vertex merging", mStaticParams.useFastVM);
             widget.tooltip("Only merge with a single grid cell, instead\nof all 8 neighbor grid cells.");
 
-            dirty |= widget.var("Vertex merge radius", mParams.mergeRadius, 1e-9f, 1.f);
-            widget.tooltip("Photon radius.");
+            dirty |= widget.var("Photon radius factor", mVMRadiusFactor, 1e-9f, 0.1f);
+            widget.tooltip("Photon radius as a percentange of the scene radius.");
+
+            dirty |= widget.slider("Photon radius alpha", mVMRadiusAlpha, 0.f, 1.f);
+            widget.tooltip("Photon radius shrink factor.\nLower values cause the radius to shrink faster.");
+
+            widget.text("Current radius: " + std::to_string(mParams.mergeRadius) + " at frame " + std::to_string(mParams.frameCount));
 
             dirty |= widget.var("Hash grid cells", mParams.cellCount, 1000u, 16000000u);
             widget.tooltip("Number of cells in the photon hash grid.");
@@ -868,13 +876,13 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
         if (!mpLightVertices || mpLightVertices->getElementCount() != lightVertexCount || mVarsChanged)
         {
             mpLightVertices    = mpDevice->createStructuredBuffer(var["pathTracer"]["lightVertexCache"]["lightVertices"], lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-            mpLightVertexCount = mpDevice->createStructuredBuffer(var["pathTracer"]["lightVertexCache"]["lightVertexCount"], 2, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpLightVertexCount = mpDevice->createBuffer(sizeof(uint32_t)*2, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
 
         if (!mpPhotonCellSizes || mpPhotonCellSizes->getElementCount() != mParams.cellCount || mVarsChanged)
         {
-            mpPhotonCellSizes     = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellSizes"]  , mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpPhotonCellSizes     = mpDevice->createBuffer(sizeof(uint32_t)*mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mpPhotonCellOffsets   = mpDevice->createStructuredBuffer(var["pathTracer"]["photonMap"]["cellOffsets"], mParams.cellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
             mVarsChanged = true;
         }
@@ -1128,9 +1136,6 @@ bool PathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& ren
         return false;
     }
 
-    const auto& aabb = mpScene->getSceneBounds();
-    mParams.sceneSphere = float4(aabb.maxPoint + aabb.minPoint, length(aabb.maxPoint - aabb.minPoint))*.5f;
-
     // Update materials.
     prepareMaterials(pRenderContext);
 
@@ -1172,8 +1177,41 @@ bool PathTracer::beginFrame(RenderContext* pRenderContext, const RenderData& ren
     mpPixelStats->beginFrame(pRenderContext, mParams.frameDim);
     mpPixelDebug->beginFrame(pRenderContext, mParams.frameDim);
 
+
+    if (mStaticParams.useVM)
+    {
+        bool resetFrameCount = false;
+
+        auto refreshFlags = dict.getValue(kRenderPassRefreshFlags, RenderPassRefreshFlags::None);
+        if (refreshFlags != RenderPassRefreshFlags::None)
+            resetFrameCount = true;
+
+        auto sceneUpdates = mpScene->getUpdates();
+        if ((sceneUpdates & ~Scene::UpdateFlags::CameraPropertiesChanged) != Scene::UpdateFlags::None)
+            resetFrameCount = true;
+        if (is_set(sceneUpdates, Scene::UpdateFlags::CameraPropertiesChanged))
+        {
+            auto excluded = Camera::Changes::Jitter | Camera::Changes::History;
+            auto cameraChanges = mpScene->getCamera()->getChanges();
+            if ((cameraChanges & ~excluded) != Camera::Changes::None)
+                resetFrameCount = true;
+        }
+
+        if (resetFrameCount)
+            mParams.frameCount = 0;
+    }
+
     // Update the random seed.
     mParams.seed = mParams.useFixedSeed ? mParams.fixedSeed : mParams.frameCount;
+
+    const auto& aabb = mpScene->getSceneBounds();
+    mParams.sceneSphere = float4(aabb.maxPoint + aabb.minPoint, length(aabb.maxPoint - aabb.minPoint))*.5f;
+    mParams.mergeRadius = mVMRadiusFactor * mParams.sceneSphere.w;
+    if (mVMRadiusAlpha < 1.f)
+    {
+        mParams.mergeRadius /= std::pow(float(mParams.frameCount + 1), 0.5f * (1 - mVMRadiusAlpha));
+        mParams.mergeRadius = std::max(mParams.mergeRadius, 1e-7f);
+    }
 
     return true;
 }
@@ -1269,6 +1307,7 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("USE_BPT", useBPT ? "1" : "0");
     defines.add("USE_VM", (useVM && useBPT) ? "1" : "0");
     defines.add("USE_FAST_VM", (useVM && useBPT && useFastVM) ? "1" : "0");
+    defines.add("USE_VM_ONLY", (useVM && useBPT && vmOnly) ? "1" : "0");
     defines.add("DEBUG_MIS", debugMIS ? "1" : "0");
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");

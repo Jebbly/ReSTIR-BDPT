@@ -89,9 +89,6 @@ struct PathTracerParams
     uint maxSpecularBounces     = 10;
     uint maxTransmissionBounces = 10;
 
-    float minReconnectionDistance = 1e-4f;
-    float minReconnectionRoughness = 1e-4f;
-
     // Runtime values
     uint2   frameDim = { 0, 0 };        ///< Frame dimension in pixels.
     uint2   screenTiles = { 0, 0 };     ///< Number of screen-tiles. Screen tiles may extend outside the frame.
@@ -99,14 +96,17 @@ struct PathTracerParams
     uint    frameCount = 0;             ///< Frames rendered. This is used as random seed.
     uint    seed = 0;                   ///< Random seed. This will get updated from the host depending on settings.
 
+    float minReconnectionDistance = 1e-4f;
+    float minReconnectionRoughness = 1e-4f;
+
     float4 sceneSphere;                 ///< Scene bounding sphere.
 
-    uint lightSubpathCount = 1000000;   ///< Number of light sub-paths to trace.
-    float contProb = 0.9f;              ///< Continuation probability when using BPT.
-    int debugPathLength = -1;           ///< Path length for debugging.
-    int debugLightVertexCount = -1;     ///< Number of light vertices for debugging.
-    float mergeRadius = 0.0025f;        ///< Photon radius.
-    uint cellCount = 10000000;          ///< Number of cells in the photon hash grid.
+    float contProb          = 0.9f;     ///< Continuation probability when using BPT.
+    float mergeRadius       = 0.0025f;  ///< Photon radius.
+    uint  lightSubpathCount = 1000000;  ///< Number of light sub-paths to trace.
+    uint  cellCount         = 10000000; ///< Number of cells in the photon hash grid.
+    int   debugPathLength       = -1;   ///< Path length for debugging.
+    int   debugLightVertexCount = -1;   ///< Number of light vertices for debugging.
 };
 
 END_NAMESPACE_FALCOR

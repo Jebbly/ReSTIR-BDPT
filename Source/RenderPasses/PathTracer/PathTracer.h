@@ -117,6 +117,7 @@ private:
         bool        useBPT = true;                              ///< Use bidirectional path tracing. Automatically enables NEE and MIS.
         bool        useVM  = true;                              ///< Use vertex merging when using BPT.
         bool        useFastVM  = true;                          ///< Only merge with a single photon grid cell.
+        bool        vmOnly = false;                             ///< Only use vertex merging.
         bool        lightTraceOnly = false;                     ///< Only use light tracing. Disables camera tracing.
         bool        debugBPT = false;                           ///< Output specific paths for debugging BPT.
         bool        debugMIS = false;                           ///< Output MIS weights.
@@ -170,6 +171,9 @@ private:
     bool                            mOptionsChanged = false;    ///< True if the config has changed since last frame.
     bool                            mGBufferAdjustShadingNormals = false; ///< True if GBuffer/VBuffer has adjusted shading normals enabled.
     bool                            mFixedSampleCount = true;   ///< True if a fixed sample count per pixel is used. Otherwise load it from the pass sample count input.
+
+    float                           mVMRadiusFactor  = .001f;   ///< Initial merge radius as a percentage of the scene radius.
+    float                           mVMRadiusAlpha = 0.75f;     ///< Merge radius shrink factor.
 
     ref<ComputePass>                mpGeneratePaths;            ///< Fullscreen compute pass generating paths starting at primary hits.
     ref<ComputePass>                mpReflectTypes;             ///< Helper for reflecting structured buffer types.
