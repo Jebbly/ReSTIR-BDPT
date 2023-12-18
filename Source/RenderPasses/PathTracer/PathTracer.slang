@@ -252,7 +252,7 @@ struct PathTracer
 
     float evalRevScatterPdf(const ShadingData sd, const IMaterialInstance mi, const float3 wo)
     {
-        /*
+        //*
         VertexData v;
         v.coneTexLODValue = 0.f;
         v.curveRadius = sd.curveRadius;
@@ -316,85 +316,98 @@ struct PathTracer
         pathReservoirs[pixel.y * params.frameDim.x + pixel.x] = reservoir;
     }
 
-    /** Generate a path state.
-        \param[in] pixel Pixel containing hit information.
-        \param[in] pathID Path ID which encodes the source pixel and sample index.
-        \param[in] seed Path seed.
-        \param[out] path Path state for the primary hit.
-    */
-    void generatePath(const uint2 pixel, const uint pathID, const uint seed, out PathState path)
+    void generateLightPath(const uint pathID, const uint seed, out PathState path)
     {
         path = {};
         path.setActive();
         path.id = pathID;
+        path.seed = seed;
 
-        if (kTraceFromLight)
-        {
-            // Create sample generator.
-            path.sg = SampleGenerator(path.getPixel(), -seed);
+        // Create sample generator.
+        path.sg     = SampleGenerator(path.getPixel(), path.seed);
+        path.sgBsdf = SampleGenerator(path.getPixel(), path.sg.next());
 
-            LightSample ls;
-            lightSampler.generateLightSample(params.sceneSphere, path.sg, ls);
+        LightSample ls;
+        lightSampler.generateLightSample(params.sceneSphere, path.sg, ls);
 
-            path.throughput = ls.contrib;
-            path.pathPdf    = ls.emitPdf;
-            path.origin     = ls.origin;
-            path.dir        = ls.dir;
-            path.setVertexIndex(0);
-            path.setFiniteLight(ls.getIsFinite());
+        path.throughput = ls.contrib;
+        path.pathPdf    = ls.emitPdf;
+        path.origin     = ls.origin;
+        path.dir        = ls.dir;
+        path.setVertexIndex(0);
+        path.setFiniteLight(ls.getIsFinite());
 
-            path.dVCM = evalMIS(1.f, ls.pdf / ls.emitPdf);
-            path.dVC = ls.getIsDelta() ? 0 : evalMIS(1.f, ls.cosLight / ls.emitPdf);
-            path.dVM = path.dVC * getMisVcWeightFactor();
-        }
-        else
-        {
-            // Create sample generator.
-            const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
-            path.sg = SampleGenerator(path.getPixel(), seed * maxSpp + path.getSampleIdx());
+        path.dVCM = evalMIS(1.f, ls.pdf / ls.emitPdf);
+        path.dVC = ls.getIsDelta() ? 0 : evalMIS(1.f, ls.cosLight / ls.emitPdf);
+        path.dVM = path.dVC * getMisVcWeightFactor();
 
-            path.throughput = float3(1.f);
-            path.pathPdf    = 1.f;
-
-            // Create primary ray.
-            Ray cameraRay = gScene.camera.computeRayPinhole(pixel, params.frameDim);
-            if (kUseViewDir) cameraRay.dir = -viewDir[pixel];
-            path.origin = cameraRay.origin;
-            path.dir    = cameraRay.dir;
-
-            // Load the primary hit info from the V-buffer.
-            const HitInfo hit = HitInfo(vbuffer[pixel]);
-
-            // If invalid, the path is still active and treated as a miss.
-            if (hit.isValid())
-            {
-                path.setHit(hit);
-                path.setVertexIndex(1);
-            }
-
-            if (kUseBPT)
-            {
-                float cosCamera;
-                const float cameraPdfW = getImageToSolidAngleFactor(path.dir, cosCamera);
-                path.dVCM = evalMIS(1.f, params.lightSubpathCount / cameraPdfW);
-                path.dVC = 0.f;
-                path.dVM = 0.f;
-            } else
-                path.dVC = 0.f;
-        }
+        path.replayPdf = 0;
     }
 
-    /** Generate the path state for a canonical path starting from a primary hit in screen space.
-        This is treated equivalent to subsequent path vertices to reduce code divergence.
-        \param[in] pixel Pixel containing hit information
+    /** Generate a path state.
+        \param[in] cameraRay Camera ray.
+        \param[in] primaryHit Primary hit.
+        \param[in] seed Path seed.
+        \param[out] path Path state for the primary hit.
+    */
+    void generateCameraPath(const Ray cameraRay, const HitInfo primaryHit, const uint pathID, const uint seed, out PathState path)
+    {
+        path = {};
+        path.setActive();
+        path.id = pathID;
+        path.seed = seed;
+
+        // Create sample generator.
+        path.sg     = SampleGenerator(path.getPixel(), path.seed);
+        path.sgBsdf = SampleGenerator(path.getPixel(), path.sg.next());
+
+        path.throughput = float3(1.f);
+        path.pathPdf    = 1.f;
+        path.origin = cameraRay.origin;
+        path.dir    = cameraRay.dir;
+
+        // If invalid, the path is still active and treated as a miss.
+        if (primaryHit.isValid())
+        {
+            path.setHit(primaryHit);
+            path.setVertexIndex(1);
+        }
+
+        if (kUseBPT)
+        {
+            float cosCamera;
+            const float cameraPdfW = getImageToSolidAngleFactor(path.dir, cosCamera);
+            path.dVCM = evalMIS(1.f, params.lightSubpathCount / cameraPdfW);
+            path.dVC = 0.f;
+            path.dVM = 0.f;
+        } else
+            path.dVC = 0.f;
+
+        path.replayPdf = 0;
+    }
+
+    /** Generate a path state using the current camera and visibility buffer.
         \param[in] pathID Path ID which encodes the source pixel and sample index.
         \param[in] seed Path seed.
         \param[out] path Path state for the primary hit.
     */
-    void generateCanonicalPath(const uint pathID, out PathState path)
+    void generateCameraPath(const uint pathID, out PathState path)
     {
+        path = {};
         path.id = pathID;
-        generatePath(path.getPixel(), pathID, params.seed, path);
+
+        const uint2 pixel = path.getPixel();
+
+        Ray cameraRay = gScene.camera.computeRayPinhole(pixel, params.frameDim);
+        if (kUseViewDir) cameraRay.dir = -viewDir[pixel];
+
+        // Load the primary hit info from the V-buffer.
+        const HitInfo hit = HitInfo(vbuffer[pixel]);
+
+        const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
+        const uint seed = params.seed * maxSpp + path.getSampleIdx();
+
+        generateCameraPath(cameraRay, hit, pathID, seed, path);
     }
 
     /** Set up path for logging and debugging.
@@ -505,14 +518,24 @@ struct PathTracer
         candidate.integrationWeight  = integrationWeight;
         candidate.sampleCount        = 0;
         candidate.pathId             = path.id;
-        candidate.seed               = params.seed;
-        candidate.replayBounces      = path.replayBounces;
-        candidate.replayPdf          = path.replayPdf;
-        candidate.reconnectionDirOut = path.rcvDirOut;
-        candidate.reconnectionG      = path.rcvG;
-        candidate.reconnectionHit    = path.rcvHit.getData();
-        for (int i = 0; i < 3; i++)
-            candidate.suffixContribution[i] = path.throughputAtRcv[i] > 0.f ? contribution[i] / path.throughputAtRcv[i] : 0.f;
+        candidate.seed               = path.seed;
+        if (path.replayPdf > 0)
+        {
+            candidate.replayPdf          = path.replayPdf;
+            candidate.replayBounces      = path.replayBounces;
+            candidate.reconnectionDirOut = path.rcvDirOut;
+            candidate.reconnectionG      = path.rcvG;
+            candidate.reconnectionHit    = path.rcvHit.getData();
+            for (int i = 0; i < 3; i++)
+                candidate.suffixContribution[i] = path.throughputAtRcv[i] > 0.f ? contribution[i] / path.throughputAtRcv[i] : 0.f;
+        }
+        else
+        {
+            // No reconnection vertex. Path will be shifted with random replay only.
+            candidate.replayPdf = path.pathPdf;
+            candidate.replayBounces = path.getVertexIndex() - 1;
+            candidate.reconnectionG = 0;
+        }
 
         candidate.prepareMerge(misWeight);
 
@@ -558,75 +581,45 @@ struct PathTracer
     bool generateScatterRay(const ShadingData sd, const IMaterialInstance mi, inout PathState path)
     {
         BSDFSample result;
-        bool valid = mi.sample(sd, path.sg, result, kUseBSDFSampling);
+        bool valid = mi.sample(sd, path.sgBsdf, result, kUseBSDFSampling);
         if (valid)
         {
             if (kTraceFromLight) result.weight *= getAdjointCorrection(sd, mi, result.wo);
             valid = generateScatterRay(result, sd, mi, path);
         }
 
-        const bool isDeltaLobe = result.isLobe(LobeType::DeltaReflection) || result.isLobe(LobeType::DeltaTransmission);
-
-        // Update MIS weight quantities
-        if (kUseBPT && valid)
+        if (valid)
         {
-            const float cosOut = abs(dot(path.dir, path.normal));
-
-            if (isDeltaLobe)
+            // Update MIS weight quantities
+            if (kUseBPT)
             {
-                path.dVCM = 0.f;
-                path.dVC *= evalMIS(1.f, cosOut);
-                path.dVM *= evalMIS(1.f, cosOut);
+                const float cosOut = abs(dot(path.dir, path.normal));
+
+                if (result.isLobe(LobeType::DeltaReflection) || result.isLobe(LobeType::DeltaTransmission))
+                {
+                    path.dVC *= evalMIS(1.f, cosOut);
+                    path.dVM *= evalMIS(1.f, cosOut);
+                    path.dVCM = 0.f;
+                }
+                else
+                {
+                    float contProb = getContinuationProbability();
+                    float fwdPdf = result.pdf * contProb;
+                    float revPdf;
+                    if (kTraceFromLight && path.getVertexIndex() == 1 && path.isAnalyticLight())
+                        revPdf = 0.f; // analytic lights cannot be sampled via bsdf sampling
+                    else
+                        revPdf = evalRevScatterPdf(sd, mi, path.dir) * contProb;
+
+                    path.dVC  = evalMIS(1.f, cosOut / fwdPdf) * (path.dVC * evalMIS(1.f, revPdf) + path.dVCM + getMisVmWeightFactor());
+                    path.dVM  = evalMIS(1.f, cosOut / fwdPdf) * (path.dVM * evalMIS(1.f, revPdf) + path.dVCM + getMisVcWeightFactor() + 1.f);
+                    path.dVCM = evalMIS(1.f, 1.f / fwdPdf);
+                }
             }
             else
             {
-                float contProb = getContinuationProbability();
-                float fwdPdf = result.pdf * contProb;
-                float revPdf;
-                if (kTraceFromLight && path.getVertexIndex() == 1 && path.isAnalyticLight())
-                    revPdf = 0.f;
-                else
-                    revPdf = evalRevScatterPdf(sd, mi, path.dir) * contProb;
-
-                path.dVC  = evalMIS(1.f, cosOut / fwdPdf) * (path.dVC * evalMIS(1.f, revPdf) + path.dVCM + getMisVmWeightFactor());
-                path.dVM  = evalMIS(1.f, cosOut / fwdPdf) * (path.dVM * evalMIS(1.f, revPdf) + path.dVCM + getMisVcWeightFactor() + 1.f);
-                path.dVCM = evalMIS(1.f, 1.f / fwdPdf);
-            }
-        }
-
-        // Ignore valid on purpose for now.
-        if (!kTraceFromLight && kOutputNRDData)
-        {
-            const uint lobeTypes = mi.getLobeTypes(sd);
-            const bool hasDeltaTransmissionLobe = (lobeTypes & (uint)LobeType::DeltaTransmission) != 0;
-            const bool hasNonDeltaLobes = (lobeTypes & (uint)LobeType::NonDelta) != 0;
-
-            if (path.getVertexIndex() == 1)
-            {
-                path.setDiffusePrimaryHit(result.isLobe(LobeType::Diffuse));
-                path.setSpecularPrimaryHit(result.isLobe(LobeType::Specular));
-
-                // Mark path as delta-only if it followed delta lobe on the primary hit, even though there might have been non-delta lobes.
-                path.setDeltaOnlyPath(isDeltaLobe);
-
-                if (kOutputNRDAdditionalData)
-                {
-                    path.setDeltaReflectionPrimaryHit(result.isLobe(LobeType::DeltaReflection));
-                    path.setDeltaTransmissionPath(result.isLobe(LobeType::DeltaTransmission));
-                }
-            }
-
-            if (path.getVertexIndex() > 1)
-            {
-                if (!isDeltaLobe) path.setDeltaOnlyPath(false);
-
-                if (kOutputNRDAdditionalData && path.isDeltaTransmissionPath() && path.isDeltaOnlyPath() && hasDeltaTransmissionLobe)
-                {
-                    if (result.isLobe(LobeType::DeltaReflection) && !isDeltaReflectionAllowedAlongDeltaTransmissionPath(sd))
-                    {
-                        path.setDeltaTransmissionPath(false);
-                    }
-                }
+                // hijack dVC to store the pdf in dVC for calculating MIS weight
+                path.dVC = result.pdf * getContinuationProbability();
             }
         }
 
@@ -659,11 +652,6 @@ struct PathTracer
         }
         path.throughput *= f;
 
-        if (!kUseBPT)
-        {
-            // hijack dVC to store the pdf in dVC for calculating MIS weight
-            path.dVC = bs.pdf * getContinuationProbability();
-        }
 
         path.clearEventFlags();
 
@@ -768,8 +756,9 @@ struct PathTracer
 
         const float sampleWeight = weight / (lightVertex.pathPdf * getEtaVCM());
 
-        const float cameraBsdfFwdPdfW = mi.evalPdf(sd, dir, kUseBSDFSampling);
-        const float cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, dir);
+        const float contProb = getContinuationProbability();
+        const float cameraBsdfFwdPdfW = mi.evalPdf(sd, dir, kUseBSDFSampling) * contProb;
+        const float cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, dir) * contProb;
 
         // evaluate MIS weight
         const float wLight = lightVertex.dVCM * getMisVcWeightFactor() + lightVertex.dVM * evalMIS(1.f, cameraBsdfFwdPdfW);
@@ -869,6 +858,8 @@ struct PathTracer
 
         float3 contribution = path.throughput * lightVertex.L;
 
+        const float contProb = getContinuationProbability();
+
         // evaluate bsdf at light vertex
         float lightBsdfFwdPdfW, lightBsdfRevPdfW;
         {
@@ -881,8 +872,8 @@ struct PathTracer
                 return;
             contribution *= lightMi.eval(lightSd, -toLight, path.sg) * getAdjointCorrection(lightSd, lightMi, -toLight) / abs(cosLight); // divide by cosine term since its handled in the integration weight
 
-            lightBsdfFwdPdfW = lightMi.evalPdf(lightSd, -toLight, kUseBSDFSampling);
-            lightBsdfRevPdfW = evalRevScatterPdf(lightSd, lightMi, -toLight);
+            lightBsdfFwdPdfW = lightMi.evalPdf(lightSd, -toLight, kUseBSDFSampling) * contProb;
+            lightBsdfRevPdfW = evalRevScatterPdf(lightSd, lightMi, -toLight) * contProb;
         }
         if (!any(contribution > 0)) return;
 
@@ -897,8 +888,8 @@ struct PathTracer
                 return;
             contribution *= mi.eval(sd, toLight, path.sg);
 
-            cameraBsdfFwdPdfW = mi.evalPdf(sd, toLight, kUseBSDFSampling);
-            cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, toLight);
+            cameraBsdfFwdPdfW = mi.evalPdf(sd, toLight, kUseBSDFSampling) * contProb;
+            cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, toLight) * contProb;
         }
         if (!any(contribution > 0)) return;
 
@@ -1248,7 +1239,6 @@ struct PathTracer
             }
             else
             {
-
                 // Check if sample from RTXDI should be applied instead of NEE.
                 const bool applyRTXDI = kUseRTXDI && isPrimaryHit;
 
@@ -1379,7 +1369,7 @@ struct PathTracer
 
         // Set reconection vertex if this connection is reconnectable and we haven't found a reconnection vertex yet
         // TODO: update rcv in addToPathContribution, assign temporary rcv in vertex connection code
-        if (path.replayPdf == 0 && path.isReconnectable() && wasReconnectable)
+        if (kUseReconnection && path.replayPdf == 0 && path.isReconnectable() && wasReconnectable)
         {
             path.throughputAtRcv = path.throughput;
             path.replayPdf       = path.lastPathPdf;
@@ -1461,6 +1451,7 @@ struct PathTracer
         #if LIGHT_TRACE_ONLY == 0
         {
             PathReservoir reservoir = pathReservoirs[pixelId];
+            reservoir.integrationWeight /= reservoir.sampleCount;
             if (kDebugMIS)
             {
                 L = reservoir.sampleF;
@@ -1468,17 +1459,15 @@ struct PathTracer
             else
             {
                 reservoir.finalizeMerge();
-                reservoir.integrationWeight /= reservoir.sampleCount;
-                pathReservoirs[pixelId] = reservoir;
-
                 L = reservoir.getRadiance();
             }
+            pathReservoirs[pixelId] = reservoir;
         }
         #endif
 
         if (kUseBPT)
         {
-            L += lightImage.Load<float3>(sizeof(float3) * (pixelId));
+            L += lightImage.Load<float3>(sizeof(float3) * pixelId);
         }
 
         assert(!any(isnan(L)));

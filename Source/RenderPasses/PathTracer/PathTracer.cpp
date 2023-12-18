@@ -564,6 +564,8 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
         }
     }
 
+    dirty |= widget.checkbox("Use reconnection", mStaticParams.useReconnection);
+
     if ((mStaticParams.useNEE || mStaticParams.useBPT) && mpScene && mpScene->useEmissiveLights())
     {
         if (auto group = widget.group("Emissive sampler"))
@@ -709,7 +711,7 @@ PathTracer::TracePass::TracePass(ref<Device> pDevice, const std::string& name, c
     desc.addShaderLibrary(kTracePassFilename);
     if (pDevice->getType() == Device::Type::D3D12 && useSER)
         desc.addCompilerArguments({ "-Xdxc", "-enable-lifetime-markers" });
-    desc.setMaxPayloadSize(200); // This is conservative but the required minimum is 192 bytes.
+    desc.setMaxPayloadSize(208); // This is conservative but the required minimum is 200 bytes.
     desc.setMaxAttributeSize(pScene->getRaytracingMaxAttributeSize());
     desc.setMaxTraceRecursionDepth(1);
     if (!pScene->hasProceduralGeometry()) desc.setRtPipelineFlags(RtPipelineFlags::SkipProceduralPrimitives);
@@ -1308,6 +1310,7 @@ DefineList PathTracer::StaticParams::getDefines(const PathTracer& owner) const
     defines.add("USE_VM", (useVM && useBPT) ? "1" : "0");
     defines.add("USE_FAST_VM", (useVM && useBPT && useFastVM) ? "1" : "0");
     defines.add("USE_VM_ONLY", (useVM && useBPT && vmOnly) ? "1" : "0");
+    defines.add("USE_RECONNECTION", useReconnection ? "1" : "0");
     defines.add("DEBUG_MIS", debugMIS ? "1" : "0");
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");

@@ -115,11 +115,13 @@ struct PathState
 
     uint        replayBounces;          ///< Number of bounces in the prefix.
     float       lastPathPdf;            ///< Path pdf at the last vertex.
+    uint        seed;                   ///< Path seed.
 
     HitInfo     rcvHit;                 ///< Cached reconnection vertex. Only valid when replayPdf > 0.
 
     InteriorList interiorList;          ///< Interior list. Keeping track of a stack of materials with medium properties.
     SampleGenerator sg;                 ///< Sample generator state. Typically 4-16B.
+    SampleGenerator sgBsdf;             ///< Sample generator state for BSDF sampling. Typically 4-16B.
 
     // Accessors
 

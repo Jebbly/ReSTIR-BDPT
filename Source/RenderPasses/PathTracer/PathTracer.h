@@ -118,6 +118,7 @@ private:
         bool        useVM  = true;                              ///< Use vertex merging when using BPT.
         bool        useFastVM  = true;                          ///< Only merge with a single photon grid cell.
         bool        vmOnly = false;                             ///< Only use vertex merging.
+        bool        useReconnection = false;                    ///< Enable reconnection shift maps.
         bool        lightTraceOnly = false;                     ///< Only use light tracing. Disables camera tracing.
         bool        debugBPT = false;                           ///< Output specific paths for debugging BPT.
         bool        debugMIS = false;                           ///< Output MIS weights.
