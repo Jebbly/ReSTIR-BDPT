@@ -99,6 +99,7 @@ private:
     bool beginFrame(RenderContext* pRenderContext, const RenderData& renderData);
     void endFrame(RenderContext* pRenderContext, const RenderData& renderData);
     void generatePaths(RenderContext* pRenderContext, const RenderData& renderData);
+    void resolveSamples(RenderContext* pRenderContext, const RenderData& renderData);
     void tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass, const uint2 dispatchDims);
 
     /** Static configuration. Changing any of these options require shader recompilation.
@@ -177,15 +178,21 @@ private:
     float                           mVMRadiusAlpha = 0.75f;     ///< Merge radius shrink factor.
 
     ref<ComputePass>                mpGeneratePaths;            ///< Fullscreen compute pass generating paths starting at primary hits.
+    ref<ComputePass>                mpResolvePass;              ///< Fullscreen compute pass writing reservoir samples and light trace results to the output buffer.
     ref<ComputePass>                mpReflectTypes;             ///< Helper for reflecting structured buffer types.
 
     std::unique_ptr<TracePass>      mpTracePass;                ///< Main trace pass.
+    std::unique_ptr<TracePass>      mpTemporalReusePass;        ///< Temporal reservoir reuse pass.
+    std::unique_ptr<TracePass>      mpSpatialReusePass;         ///< Spatial reservoir reuse pass.
     std::unique_ptr<TracePass>      mpLightTracePass;           ///< Light trace pass.
 
-    ref<Buffer>                     mpReservoirs;               ///< Per-pixel reservoirs.
     ref<Buffer>                     mpLightImage;               ///< Light trace image. Light subpath contributions are atomically added to this.
     ref<Buffer>                     mpLightVertices;            ///< Light sub-path vertices.
     ref<Buffer>                     mpLightVertexCount;         ///< Light vertex counter.
     ref<Buffer>                     mpPhotonCellSizes;          ///< Photon grid cell sizes.
     ref<Buffer>                     mpPhotonCellOffsets;        ///< Photon grid cell offsets.
+    ref<Buffer>                     mpReservoirs;               ///< Per-pixel reservoirs.
+    ref<Buffer>                     mpLastReservoirs;           ///< Per-pixel reservoirs from the last frame.
+    ref<Texture>                    mpLastVbuffer;              ///< Copy of the vbuffer from last frame.
+    ref<Texture>                    mpLastViewDir;              ///< Copy of the view directions from last frame.
 };

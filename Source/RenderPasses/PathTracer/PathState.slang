@@ -28,6 +28,7 @@
 import Utils.Math.PackedFormats;
 import Utils.Color.ColorHelpers;
 import Scene.ShadingData;
+import PathReservoir;
 __exported import Scene.HitInfo;
 __exported import Utils.Math.Ray;
 __exported import Utils.Sampling.SampleGenerator;
@@ -117,11 +118,15 @@ struct PathState
     float       lastPathPdf;            ///< Path pdf at the last vertex.
     uint        seed;                   ///< Path seed.
 
+    float3      rcvPosW;                ///< World-space reconnection vertex position.
+
     HitInfo     rcvHit;                 ///< Cached reconnection vertex. Only valid when replayPdf > 0.
 
     InteriorList interiorList;          ///< Interior list. Keeping track of a stack of materials with medium properties.
     SampleGenerator sg;                 ///< Sample generator state. Typically 4-16B.
     SampleGenerator sgBsdf;             ///< Sample generator state for BSDF sampling. Typically 4-16B.
+
+    PathReservoir reservoir;
 
     // Accessors
 

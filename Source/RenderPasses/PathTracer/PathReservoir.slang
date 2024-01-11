@@ -5,8 +5,8 @@ import Utils.Color.ColorHelpers;
 */
 struct PathReservoir
 {
-    float  integrationWeight;    ///< Unbiased integration weight. This is W in the ReSTIR papers.
-    uint   sampleCount;          ///< Number of samples streamed through this reservoir. This is M in the ReSTIR papers.
+    float  W;                    ///< Integration weight, or RIS weight between beginMerge/endMerge calls.
+    uint   M;                    ///< Number of samples streamed through this reservoir.
     uint   pathId;               ///< Path ID which encodes original pixel and sample index.
     uint   seed;                 ///< Path seed.
 
@@ -19,6 +19,9 @@ struct PathReservoir
     float3 reconnectionDirOut;   ///< Direction towards the next vertex in the suffix. Only valid if reconnectionG > 0.
     float  reconnectionG;        ///< Reconnection geometry term. Used to compute the reconnection jacobian. If this is 0, only random replay is used.
 
+    float3 reconnectionPosW;     ///< World-space position of the reconection vertex. Only valid if reconnectionG > 0.
+    uint   pad;
+
     PackedHitInfo reconnectionHit; ///< Hit information for the reconnection vertex. Only valid if reconnectionG > 0.
 
     /** Returns the target weight for resampling.
@@ -27,8 +30,13 @@ struct PathReservoir
 
     /** Returns the estimated radiance.
     */
-    float3 getRadiance() { return sampleF * integrationWeight; }
+    float3 getRadiance() {
+        return sampleF * W;
+    }
 
+    /** Copies a sample from another reservoir.
+        \param[in] r The reservoir to copy the sample from.
+    */
     [mutating]
     void copySample(const PathReservoir r)
     {
@@ -48,30 +56,35 @@ struct PathReservoir
     }
 
     [mutating]
-    void prepareMerge(float misWeight = 1, float jacobian = 1) {
-        integrationWeight *= getTargetPdf() * misWeight * jacobian;
+    void beginMerge(float resamplingMis = 1, float jacobian = 1)
+    {
+        W *= getTargetPdf() * resamplingMis * jacobian;
     }
 
-    // note: PrepareMerge must be called on both reservoirs prior to calling Merge.
-    // FinalizeMerge must be called after merging.
+    /** Merges two reservoirs that are in the same domain.
+        \param[in] rnd Random number used for merging.
+        \param[in] r Candidate to merge with.
+    */
     [mutating]
-    bool merge(float rnd, const PathReservoir r) {
-        sampleCount += r.sampleCount;
+    bool merge(float rnd, const PathReservoir candidate) {
+        M += candidate.M;
 
-        if (r.integrationWeight <= 0 || isnan(r.integrationWeight) || isinf(r.integrationWeight))
+        if (candidate.W <= 0 || isnan(candidate.W) || isinf(candidate.W))
             return false;
 
-        integrationWeight += r.integrationWeight;
-        if (rnd * integrationWeight < r.integrationWeight) {
-            copySample(r);
+        W += candidate.W;
+        if (rnd * W < candidate.W) {
+            copySample(candidate);
             return true;
         }
         return false;
     }
 
     [mutating]
-    void finalizeMerge() {
+    void endMerge()
+    {
         const float p = getTargetPdf();
-        integrationWeight = p > 0 ? integrationWeight / p : 0;
+        if (p > 0) W /= p;
     }
 };
+static const uint PathReservoirSize = sizeof(PathReservoir);

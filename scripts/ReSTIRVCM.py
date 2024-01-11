@@ -1,16 +1,10 @@
 from falcor import *
 
 def render_graph_PathTracer():
-    g = RenderGraph("PathTracer")
+    g = RenderGraph("ReSTIRVCM")
 
-    PathTracer = createPass("PathTracer", {
-        'samplesPerPixel': 1,
-        'maxSurfaceBounces': 10,
-        'maxDiffuseBounces': 10,
-        'maxSpecularBounces': 10,
-        'maxTransmissionBounces': 10,
-        'useSER': False })
-    g.addPass(PathTracer, "PathTracer")
+    ReSTIRVCM = createPass("ReSTIRVCM", {})
+    g.addPass(ReSTIRVCM, "ReSTIRVCM")
 
     VBufferRT = createPass("VBufferRT", {
         'adjustShadingNormals': False,
@@ -25,10 +19,10 @@ def render_graph_PathTracer():
     ToneMapper = createPass("ToneMapper", {'autoExposure': False, 'exposureCompensation': 0.0})
     g.addPass(ToneMapper, "ToneMapper")
 
-    g.addEdge("VBufferRT.vbuffer",     "PathTracer.vbuffer")
-    g.addEdge("VBufferRT.viewW",       "PathTracer.viewW")
-    g.addEdge("VBufferRT.mvec",        "PathTracer.mvec")
-    g.addEdge("PathTracer.color",      "AccumulatePass.input")
+    g.addEdge("VBufferRT.vbuffer",    "ReSTIRVCM.vbuffer")
+    g.addEdge("VBufferRT.viewW",      "ReSTIRVCM.viewW")
+    g.addEdge("VBufferRT.mvec",       "ReSTIRVCM.mvec")
+    g.addEdge("ReSTIRVCM.color",      "AccumulatePass.input")
     g.addEdge("AccumulatePass.output", "ToneMapper.src")
     g.markOutput("ToneMapper.dst")
 

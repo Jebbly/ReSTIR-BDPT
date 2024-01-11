@@ -70,21 +70,23 @@ struct PathTracer
 
     PathTracerParams params;                               ///< Runtime parameters.
 
-    // Samplers
     LightSampler lightSampler;                             ///< Light sampler.
-
     LightVertexCache lightVertexCache;                     ///< Light vertex cache.
     PhotonMap photonMap;                                   ///< Photon map.
-    RWStructuredBuffer<PathReservoir> pathReservoirs;      ///< Output path reservoirs.
+    RWByteAddressBuffer lightImage;                        ///< Input light traced image. Only valid when kUseBPT == true.
 
     // Inputs
     Texture2D<PackedHitInfo> vbuffer;                      ///< Fullscreen V-buffer for the primary hits.
     Texture2D<float3> viewDir;                             ///< Optional view direction. Only valid when kUseViewDir == true.
     Texture2D<uint> sampleCount;                           ///< Optional input sample count buffer. Only valid when kSamplesPerPixel == 0.
-    RWByteAddressBuffer lightImage;                        ///< Input light traced image. Only valid when kUseBPT == true.
+    Texture2D<float3> lastViewDir;                         ///< Optional view direction from the last frame. Only valid when kUseViewDir == true.
+    Texture2D<PackedHitInfo> lastVbuffer;                  ///< Fullscreen V-buffer for the primary hits from the last frame.
+    Texture2D<float2> motionVecs;                          ///< Motion vectors.
 
     // Outputs
-    RWTexture2D<float4> outputColor;                       ///< Output color buffer if kSamplesPerPixel == 1.
+    RWTexture2D<float4> outputColor;                       ///< Output color buffer.
+    RWStructuredBuffer<PathReservoir> pathReservoirs;      ///< Output path reservoirs.
+    RWStructuredBuffer<PathReservoir> lastPathReservoirs;  ///< Path reservoirs from the last frame.
 
     /*******************************************************************
                                 Static members
@@ -100,6 +102,12 @@ struct PathTracer
     static const bool kTraceFromLight = true;
     #else
     static const bool kTraceFromLight = false;
+    #endif
+
+    #if defined(TEMPORAL_REUSE_PASS) || defined(SPATIAL_REUSE_PASS)
+    static const bool kTraceOffsetPath = true;
+    #else
+    static const bool kTraceOffsetPath = false;
     #endif
 
     /** Evaluates the currently configured heuristic for multiple importance sampling (MIS).
@@ -167,17 +175,18 @@ struct PathTracer
 
         float factor = 1.f;
 
+        const BSDFProperties properties = mi.getProperties(sd);
+
         // shading normal correction.
-        const float num   = abs(dot(sd.frame.N, sd.V) * cosOut);
-        const float denom = abs(dot(sd.frame.N, wo) * cosIn);
+        const float num   = abs(dot(properties.guideNormal, sd.V) * cosOut);
+        const float denom = abs(dot(properties.guideNormal, wo) * cosIn);
         if (denom >= kMinCosTheta)
             factor = num / denom;
 
         if (cosIn * cosOut < 0.f)
         {
             // eta factor correction.
-            float eta = mi.getProperties(sd).eta;
-            factor *= 1.f / (eta * eta);
+            factor *= 1.f / sqr(properties.eta);
         }
 
         return factor;
@@ -307,15 +316,6 @@ struct PathTracer
         return surfaceBounces;
     }
 
-    void initializeReservoir(const uint2 pixel, const uint spp)
-    {
-        PathReservoir reservoir = {};
-        reservoir.sampleF = 0;
-        reservoir.integrationWeight = 0;
-        reservoir.sampleCount = spp;
-        pathReservoirs[pixel.y * params.frameDim.x + pixel.x] = reservoir;
-    }
-
     void generateLightPath(const uint pathID, const uint seed, out PathState path)
     {
         path = {};
@@ -384,6 +384,11 @@ struct PathTracer
             path.dVC = 0.f;
 
         path.replayPdf = 0;
+
+        path.reservoir = {};
+        path.reservoir.sampleF = 0;
+        path.reservoir.M = 1;
+        path.reservoir.W = 0;
     }
 
     /** Generate a path state using the current camera and visibility buffer.
@@ -391,7 +396,7 @@ struct PathTracer
         \param[in] seed Path seed.
         \param[out] path Path state for the primary hit.
     */
-    void generateCameraPath(const uint pathID, out PathState path)
+    void generateCameraPath(const uint pathID, const uint seed, out PathState path)
     {
         path = {};
         path.id = pathID;
@@ -403,9 +408,6 @@ struct PathTracer
 
         // Load the primary hit info from the V-buffer.
         const HitInfo hit = HitInfo(vbuffer[pixel]);
-
-        const uint maxSpp = kSamplesPerPixel > 0 ? kSamplesPerPixel : kMaxSamplesPerPixel;
-        const uint seed = params.seed * maxSpp + path.getSampleIdx();
 
         generateCameraPath(cameraRay, hit, pathID, seed, path);
     }
@@ -503,22 +505,20 @@ struct PathTracer
             }
         }
 
-        const uint reservoirId = path.getPixel().y * params.frameDim.x + path.getPixel().x;
-
         if (kDebugMIS)
         {
-            // Render MIS weights instead of radiance
-            pathReservoirs[reservoirId].sampleF += misWeight;
+            // Output MIS weights instead of radiance
+            path.reservoir.sampleF += misWeight;
             return;
         }
 
         // Stream the path through this pixel's reservoir
         PathReservoir candidate = {};
-        candidate.sampleF            = contribution;
-        candidate.integrationWeight  = integrationWeight;
-        candidate.sampleCount        = 0;
-        candidate.pathId             = path.id;
-        candidate.seed               = path.seed;
+        candidate.W = integrationWeight;
+        candidate.M       = 0; // ignore sampleCount during canonical sampling
+        candidate.pathId  = path.id;
+        candidate.seed    = path.seed;
+        candidate.sampleF = contribution;
         if (path.replayPdf > 0)
         {
             candidate.replayPdf          = path.replayPdf;
@@ -526,6 +526,7 @@ struct PathTracer
             candidate.reconnectionDirOut = path.rcvDirOut;
             candidate.reconnectionG      = path.rcvG;
             candidate.reconnectionHit    = path.rcvHit.getData();
+            candidate.reconnectionPosW   = path.rcvPosW;
             for (int i = 0; i < 3; i++)
                 candidate.suffixContribution[i] = path.throughputAtRcv[i] > 0.f ? contribution[i] / path.throughputAtRcv[i] : 0.f;
         }
@@ -537,9 +538,9 @@ struct PathTracer
             candidate.reconnectionG = 0;
         }
 
-        candidate.prepareMerge(misWeight);
+        candidate.beginMerge(misWeight);
 
-        pathReservoirs[reservoirId].merge(sampleNext1D(path.sg), candidate);
+        path.reservoir.merge(sampleNext1D(path.sg), candidate);
     }
 
     /** Atomically add radiance to the light image buffer.
@@ -549,7 +550,7 @@ struct PathTracer
         \param[in] misWeight sample MIS weight.
         \param[in] lightVertices number of light vertices in the path.
     */
-    void addToLightImage(const uint2 pixel, const float3 contribution, const float integrationWeight, float misWeight, const uint lightVertices )
+    void addToLightImage(const uint2 pixel, const float3 contribution, const float integrationWeight, float misWeight, const uint lightVertices)
     {
         if (kDebugBPT)
         {
@@ -722,6 +723,87 @@ struct PathTracer
         bool valid = any(path.throughput > 0.f);
 
         return valid;
+    }
+
+    /** Connects a camera path vertex to the reconnection vertex stored in path.reservoir.
+        \param[in] sd Shading data at the camera vertex.
+        \param[in] mi Material instance at the shading point.
+        \param[in,out] path The path state.
+        \param[in,out] vq Visibility query.
+    */
+    bool connectToBasePath<VisibilityQuery : IVisibilityQuery>(const ShadingData sd, const IMaterialInstance mi, inout PathState path, inout VisibilityQuery vq)
+    {
+        if (mi.getProperties(sd).roughness < params.minReconnectionRoughness)
+            return false;
+
+        float3 toRcv = path.reservoir.reconnectionPosW - sd.posW;
+        const float dist2 = max(dot(toRcv, toRcv), kMinLightDistSqr);
+        toRcv = normalize(toRcv);
+
+        if (dist2 < sqr(params.minReconnectionDistance))
+            return false;
+
+        let lod = ExplicitLodTextureSampler(0.f);
+        const ShadingData rcvSd = loadShadingData(HitInfo(path.reservoir.reconnectionHit), sd.posW, toRcv, lod);
+
+        const float cosCamera =  dot(toRcv, sd.getOrientedFaceNormal());
+        const float cosRcv    = -dot(toRcv, rcvSd.getOrientedFaceNormal());
+
+        float3 contribution = path.throughput * path.reservoir.suffixContribution;
+
+        const float contProb = getContinuationProbability();
+
+        // evaluate bsdf at camera vertex
+        float cameraBsdfFwdPdfW, cameraBsdfRevPdfW;
+        {
+            // Reject sample if not in the hemisphere of a BSDF lobe.
+            const uint lobeTypes = mi.getLobeTypes(sd);
+            const bool hasReflection   = lobeTypes & uint(LobeType::Reflection);
+            const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
+            if ((cosCamera <= kMinCosTheta && !hasTransmission) || (cosCamera >= -kMinCosTheta && !hasReflection))
+                return false;
+            contribution *= mi.eval(sd, toRcv, path.sg);
+
+            cameraBsdfFwdPdfW = mi.evalPdf(sd, toRcv, kUseBSDFSampling) * contProb;
+            cameraBsdfRevPdfW = evalRevScatterPdf(sd, mi, toRcv) * contProb;
+        }
+        if (!any(contribution > 0)) return false;
+
+        // evaluate bsdf at reconnection vertex
+        float rcvBsdfFwdPdfW, rcvBsdfRevPdfW;
+        {
+            let rcvMi = gScene.materials.getMaterialInstance(rcvSd, lod);
+            // Reject sample if not in the hemisphere of a BSDF lobe.
+            const uint lobeTypes = rcvMi.getLobeTypes(rcvSd);
+            const bool hasReflection   = lobeTypes & uint(LobeType::Reflection);
+            const bool hasTransmission = lobeTypes & uint(LobeType::Transmission);
+            if ((cosRcv <= kMinCosTheta && !hasTransmission) || (cosRcv >= -kMinCosTheta && !hasReflection))
+                return false;
+            contribution *= rcvMi.eval(rcvSd, path.reservoir.reconnectionDirOut, path.sg);
+
+            rcvBsdfFwdPdfW = rcvMi.evalPdf(rcvSd, path.reservoir.reconnectionDirOut, kUseBSDFSampling) * contProb;
+            rcvBsdfRevPdfW = evalRevScatterPdf(rcvSd, rcvMi, path.reservoir.reconnectionDirOut) * contProb;
+        }
+        if (!any(contribution > 0)) return false;
+
+        // Test visibility by tracing a shadow ray.
+        Ray ray = {};
+        // Get origin with offset applied in direction of the geometry normal to avoid self-intersection.
+        ray.origin = computeRayOrigin(sd, toRcv);
+        ray.tMin = 0.f;
+        ray.dir = computeRayOrigin(rcvSd, -toRcv) - ray.origin;
+        ray.tMax = sqrt(max(dot(ray.dir, ray.dir), kMinLightDistSqr));
+        ray.dir /= ray.tMax;
+        logTraceRay(PixelStatsRayType::Visibility);
+        bool V = vq.traceVisibilityRay(ray);
+        if (!V) return false;
+
+        // Update the reservoir sample directly
+        path.reservoir.sampleF = contribution;
+        path.reservoir.replayPdf = path.pathPdf;
+        path.reservoir.reconnectionG = abs(cosRcv) / dist2;
+
+        return true;
     }
 
     /**
@@ -982,7 +1064,7 @@ struct PathTracer
 
     /** Appends the current path vertex to the lightVertices buffer.
     */
-    void storeLightVertex(const ShadingData sd, const PathState path)
+    void storeLightVertex(const ShadingData sd, inout PathState path)
     {
         LightSubpathVertex v = {};
         v.packedHit = path.hit.data;
@@ -997,7 +1079,7 @@ struct PathTracer
         v.hitDist = length(sd.posW - path.origin);
 
         const uint i = lightVertexCache.addVertex(v);
-        if (kUseVM) photonMap.addPhoton(i, sd.posW, params.mergeRadius, params.cellCount);
+        if (kUseVM) photonMap.addPhoton(i, sd.posW, params.mergeRadius, params.cellCount, sampleNext1D(path.sg));
     }
 
     /** Handle hits on dielectrics.
@@ -1043,7 +1125,7 @@ struct PathTracer
     bool terminatePathByRussianRoulette(inout PathState path, float u)
     {
         const float contProb = getContinuationProbability();
-        if (u >= contProb)
+        if (!kTraceOffsetPath && u >= contProb)
         {
             path.terminate();
             return true;
@@ -1088,7 +1170,7 @@ struct PathTracer
         // - Sample light(s) using shadow rays
         // - Sample scatter ray or terminate
 
-        const float rr_u = sampleNext1D(path.sg); // needs to be computed before path.sg is modified
+        const float rr_u = sampleNext1D(path.sg); // needs to be computed before path.sg is modified for SER to work
 
         const bool isPrimaryHit = path.getVertexIndex() == 1;
         const HitType hitType = path.hit.getType();
@@ -1239,6 +1321,17 @@ struct PathTracer
             }
             else
             {
+                // Reconnect to the base path when tracing an offset path.
+                if (kTraceOffsetPath && path.reservoir.reconnectionG > 0 && path.reservoir.replayBounces == path.getVertexIndex() - 1)
+                {
+                    if (!connectToBasePath(sd, mi, path, vq))
+                    {
+                        // Terminate if reconnection fails
+                        path.terminate();
+                        return;
+                    }
+                }
+
                 // Check if sample from RTXDI should be applied instead of NEE.
                 const bool applyRTXDI = kUseRTXDI && isPrimaryHit;
 
@@ -1323,12 +1416,23 @@ struct PathTracer
                 }
             }
         }
+        else
+        {
+            if (kTraceOffsetPath && path.reservoir.reconnectionG > 0 && path.reservoir.replayBounces == path.getVertexIndex() - 1)
+            {
+                // Terminate if reconnection fails due to a delta-only material.
+                path.terminate();
+                return;
+            }
+        }
 
         if (kUseVMOnly && !kTraceFromLight)
         {
+            // Terminate at first bounce if we are only using vertex merging.
             path.terminate();
             return;
         }
+
 
         // Russian roulette to terminate paths early.
         if (kUseRussianRoulette)
@@ -1376,7 +1480,8 @@ struct PathTracer
             path.rcvDirOut       = path.dir;
             path.rcvG            = abs(dot(sd.V, sd.faceN))/sqr(hitDist);
             path.rcvHit          = path.hit;
-            path.replayBounces   = path.getVertexIndex()-2;
+            path.rcvPosW         = sd.posW;
+            path.replayBounces   = path.getVertexIndex() - 2;
         }
         path.lastPathPdf = lastPdf;
     }
@@ -1440,38 +1545,5 @@ struct PathTracer
             // Log path length.
             logPathLength(getTerminatedPathLength(path));
         }
-    }
-
-    /** Write path contribution to output buffer, including radiance from pure light tracing.
-    */
-    void resolve(const uint2 pixel)
-    {
-        const uint pixelId = pixel.y * params.frameDim.x + pixel.x;
-        float3 L = 0;
-        #if LIGHT_TRACE_ONLY == 0
-        {
-            PathReservoir reservoir = pathReservoirs[pixelId];
-            reservoir.integrationWeight /= reservoir.sampleCount;
-            if (kDebugMIS)
-            {
-                L = reservoir.sampleF;
-            }
-            else
-            {
-                reservoir.finalizeMerge();
-                L = reservoir.getRadiance();
-            }
-            pathReservoirs[pixelId] = reservoir;
-        }
-        #endif
-
-        if (kUseBPT)
-        {
-            L += lightImage.Load<float3>(sizeof(float3) * pixelId);
-        }
-
-        assert(!any(isnan(L)));
-
-        outputColor[pixel] = float4(L, 1.f);
     }
 };

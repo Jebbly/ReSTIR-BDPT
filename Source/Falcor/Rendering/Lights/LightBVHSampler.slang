@@ -93,6 +93,29 @@ struct LightBVHSampler : IEmissiveLightSampler
         return true;
     }
 
+
+    /** Draw a single light sample.
+        \param[in] posW Shading point in world space.
+        \param[in] normalW Normal at the shading point in world space.
+        \param[in] upperHemisphere True if only upper hemisphere should be considered.
+        \param[in,out] sg Sample generator.
+        \param[out] ls Light sample. Only valid if true is returned.
+        \return True if a sample was generated, false otherwise.
+    */
+    uint sampleLight<S : ISampleGenerator>(const float3 posW, const float3 normalW, const bool upperHemisphere, inout S sg, out float selectionPdf)
+    {
+        selectionPdf = 0;
+
+        if (gScene.lightCollection.isEmpty()) return false;
+
+        // Stochastically traverse the light BVH to pick a triangle.
+        uint triangleIndex;
+        float uLight = sampleNext1D(sg);
+        if (!sampleLightViaBVH(posW, normalW, upperHemisphere, uLight, selectionPdf, triangleIndex)) return gScene.lightCollection.kInvalidIndex;
+
+        return triangleIndex;
+    }
+
     /** Evaluate the PDF associated with selecting an emissive triangle.
         \param[in] posW Shading point in world space.
         \param[in] normalW Normal at the shading point in world space.
@@ -125,7 +148,7 @@ struct LightBVHSampler : IEmissiveLightSampler
     }
 
     // No-op since LightBVH requires a shading point.
-    bool sampleLight<S : ISampleGenerator>(inout S sg, out TriangleLightSample ls) { ls = {}; return false; }
+    uint sampleLight<S : ISampleGenerator>(inout S sg, out float selectionPdf) { selectionPdf = 0; return gScene.lightCollection.kInvalidIndex; }
     // No-op since LightBVH requires a shading point.
     float evalTriangleSelectionPdf(const uint triangleIndex) { return 0.f; }
 

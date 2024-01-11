@@ -129,6 +129,49 @@ struct EmissivePowerSampler : IEmissiveLightSampler
         return true;
     }
 
+    /** Draw a single light sample.
+        \param[in] posW Shading point in world space.
+        \param[in] normalW Normal at the shading point in world space.
+        \param[in] upperHemisphere True if only upper hemisphere should be considered.
+        \param[in,out] sg Sample generator.
+        \param[out] selectionPdf Probability of sampling the triangle.
+        \return Sampled triangle index.
+    */
+    uint sampleLight<S : ISampleGenerator>(const float3 posW, const float3 normalW, const bool upperHemisphere, inout S sg, out float selectionPdf)
+    {
+        return sampleLight(sg, selectionPdf);
+    }
+
+    /** Draw a single light sample.
+        \param[in] normalW Normal at the shading point in world space.
+        \param[in] upperHemisphere True if only upper hemisphere should be considered.
+        \param[in,out] sg Sample generator.
+        \param[out] selectionPdf Probability of selecting the triangle.
+        \return Sampeld triangle index.
+    */
+    uint sampleLight<S : ISampleGenerator>(inout S sg, out float selectionPdf)
+    {
+        selectionPdf = 0;
+
+        if (gScene.lightCollection.getActiveTriangleCount() == 0) return LightCollection::kInvalidIndex;
+
+        // Randomly pick a triangle out of the global list with uniform probability.
+        float uLight = sampleNext1D(sg);
+        uint triangleCount = gScene.lightCollection.triangleCount;
+        // Safety precaution as the result of the multiplication may be rounded to triangleCount even if uLight < 1.0 when triangleCount is large.
+        uint triangleIndex = min((uint)(uLight * triangleCount), triangleCount - 1);
+
+        uint2 packed = _emissivePower.triangleAliasTable[triangleIndex];
+        float threshold = f16tof32(packed.x >> 16u);
+        uint  selectAbove = ((packed.x & 0xFFFFu) << 8u) | ((packed.y >> 24u) & 0xFFu);
+        uint  selectBelow = packed.y & 0xFFFFFFu;
+
+        // Test the threshold in the current table entry; pick one of the two options
+        triangleIndex = (sampleNext1D(sg) >= threshold) ? selectAbove : selectBelow;
+        selectionPdf = gScene.lightCollection.fluxData[triangleIndex].flux * _emissivePower.invWeightsSum;
+        return triangleIndex;
+    }
+
     /** Evaluate the PDF associated with selecting an emissive triangle.
         \param[in] posW Shading point in world space.
         \param[in] normalW Normal at the shading point in world space.

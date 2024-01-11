@@ -59,13 +59,14 @@ struct DummyAttribs { uint dummy; };
 
 struct PathPayload
 {
-    uint4 packed[8];
+    uint4 packed[9];
 
     PackedHitInfo hit;
     PackedHitInfo rcvHit;
     InteriorList interiorList; ///< Interior list. Keeping track of a stack of materials with medium properties. The size depends on the config (4B/item).
     SampleGenerator sg;        ///< Sample generator state. Typically 4-16B.
     SampleGenerator sgBsdf;    ///< Sample generator state. Typically 4-16B.
+    PathReservoir reservoir;
 
     static PathPayload pack(const PathState path)
     {
@@ -98,11 +99,14 @@ struct PathPayload
         p.packed[7].y = asuint(path.lastPathPdf);
         p.packed[7].z = path.seed;
 
+        p.packed[8].xyz = asuint(path.rcvPosW);
+
         p.rcvHit        = path.rcvHit.getData();
         p.hit           = path.hit.getData();
         p.interiorList  = path.interiorList;
-        p.sg = path.sg;
-        p.sgBsdf = path.sgBsdf;
+        p.sg            = path.sg;
+        p.sgBsdf        = path.sgBsdf;
+        p.reservoir     = path.reservoir;
 
         return p;
     }
@@ -139,11 +143,14 @@ struct PathPayload
         path.lastPathPdf   = asfloat(p.packed[7].y);
         path.seed          = p.packed[7].z;
 
-        path.rcvHit = HitInfo(p.rcvHit);
-        path.hit    = HitInfo(p.hit);
-        path.interiorList  = p.interiorList;
-        path.sg = p.sg;
-        path.sgBsdf = p.sgBsdf;
+        path.rcvPosW = asfloat(p.packed[8].xyz);
+
+        path.rcvHit       = HitInfo(p.rcvHit);
+        path.hit          = HitInfo(p.hit);
+        path.interiorList = p.interiorList;
+        path.sg           = p.sg;
+        path.sgBsdf       = p.sgBsdf;
+        path.reservoir    = p.reservoir;
 
         return path;
     }
@@ -267,23 +274,23 @@ struct ReorderingScheduler
         payload = PathPayload::pack(path);
     }
 
-    /** Traces a path and write result to output.
+    /** Traces a canonical path and returns the resulting path reservoir.
         \param[in] pathID Path ID.
     */
-    void tracePath(uint pathID)
+    PathReservoir tracePath(uint pathID, const uint seed)
     {
         PathState path = {};
         if (kTraceFromLight)
         {
-            gPathTracer.generateLightPath(pathID, -gPathTracer.params.seed, path);
+            gPathTracer.generateLightPath(pathID, seed, path);
         }
         else
         {
-            gPathTracer.generateCameraPath(pathID, path);
+            gPathTracer.generateCameraPath(pathID, seed, path);
         }
         gPathTracer.setupPathLogging(path);
 
-        // Handle primary hits.
+        // Handle primary hits for camera paths.
         if (!kTraceFromLight)
         {
             if (path.isHit())
@@ -333,7 +340,7 @@ struct ReorderingScheduler
             {
                 // Note the primary miss has already been handled by the separate path generation pass
                 // the path tracer runs first. Abort execution here to avoid double work.
-                return;
+                return path.reservoir;
             }
         }
 
@@ -380,13 +387,125 @@ struct ReorderingScheduler
         }
 
         gPathTracer.finalizePath(path);
+
+        return path.reservoir;
     }
 
-    /** Shift srcReservoir to a new primary hit
-    */
-    void shiftPath(const Ray cameraRay, const HitInfo primaryHit, const PathReservoir srcReservoir)
+    /** Shifts srcReservoir's sample to a new primary hit's domain.
+     */
+    PathReservoir shiftPath(const PathReservoir srcReservoir, const Ray cameraRay, const HitInfo primaryHit, out float jacobian)
     {
+        jacobian = 0;
 
+        PathState path = {};
+        gPathTracer.generateCameraPath(cameraRay, primaryHit, srcReservoir.pathId, srcReservoir.seed, path);
+        gPathTracer.setupPathLogging(path);
+
+        // Handle primary hits for camera paths.
+
+        if (path.isHit())
+        {
+            // Create a HitObject from a HitInfo.
+            // The created HitObject does only contain the minimal required data,
+            // most data is already passed in the path.hit object.
+            // For volume hits, a miss object is returned(and handled in the handleMiss() function).
+            HitObject hitObject;
+            RayDesc dummyRay = {};
+            DummyAttribs dummyAttribs = {};
+
+            switch (path.hit.getType())
+            {
+            case HitType::None:
+                hitObject = HitObject::MakeMiss(kMissScatter, dummyRay);
+                break;
+            case HitType::Volume:
+                hitObject = HitObject::MakeMiss(kMissScatter, dummyRay);
+                break;
+            default:
+            {
+                const GeometryInstanceID instanceID = path.hit.getInstanceID();
+                const GeometryInstanceData instance = gScene.getGeometryInstance(instanceID);
+                const uint primitiveIndex = path.hit.getPrimitiveIndex();
+                hitObject = HitObject::MakeHit(
+                    gScene.rtAccel,         // AccelerationStructure
+                    instance.instanceIndex, // InstanceIndex
+                    instance.geometryIndex, // GeometryIndex
+                    primitiveIndex,         // PrimitiveIndex
+                    0,                      // HitKind
+                    kRayTypeScatter,        // RayContributionToHitGroupIndex
+                    rayTypeCount,           // MultiplierForGeometryContributionToHitGroupIndex
+                    dummyRay,               // Ray
+                    dummyAttribs            // Attributes
+                );
+                break;
+            }
+            }
+
+            PathPayload payload = PathPayload::pack(path);
+            HitObject::Invoke(gScene.rtAccel, hitObject, payload);
+            path = PathPayload::unpack(payload);
+        }
+        else
+        {
+            // Note the primary miss has already been handled by the separate path generation pass
+            // the path tracer runs first. Abort execution here to avoid double work.
+            return path.reservoir;
+        }
+
+        // Trace path.
+        while (path.isActive())
+        {
+            PathPayload payload = {};
+            HitObject hitObject;
+
+            {
+                // Advance to next path vertex.
+                path.incrementVertexIndex();
+
+                // Trace ray.
+                logTraceRay(PixelStatsRayType::ClosestHit);
+                const Ray ray = path.getScatterRay();
+                payload = PathPayload::pack(path);
+                const uint rayFlags = kUseAlphaTest ? RAY_FLAG_NONE : RAY_FLAG_FORCE_OPAQUE;
+                hitObject = HitObject::TraceRay( gScene.rtAccel, rayFlags, 0xff /* instanceInclusionMask */, kRayTypeScatter /* hitIdx */, rayTypeCount, kMissScatter, ray.toRayDesc(), payload );
+                path = PathPayload::unpack(payload);
+
+                if (hitObject.IsHit())
+                {
+                    path.setHit(makeHitInfo(hitObject));
+                    path.sceneLength += float16_t(hitObject.GetRayDesc().TMax);
+                }
+                else
+                {
+                    path.clearHit();
+                    path.sceneLength = float16_t(kNRDInvalidPathLength);
+                }
+            }
+
+            // Add path coherence hints.
+            const uint materialID = gScene.getMaterialID(path.hit.getInstanceID());
+            const MaterialHeader materialHeader = gScene.materials.getMaterialHeader(materialID);
+            uint coherenceHints = gPathTracer.getCoherenceHints(path, materialHeader.isDeltaSpecular(), materialHeader.isEmissive());
+
+            // Reorder and invoke closest hit or miss shader.
+            ReorderThread(hitObject, coherenceHints, 4);
+            payload = PathPayload::pack(path);
+            HitObject::Invoke(gScene.rtAccel, hitObject, payload);
+            path = PathPayload::unpack(payload);
+        }
+
+        gPathTracer.finalizePath(path);
+
+        if (path.reservoir.getTargetPdf() > 0)
+        {
+            jacobian = srcReservoir.replayPdf / path.reservoir.replayPdf;
+            if (srcReservoir.reconnectionG > 0)
+            {
+                jacobian *= path.reservoir.reconnectionG / srcReservoir.reconnectionG;
+            }
+        }
+
+        return path.reservoir;
     }
 
     void compact(bool done)
@@ -459,36 +578,25 @@ struct Scheduler
         path = PathPayload::unpack(payload);
     }
 
-    /** Traces a canonical path and writes the result to pathReservoirs.
-        \param[in] pathID Path ID.
+    /** Runs the path tracer.
+        \param[in] path Path generated with generateLightPath or generateCameraPath
     */
-    void tracePath(uint pathID)
+    void run(inout PathState path)
     {
-        PathState path = {};
-        if (kTraceFromLight)
-        {
-            gPathTracer.generateLightPath(pathID, -gPathTracer.params.seed, path);
-        }
-        else
-        {
-            gPathTracer.generateCameraPath(pathID, path);
-        }
         gPathTracer.setupPathLogging(path);
 
+        // Handle primary hits for camera paths.
         if (!kTraceFromLight)
         {
-            // Handle primary hit/miss.
-            if (path.isHit())
-            {
-                VisibilityQuery vq;
-                gPathTracer.handleHit(path, vq);
-            }
-            else
+            if (!path.isHit())
             {
                 // Note the primary miss has already been handled by the separate path generation pass
                 // the path tracer runs first. Abort execution here to avoid double work.
                 return;
             }
+
+            VisibilityQuery vq;
+            gPathTracer.handleHit(path, vq);
         }
 
         // Trace path.
@@ -498,6 +606,64 @@ struct Scheduler
         }
 
         gPathTracer.finalizePath(path);
+    }
+
+    /** Traces a canonical path in the current frame and returns the resulting path reservoir.
+        \param[in] pathID Path ID.
+        \param[in] seed Path seed.
+        \returns Path reservoir containing a path sample for the current pixel.
+    */
+    PathReservoir tracePath(uint pathID, const uint seed)
+    {
+        PathState path = {};
+        if (kTraceFromLight)
+        {
+            gPathTracer.generateLightPath(pathID, seed, path);
+        }
+        else
+        {
+            gPathTracer.generateCameraPath(pathID, seed, path);
+        }
+
+        run(path);
+
+        return path.reservoir;
+    }
+
+    /** Shifts a path to a new primary hit and returns a path reservoir containing the shifted path.
+        \param[in] srcReservoir Source reservoir containing the base path.
+        \param[in] cameraRay Camera ray in the target domain.
+        \param[in] primaryHit Primary hit in the target domain.
+        \param[out] jacobian Shift jacobian dT/dX.
+        \returns Path reservoir containing the shifted path.
+    */
+    PathReservoir shiftPath(const PathReservoir srcReservoir, const Ray cameraRay, const HitInfo primaryHit, out float jacobian)
+    {
+        jacobian = 0;
+
+        PathState path = {};
+        gPathTracer.generateCameraPath(cameraRay, primaryHit, srcReservoir.pathId, srcReservoir.seed, path);
+
+        path.reservoir = srcReservoir;
+        path.reservoir.sampleF = 0;
+        path.reservoir.W = 0;
+        path.reservoir.M = 0;
+
+        run(path);
+
+        path.reservoir.W = srcReservoir.W;
+        path.reservoir.M = srcReservoir.M;
+
+        if (path.reservoir.getTargetPdf() > 0)
+        {
+            jacobian = srcReservoir.replayPdf / path.reservoir.replayPdf;
+            if (srcReservoir.reconnectionG > 0)
+            {
+                jacobian *= path.reservoir.reconnectionG / srcReservoir.reconnectionG;
+            }
+        }
+
+        return path.reservoir;
     }
 
     void compact(bool done) {}

@@ -26,6 +26,7 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #include "EmissiveLightSamplerType.slangh"
+import Scene.Lights.LightCollection;
 __exported import Rendering.Lights.EmissiveLightSamplerInterface;
 __exported import Utils.Sampling.SampleGeneratorInterface;
 
@@ -75,6 +76,20 @@ __exported import Utils.Sampling.SampleGeneratorInterface;
             ls = {};
 
             return false;
+        }
+
+        uint sampleLight<S : ISampleGenerator>(const float3 posW, const float3 normalW, const bool upperHemisphere, inout S sg, out float selectionPdf)
+        {
+            selectionPdf = 0;
+
+            return LightCollection::kInvalidIndex;
+        }
+
+        uint sampleLight<S : ISampleGenerator>(inout S sg, out float selectionPdf )
+        {
+            selectionPdf = 0;
+
+            return LightCollection::kInvalidIndex;
         }
 
         float evalTriangleSelectionPdf(const uint triangleIndex)

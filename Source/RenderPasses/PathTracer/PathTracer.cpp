@@ -33,6 +33,7 @@
 namespace
 {
     const std::string kGeneratePathsFilename = "RenderPasses/PathTracer/GeneratePaths.cs.slang";
+    const std::string kResolvePassFilename = "RenderPasses/PathTracer/ResolvePass.cs.slang";
     const std::string kTracePassFilename = "RenderPasses/PathTracer/TracePass.rt.slang";
     const std::string kReflectTypesFile = "RenderPasses/PathTracer/ReflectTypes.cs.slang";
 
@@ -348,20 +349,10 @@ RenderPassReflection PathTracer::reflect(const CompileData& compileData)
 void PathTracer::setFrameDim(const uint2 frameDim)
 {
     auto prevFrameDim = mParams.frameDim;
-    auto prevScreenTiles = mParams.screenTiles;
 
     mParams.frameDim = frameDim;
-    if (mParams.frameDim.x > kMaxFrameDimension || mParams.frameDim.y > kMaxFrameDimension)
-    {
-        FALCOR_THROW("Frame dimensions up to {} pixels width/height are supported.", kMaxFrameDimension);
-    }
 
-    // Tile dimensions have to be powers-of-two.
-    FALCOR_ASSERT(isPowerOf2(kScreenTileDim.x) && isPowerOf2(kScreenTileDim.y));
-    FALCOR_ASSERT(kScreenTileDim.x == (1 << kScreenTileBits.x) && kScreenTileDim.y == (1 << kScreenTileBits.y));
-    mParams.screenTiles = div_round_up(mParams.frameDim, kScreenTileDim);
-
-    if (any(mParams.frameDim != prevFrameDim) || any(mParams.screenTiles != prevScreenTiles))
+    if (any(mParams.frameDim != prevFrameDim))
     {
         mVarsChanged = true;
     }
@@ -372,7 +363,6 @@ void PathTracer::setScene(RenderContext* pRenderContext, const ref<Scene>& pScen
     mpScene = pScene;
     mParams.frameCount = 0;
     mParams.frameDim = {};
-    mParams.screenTiles = {};
 
     // Need to recreate the RTXDI module when the scene changes.
     mpRTXDI = nullptr;
@@ -432,6 +422,30 @@ void PathTracer::execute(RenderContext* pRenderContext, const RenderData& render
     // Trace camera sub-paths.
     FALCOR_ASSERT(mpTracePass);
     tracePass(pRenderContext, renderData, *mpTracePass, mParams.frameDim);
+
+    if (mParams.useTemporalReuse && !mVarsChanged)
+    {
+        // Temporal reservoir reuse.
+        FALCOR_ASSERT(mpTemporalReusePass);
+        FALCOR_ASSERT(renderData.getTexture(kInputMotionVectors));
+        tracePass(pRenderContext, renderData, *mpTemporalReusePass, mParams.frameDim);
+    }
+
+    if (mParams.spatialReusePasses > 0)
+    {
+        // Spatial reservoir reuse.
+        FALCOR_ASSERT(mpSpatialReusePass);
+        for (uint i = 0; i < mParams.spatialReusePasses; i++)
+        {
+            mParams.spatialReusePassIndex = i;
+            mpPathTracerBlock->getRootVar()["params"].setBlob(mParams);
+            tracePass(pRenderContext, renderData, *mpSpatialReusePass, mParams.frameDim);
+        }
+    }
+
+    // Resolve reservoir samples.
+    FALCOR_ASSERT(mpResolvePass);
+    resolveSamples(pRenderContext, renderData);
 
     endFrame(pRenderContext, renderData);
 }
@@ -523,7 +537,7 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useVM)
         {
-            dirty |= widget.checkbox("VM Only", mStaticParams.vmOnly);
+            dirty |= widget.checkbox("Vertex merging only", mStaticParams.vmOnly);
             widget.tooltip("Only use vertex merging.\nThis is the same as progressive photon mapping.");
 
             dirty |= widget.checkbox("Fast vertex merging", mStaticParams.useFastVM);
@@ -564,7 +578,23 @@ bool PathTracer::renderRenderingUI(Gui::Widgets& widget)
         }
     }
 
+    dirty |= widget.checkbox("Temporal reuse", mParams.useTemporalReuse);
+    dirty |= widget.var("Spatial reuse passes", mParams.spatialReusePasses);
+    if (mParams.useTemporalReuse || mParams.spatialReusePasses > 0)
+    {
+        dirty |= widget.var("M cap", mParams.reservoirMCap, 1u);
+    }
+    if (mParams.spatialReusePasses > 0)
+    {
+        dirty |= widget.var("Spatial reuse candidates", mParams.spatialReuseCandidates, 1u);
+        dirty |= widget.var("Spatial reuse radius", mParams.spatialReuseRadius, 1.f);
+    }
     dirty |= widget.checkbox("Use reconnection", mStaticParams.useReconnection);
+    if (mStaticParams.useReconnection)
+    {
+        dirty |= widget.var("Min reconnection distance", mParams.minReconnectionDistance);
+        dirty |= widget.var("Min reconnection roughness", mParams.minReconnectionRoughness);
+    }
 
     if ((mStaticParams.useNEE || mStaticParams.useBPT) && mpScene && mpScene->useEmissiveLights())
     {
@@ -711,7 +741,7 @@ PathTracer::TracePass::TracePass(ref<Device> pDevice, const std::string& name, c
     desc.addShaderLibrary(kTracePassFilename);
     if (pDevice->getType() == Device::Type::D3D12 && useSER)
         desc.addCompilerArguments({ "-Xdxc", "-enable-lifetime-markers" });
-    desc.setMaxPayloadSize(208); // This is conservative but the required minimum is 200 bytes.
+    desc.setMaxPayloadSize(320);
     desc.setMaxAttributeSize(pScene->getRaytracingMaxAttributeSize());
     desc.setMaxTraceRecursionDepth(1);
     if (!pScene->hasProceduralGeometry()) desc.setRtPipelineFlags(RtPipelineFlags::SkipProceduralPrimitives);
@@ -777,8 +807,11 @@ void PathTracer::TracePass::prepareProgram(ref<Device> pDevice, const DefineList
 void PathTracer::resetPrograms()
 {
     mpTracePass = nullptr;
+    mpTemporalReusePass = nullptr;
+    mpSpatialReusePass = nullptr;
     mpLightTracePass = nullptr;
     mpGeneratePaths = nullptr;
+    mpResolvePass = nullptr;
     mpReflectTypes = nullptr;
 
     mRecompile = true;
@@ -798,11 +831,26 @@ void PathTracer::updatePrograms()
     auto defines = mStaticParams.getDefines(*this);
     auto globalTypeConformances = mpScene->getTypeConformances();
 
-    // Create trace pass.
+    // Create trace passes.
     if (!mpTracePass)
         mpTracePass = std::make_unique<TracePass>(mpDevice, "tracePass", "", mpScene, defines, globalTypeConformances);
 
     mpTracePass->prepareProgram(mpDevice, defines);
+
+    if (mParams.useTemporalReuse)
+    {
+        if (!mpTemporalReusePass)
+            mpTemporalReusePass = std::make_unique<TracePass>(mpDevice, "tracePass", "TEMPORAL_REUSE_PASS", mpScene, defines, globalTypeConformances);
+        mpTemporalReusePass->prepareProgram(mpDevice, defines);
+    }
+
+    if (mParams.spatialReusePasses > 0)
+    {
+        if (!mpSpatialReusePass)
+            mpSpatialReusePass = std::make_unique<TracePass>(mpDevice, "tracePass", "SPATIAL_REUSE_PASS", mpScene, defines, globalTypeConformances);
+
+        mpSpatialReusePass->prepareProgram(mpDevice, defines);
+    }
 
     // Create light trace pass.
     if (mStaticParams.useBPT)
@@ -824,6 +872,12 @@ void PathTracer::updatePrograms()
         desc.addShaderLibrary(kGeneratePathsFilename).csEntry("main");
         mpGeneratePaths = ComputePass::create(mpDevice, desc, defines, false);
     }
+    if (!mpResolvePass)
+    {
+        ProgramDesc desc = baseDesc;
+        desc.addShaderLibrary(kResolvePassFilename).csEntry("main");
+        mpResolvePass = ComputePass::create(mpDevice, desc, defines, false);
+    }
     if (!mpReflectTypes)
     {
         ProgramDesc desc = baseDesc;
@@ -841,6 +895,7 @@ void PathTracer::updatePrograms()
         pass->setVars(nullptr);
     };
     preparePass(mpGeneratePaths);
+    preparePass(mpResolvePass);
     preparePass(mpReflectTypes);
 
     mVarsChanged = true;
@@ -853,25 +908,41 @@ void PathTracer::prepareResources(RenderContext* pRenderContext, const RenderDat
     // Note that the sample buffers are padded to whole tiles, while the max path count depends on actual frame dimension.
     // If we don't have a fixed sample count, assume the worst case.
     uint32_t spp = mFixedSampleCount ? mStaticParams.samplesPerPixel : kMaxSamplesPerPixel;
-    uint32_t tileCount = mParams.screenTiles.x * mParams.screenTiles.y;
-    const uint32_t sampleCount = tileCount * kScreenTileDim.x * kScreenTileDim.y * spp;
     const uint32_t screenPixelCount = mParams.frameDim.x * mParams.frameDim.y;
-    const uint32_t pathCount = screenPixelCount * spp;
     const size_t lightVertexCount = mParams.lightSubpathCount * std::max(1u, mParams.maxSurfaceBounces);
 
     auto var = mpReflectTypes->getRootVar();
 
-    if (!mpReservoirs || mpReservoirs->getElementCount() != mParams.frameDim.x * mParams.frameDim.y)
+    if (!mpReservoirs || mpReservoirs->getElementCount() != screenPixelCount)
     {
-        mpReservoirs = mpDevice->createStructuredBuffer(var["pathTracer"]["pathReservoirs"], mParams.frameDim.x * mParams.frameDim.y, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+        mpReservoirs     = mpDevice->createStructuredBuffer(var["pathTracer"]["pathReservoirs"]    , screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+        mpLastReservoirs = mpDevice->createStructuredBuffer(var["pathTracer"]["lastPathReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
         mVarsChanged = true;
+    }
+
+    if (mParams.useTemporalReuse)
+    {
+        if (!mpLastVbuffer || mpLastVbuffer->getWidth() != mParams.frameDim.x || mpLastVbuffer->getHeight() != mParams.frameDim.y)
+        {
+            mpLastVbuffer  = mpDevice->createTexture2D(mParams.frameDim.x, mParams.frameDim.y, mpScene->getHitInfo().getFormat(), 1, 1);
+            mVarsChanged = true;
+        }
+        if (mpScene->getCamera()->getApertureRadius() > 0.f)
+        {
+            if (!mpLastViewDir || mpLastViewDir->getWidth() != mParams.frameDim.x || mpLastViewDir->getHeight() != mParams.frameDim.y)
+            {
+                const auto& pViewDir = renderData.getTexture(kInputViewDir);
+                mpLastViewDir = mpDevice->createTexture2D(mParams.frameDim.x, mParams.frameDim.y, pViewDir->getFormat(), 1, 1);
+                mVarsChanged = true;
+            }
+        }
     }
 
     if (mStaticParams.useBPT)
     {
-        if (!mpLightImage || mpLightImage->getSize() != sizeof(float3) * mParams.frameDim.x * mParams.frameDim.y)
+        if (!mpLightImage || mpLightImage->getSize() != sizeof(float3) * screenPixelCount)
         {
-            mpLightImage = mpDevice->createBuffer(sizeof(float3) * mParams.frameDim.x * mParams.frameDim.y, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpLightImage = mpDevice->createBuffer(sizeof(float3) * screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
 
@@ -1065,6 +1136,7 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["photonMap"]["cellOffsets"] = mpPhotonCellOffsets;
 
         var["pathReservoirs"] = mpReservoirs;
+        var["lastPathReservoirs"] = mpLastReservoirs;
     }
 
     ref<Texture> pViewDir;
@@ -1072,6 +1144,13 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
     {
         pViewDir = renderData.getTexture(kInputViewDir);
         if (!pViewDir) logWarning("Depth-of-field requires the '{}' input. Expect incorrect rendering.", kInputViewDir);
+    }
+
+    ref<Texture> pMotionVecs;
+    if (mParams.useTemporalReuse)
+    {
+        pMotionVecs = renderData.getTexture(kInputMotionVectors);
+        if (!pMotionVecs) logWarning("Temporal reuse requires the '{}' input. Expect incorrect rendering.", kInputMotionVectors);
     }
 
     ref<Texture> pSampleCount;
@@ -1085,7 +1164,11 @@ void PathTracer::bindShaderData(const ShaderVar& var, const RenderData& renderDa
     var["vbuffer"] = renderData.getTexture(kInputVBuffer);
     var["viewDir"] = pViewDir; // Can be nullptr
     var["sampleCount"] = pSampleCount; // Can be nullptr
+    var["lastVbuffer"] = mpLastVbuffer;
+    var["lastViewDir"] = mpLastViewDir;
+    var["motionVecs"] = pMotionVecs; // Required for temporal reuse
     var["outputColor"] = renderData.getTexture(kOutputColor);
+
 
     if (useLightSampling && mpEmissiveSampler)
     {
@@ -1244,6 +1327,15 @@ void PathTracer::endFrame(RenderContext* pRenderContext, const RenderData& rende
 
     if (mpRTXDI) mpRTXDI->endFrame(pRenderContext);
 
+    if (mParams.useTemporalReuse)
+    {
+        copyTexture( mpLastVbuffer.get(), renderData.getTexture(kInputVBuffer).get() );
+        copyTexture( mpLastViewDir.get(), renderData.getTexture(kInputViewDir).get() );
+
+        if ((mParams.spatialReusePasses & 1) == 0)
+            pRenderContext->copyResource(mpLastReservoirs.get(), mpReservoirs.get());
+    }
+
     mVarsChanged = false;
     mParams.frameCount++;
 }
@@ -1268,6 +1360,23 @@ void PathTracer::generatePaths(RenderContext* pRenderContext, const RenderData& 
 
     // Launch one thread per pixel.
     mpGeneratePaths->execute(pRenderContext, { mParams.frameDim.x, mParams.frameDim.y, 1u });
+}
+
+void PathTracer::resolveSamples(RenderContext* pRenderContext, const RenderData& renderData)
+{
+    FALCOR_PROFILE(pRenderContext, "resolveSamples");
+
+    // Check shader assumptions.
+    // We launch one thread group per screen tile, with threads linearly indexed.
+
+    // Bind resources.
+    auto var = mpResolvePass->getRootVar()["CB"]["gResolvePass"];
+    bindShaderData(var, renderData, false);
+
+    mpScene->bindShaderData(mpResolvePass->getRootVar()["gScene"]);
+
+    // Launch one thread per pixel.
+    mpResolvePass->execute(pRenderContext, { mParams.frameDim.x, mParams.frameDim.y, 1u });
 }
 
 void PathTracer::tracePass(RenderContext* pRenderContext, const RenderData& renderData, TracePass& tracePass, const uint2 dispatchDims)
