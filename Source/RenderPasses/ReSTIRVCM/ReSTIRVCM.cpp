@@ -330,6 +330,9 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
     if (mStaticParams.useBPT)
     {
+        dirty |= widget.checkbox("Stochastic technique selection", mStaticParams.useWavefrontTechniqueSelection);
+        widget.tooltip("Only evaluate a single random connection technique.\nThis is faster than evaluating every technique, but may be noisier.");
+
         runtimeDirty |= widget.var("Light sub-path count", mParams.mLightSubpathCount, 1u, 16000000u);
         widget.tooltip("Number of light sub-paths to trace when BPT is enabled.");
 
@@ -652,7 +655,7 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
         }
 
         if (mStaticParams.useVM) {
-            if (!mpPhotonCellSizes || mpPhotonCellSizes->getElementCount() != mParams.mPhotonCellCount || mVarsChanged)
+            if (!mpPhotonCellSizes || mpPhotonCellSizes->getSize() != sizeof(uint32_t)*mParams.mPhotonCellCount || mVarsChanged)
             {
                 mpPhotonCellSizes     = mpDevice->createBuffer(sizeof(uint32_t)*mParams.mPhotonCellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                 mpPhotonCellOffsets   = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPhotonMap"]["cellOffsets"], mParams.mPhotonCellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);

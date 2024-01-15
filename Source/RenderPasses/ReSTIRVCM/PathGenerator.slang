@@ -133,13 +133,6 @@ struct PathVertex {
         return mVertex.IsFinite();
     }
 
-    bool IsDelta() {
-        if (IsFinite())
-            return (mMaterial.getLobeTypes(mShadingData) & uint(LobeType::NonDelta)) == 0;
-        else
-            return true;
-    }
-
     float3 GetPosition() {
         return mShadingData.posW;
     }
@@ -166,16 +159,12 @@ struct PathVertex {
         return computeRayOrigin(mShadingData.posW, dot(dir, mShadingData.faceN) >= 0.f ? mShadingData.faceN : -mShadingData.faceN);
     }
 
-    BSDFProperties GetBSDFProperties() {
-        return mMaterial.getProperties(mShadingData);
-    }
-
     float3 GetEmission() {
         if (IsFinite()) {
             if (dot(mShadingData.faceN, mVertex.mRayDirection) > 0) {
                 return 0; // triangle lights are one-sided
             } else {
-                return GetBSDFProperties().emission;
+                return mMaterial.getProperties(mShadingData).emission;
             }
         } else {
             return gScene.envMap.eval(mVertex.mRayDirection, 0);
@@ -183,14 +172,23 @@ struct PathVertex {
     }
 
     bool IsConnectable() {
-        if (IsDelta())
+        if (!IsFinite())
             return false;
-        else
-            return GetBSDFProperties().roughness >= gPathGenerator.mParams.mReconnectionRoughness;
+
+        if ((mMaterial.getLobeTypes(mShadingData) & uint(LobeType::NonDelta)) == 0)
+            return false;
+
+        return mMaterial.getProperties(mShadingData).roughness >= gPathGenerator.mParams.mReconnectionRoughness;
     }
 
     float GetContinuationProbability() {
-        return IsDelta() ? 1.f : (1.f - GetBSDFProperties().roughness * .2);
+        if (!IsFinite())
+            return 0.f;
+
+        if ((mMaterial.getLobeTypes(mShadingData) & uint(LobeType::NonDelta)) == 0)
+            return 1.f;
+
+        return (1.f - mMaterial.getProperties(mShadingData).roughness * .2);
     }
 
     float GetAdjointCorrection(float3 dirOut) {
@@ -199,7 +197,7 @@ struct PathVertex {
 
         float factor = 1.f;
 
-        const BSDFProperties properties = GetBSDFProperties();
+        const BSDFProperties properties = mMaterial.getProperties(mShadingData);
 
         // shading normal correction.
         const float num = abs(dot(properties.guideNormal, mShadingData.V) * cosOut);
@@ -215,11 +213,8 @@ struct PathVertex {
         return factor;
     }
 
-    uint GetLobeTypes() {
-        return mMaterial.getLobeTypes(mShadingData);
-    }
     bool HasLobe(const LobeType l) {
-        return (GetLobeTypes() & uint(l)) != 0;
+        return (mMaterial.getLobeTypes(mShadingData) & uint(l)) != 0;
     }
 
     ReflectanceEvalData EvaluateReflectance(inout SampleGenerator sg, const float3 dirOut, const bool adjoint) {
@@ -300,7 +295,7 @@ extension PathGenerator {
         return SafeDivide(a, a + Mis(b));
     }
 
-    bool DebugDisableMIS() { return false; } //(gDebugBPT && mParams.mDebugLightVertices != -1); }
+    bool DebugDisableMIS() { return (gDebugBPT && mParams.mDebugLightVertices != -1); }
     bool DebugDisablePath(const uint bounces, const uint lightVertices) {
         return gDebugBPT && (
                 (mParams.mDebugTotalVertices != -1 && mParams.mDebugTotalVertices != bounces + 2) ||
@@ -580,7 +575,7 @@ extension PathGenerator {
                         const float wCamera = Mis(directPdfA) * s.dVCM + Mis(emissionPdfW) * s.dVC;
                         misWeight = 1 / (1 + wCamera);
                     } else if (gSampleDirectLight)
-                        misWeight = Mis(bsdfPdfW, directPdfW);
+                        misWeight = prevReconnectable && bsdfPdfW > 0 ? Mis(bsdfPdfW, directPdfW) : 1;
                 }
 
                 // divide by pdf
@@ -623,8 +618,6 @@ extension PathGenerator {
         weight = 0;
 
         PathSample result = {};
-
-        #if 1
 
         if (DebugDisablePath(s.bounces + 1, 1))
             return result;
@@ -682,7 +675,7 @@ extension PathGenerator {
                 toLight /= dist;
 
                 const float cosLight = -dot(tri.normal, toLight);
-                if (cosLight <= kMinCosTheta)
+                if (cosLight < kMinCosTheta)
                     return result;
 
                 const MeshLightData meshData = gScene.lightCollection.getMeshData(triangleIndex);
@@ -766,7 +759,7 @@ extension PathGenerator {
             s.id,
             rcv,
             PathShiftType::eReconnection);
-        #endif
+
         return result;
     }
     PathSample ConnectToLightSubpath<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const LightSubpathVertex v, out float weight) {
@@ -774,7 +767,6 @@ extension PathGenerator {
 
         PathSample result = {};
 
-        #if 1
         const uint bounces = s.bounces + v.mBounces + 2;
         if (bounces > mParams.mMaxBounces || DebugDisablePath(bounces, v.mBounces + 2))
             return result;
@@ -881,22 +873,31 @@ extension PathGenerator {
             s.seed, s.id,
             rcv,
             PathShiftType::eReconnection);
-        #endif
+
         return result;
     }
     PathSample MergeWithLightVertex<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const LightSubpathVertex v, out float weight) {
         weight = 0;
 
+        PathSample result = {};
+
         const uint bounces = s.bounces + v.mBounces + 1;
         if (bounces > mParams.mMaxBounces || DebugDisablePath(bounces, v.mBounces + 2))
-            return {};
+            return result;
 
-        float3 d = PathVertex(v.mVertex).GetPosition() - vertex.GetPosition();
-        if (dot(d, d) >= sqr(mParams.mMergeRadius))
-            return {};
+        const PathVertex lightVertex = PathVertex(v.mVertex);
+        const float3 toLightVertex = lightVertex.GetPosition() - vertex.GetPosition();
+        if (dot(toLightVertex, toLightVertex) >= sqr(mParams.mMergeRadius))
+            return result;
+
+        const float cosOut = vertex.GetCosN(v.GetDirIn());
+        if (cosOut < kMinCosTheta)
+            return result;
 
         ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, -v.GetDirIn(), false);
-        f.mReflectance /= vertex.GetCosN(v.GetDirIn()); // divide out dot(N, wo)
+        const float3 contrib = s.throughput * v.mThroughput * f.mReflectance / cosOut; // divide out dot(N, wo)
+        if (all(contrib <= 0))
+            return result;
 
         const float wLight  = v.dVCM * GetMisVcWeightFactor() + v.dVM * Mis(f.mFwdPdfW);
         const float wCamera = s.dVCM * GetMisVcWeightFactor() + s.dVM * Mis(f.mRevPdfW);
@@ -906,8 +907,8 @@ extension PathGenerator {
 
         assert(LightSubpathVertexSize == ReconnectionVertexSize);
 
-        return PathSample(
-            s.throughput * v.mThroughput * f.mReflectance,
+        result = PathSample(
+            contrib,
             s.pdfW,
             bounces,
             s.bounces,
@@ -915,12 +916,14 @@ extension PathGenerator {
             s.id,
             reinterpret<ReconnectionVertex>(v),
             PathShiftType::eMerge);
+
+        return result;
     }
     PathSample ConnectToCamera<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out int2 pixelCoord, out float weight) {
         weight = 0;
         pixelCoord = -1;
         PathSample result = {};
-        #if 1
+
         if (DebugDisablePath(s.bounces + 1, s.bounces + 2))
             return result;
 
@@ -936,9 +939,6 @@ extension PathGenerator {
         pixelCoord = int2(((clip.xy / clip.w) * .5 + .5) * mParams.mOutputDim);
         if (any(pixelCoord < 0) || any(pixelCoord >= mParams.mOutputDim) || cosAtCamera <= 0)
             return result;
-
-        printSetPixel(pixelCoord);
-        print("Connecting. Throughput: ", s.throughput);
 
         const float cosOut = vertex.GetCosN(toCamera);
         if (cosOut < kMinCosTheta)
@@ -982,7 +982,6 @@ extension PathGenerator {
             s.seed, s.id,
             rcv,
             PathShiftType::eReconnection);
-        #endif
 
         return result;
     }
@@ -1229,41 +1228,36 @@ extension PathGenerator {
                 bool doVC = gBidirectional && !gProgressivePhotonMapping;
                 bool doVM = gBidirectional && gVertexMerging;
                 float techniqueW = 1;
-                /*
+
                 // Select a random connection technique to evaluate
                 if (gBidirectional && gWavefrontTechniqueSelection && !gProgressivePhotonMapping) {
-                    float vcRnd = sampleNext1D(s.sg);
-
-                    // Force all threads in a warp to select the same technique
-                    if (gWavefrontTechniqueSelection)
-                        vcRnd = WaveReadLaneFirst(vcRnd);
-
                     bool doDI = false;
                     bool doVC = false;
                     bool doVM = false;
 
+                    float vcRnd = sampleNext1D(s.sg);
+
+                    // Force all threads in a warp to select the same technique
+                    vcRnd = WaveReadLaneFirst(vcRnd);
+
                     // pick between direct light, vertex connection, and vertex merging.
-                    const float vcProb = gVertexMerging ? (1 - mParams.mDirectLightProb) * mParams.mMergeProb : (1 - mParams.mDirectLightProb);
                     if (vcRnd < mParams.mDirectLightProb) {
                         doDI = true;
                         techniqueW = 1 / mParams.mDirectLightProb;
-                    } else if (vcRnd < mParams.mDirectLightProb + vcProb) {
-                        doVC = true;
-                        techniqueW = 1 / vcProb;
-                    } else if (gVertexMerging) {
+                    } else if (gVertexMerging && vcRnd < (mParams.mDirectLightProb + mParams.mMergeProb)) {
                         doVM = true;
                         techniqueW = 1 / mParams.mMergeProb;
+                    } else {
+                        doVC = true;
+                        techniqueW = 1 / (1 - (mParams.mDirectLightProb + (gVertexMerging ? mParams.mMergeProb : 0)));
                     }
-                    // compute weight for the selecting the technique
-                    if (doVC)
-                        vcRnd /= vcProb;
                 }
-                */
 
                 if (doDI) {
                     float weight = 0;
                     const PathSample ps = ConnectToLight(s, vertex, weight);
-                    MergeSample(r, sampleNext1D(s.sg), ps, weight * techniqueW);
+                    if (weight > 0)
+                        MergeSample(r, sampleNext1D(s.sg), ps, weight * techniqueW);
                 }
 
                 if (gBidirectional) {
@@ -1275,8 +1269,10 @@ extension PathGenerator {
 
                             float weight;
                             PathSample ps = ConnectToLightSubpath(s, vertex, v, weight);
-                            weight *= v.mIntegrationWeight * (count / (float)mParams.mLightSubpathCount);
-                            MergeSample(r, sampleNext1D(s.sg), ps, weight * techniqueW);
+                            if (weight > 0) {
+                                weight *= v.mIntegrationWeight * (count / (float)mParams.mLightSubpathCount);
+                                MergeSample(r, sampleNext1D(s.sg), ps, weight * techniqueW);
+                            }
                         }
                     }
 
@@ -1312,9 +1308,13 @@ extension PathGenerator {
 
                         // merge with the photon in the selected cell
                         if (cell != -1) {
-                            float lightW;
-                            PathSample ps = MergeWithLightVertex(s, vertex, mLightVertexCache[mPhotonMap.getCellOffset(cell)], lightW);
-                            MergeSample(r, sampleNext1D(s.sg), ps, techniqueW * cellW * lightW);
+                            float weight;
+                            const LightSubpathVertex v = mLightVertexCache[mPhotonMap.getCellOffset(cell)];
+                            const PathSample ps = MergeWithLightVertex(s, vertex, v, weight);
+                            if (weight > 0) {
+                                weight *= v.mIntegrationWeight * cellW;
+                                MergeSample(r, sampleNext1D(s.sg), ps, weight * techniqueW);
+                            }
                         }
 
                         if (gProgressivePhotonMapping)

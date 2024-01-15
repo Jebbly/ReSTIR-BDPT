@@ -25,7 +25,7 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
 	float jacobianToPrev = 0;
 
     if (candidateTargetPdf > 0) {
-        print("\nShifting candidate to center. f: ", candidateTargetPdf);
+        print("Shifting candidate to center. f: ", candidateTargetPdf);
         candidate.mSample = gPathGenerator.ShiftPath(candidate.mSample, primaryHit, jacobianToCenter);
         print("Shifted candidate to center", jacobianToCenter);
     }
@@ -36,7 +36,7 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
             float mi = r.mM * r.mSample.GetTargetPdf();
             float msum = mi;
             if (any(r.mSample.mRadiance > 0)) {
-                print("\nShifting center to candidate. f: ", r.mSample.GetTargetPdf());
+                print("Shifting center to candidate. f: ", r.mSample.GetTargetPdf());
                 PathSample shifted = gPathGenerator.ShiftPath(r.mSample, prevVertex, jacobianToPrev);
                 print("Shifted center to candidate", jacobianToPrev);
                 msum += candidate.mM * shifted.GetTargetPdf() * jacobianToPrev;
