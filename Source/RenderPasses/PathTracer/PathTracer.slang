@@ -496,13 +496,13 @@ struct PathTracer
 
             // Disable MIS when rendering a single technique
 
-            if (!kDebugMIS && params.debugLightVertexCount != -1)
+            /*if (!kDebugMIS && params.debugLightVertexCount != -1)
             {
                 if (kUseVM && lightVertices > 1)
                     misWeight = 0.5f;
                 else
                     misWeight = 1.f;
-            }
+            }*/
         }
 
         if (kDebugMIS)

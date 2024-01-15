@@ -21,7 +21,7 @@ struct HashMap<T> {
         key = 1 + key; // always add 1 since 0 is reserved
 
         // compute index in hash grid
-        const uint baseCellIndex = pcg(key) % mCellCount;
+        const uint baseCellIndex = key % mCellCount;
 
         // resolve hash collisions with linear probing
         for (uint i = 0; i < 32; i++) {
@@ -51,16 +51,16 @@ struct HashMap<T> {
         return uint2(begin, begin + mCellCounters[cellIndex]);
     }
 
-    uint Insert(const uint key, const T data) {
+    bool Insert(const uint key, const T data) {
         const uint cellIndex = FindCellIndex<true>(key);
         if (cellIndex == -1)
-            return -1;
+            return false;
 
         // get data index
         uint dataIndex;
         InterlockedAdd(mCounters[0], 1, dataIndex);
         if (dataIndex >= mMaxSize)
-            return -1;
+            return false;
 
         // append item to cell by incrementing cell counter
         uint indexInCell;
@@ -69,7 +69,7 @@ struct HashMap<T> {
         // store data at data index
         mData[dataIndex] = data;
         mDataIndices[dataIndex] = uint2(cellIndex, indexInCell);
-        return dataIndex;
+        return true;
     }
 
 
@@ -81,7 +81,7 @@ struct HashMap<T> {
         mCellDataOffsets[cellIndex] = offset;
     }
     void Sort(const uint dataIndex) {
-        if (dataIndex >= mMaxSize || dataIndex >= mCounters[0]) return;
+        if (dataIndex >= mCounters[0]) return;
 
         const uint2 indices = mDataIndices[dataIndex];
         mSortedData[mCellDataOffsets[indices.x] + indices.y] = mData[dataIndex];

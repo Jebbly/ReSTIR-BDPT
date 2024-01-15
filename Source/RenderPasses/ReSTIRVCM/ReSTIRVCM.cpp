@@ -252,13 +252,10 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         preparePass(pRenderContext, renderData, *mpSortLightReservoirsPass);
         preparePass(pRenderContext, renderData, *mpLightReservoirResolvePass);
 
-        // one thread per pixel
         mpComputeLightReservoirOffsetsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
-        // one thread per light subpath vertex
-        mpSortLightReservoirsPass->execute(pRenderContext, mParams.mOutputDim.x, (mParams.mLightSubpathCount*mParams.mMaxBounces + mParams.mOutputDim.x-1) / mParams.mOutputDim.x);
+        mpSortLightReservoirsPass->execute(pRenderContext, mParams.mOutputDim.x, (mpLightReservoirHashMapData->getElementCount() + mParams.mOutputDim.x-1) / mParams.mOutputDim.x);
 
-        // one thread per light subpath vertex
-        mpLightReservoirResolvePass->execute(pRenderContext, mParams.mOutputDim.x, (mParams.mLightSubpathCount*mParams.mMaxBounces + mParams.mOutputDim.x-1) / mParams.mOutputDim.x);
+        mpLightReservoirResolvePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
         mParams.mRandomSeed++;
     }
 
@@ -370,9 +367,8 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
     if (mStaticParams.useNEE || mStaticParams.useBPT)
     {
-        dirty |= widget.var("MIS power exponent", mStaticParams.misPowerExponent, 0.01f, 10.f);
+        dirty |= widget.var("MIS power exponent", mStaticParams.misPowerExponent, 0.f, 10.f);
     }
-
     dirty |= widget.checkbox("Temporal reuse", mStaticParams.useTemporalReuse);
     const uint prevSpatialPasses = mStaticParams.spatialReusePasses;
     if (widget.var("Spatial reuse passes", mStaticParams.spatialReusePasses))
@@ -390,9 +386,14 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
     if (mStaticParams.useTemporalReuse || mStaticParams.spatialReusePasses > 0)
     {
         runtimeDirty |= widget.var("M cap", mParams.mMCap, 1u);
-        runtimeDirty |= widget.var("Reconnection distance", mParams.mReconnectionDistance, 0.f, 1.f);
-        runtimeDirty |= widget.var("Reconnection roughness", mParams.mReconnectionRoughness, 0.f, 1.f);
+        runtimeDirty |= widget.var("Reconnection distance threshold", mParams.mReconnectionDistance, 0.f, 1.f);
     }
+
+    if (mStaticParams.useNEE || mStaticParams.useBPT || mStaticParams.useTemporalReuse || mStaticParams.spatialReusePasses > 0) {
+        runtimeDirty |= widget.var("Connection roughness threshold", mParams.mReconnectionRoughness, 0.f, 1.f);
+        widget.tooltip("Minimum roughness for considering connection techniques\nBPT/NEE/VM is only performed on vertices rougher than this.");
+    }
+
 
     if ((mStaticParams.useNEE || mStaticParams.useBPT) && mpScene && mpScene->useEmissiveLights())
     {
@@ -448,9 +449,9 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
         recompile |= group.checkbox("Debug BPT", mStaticParams.debugBPT);
         if (mStaticParams.debugBPT)
         {
-            recompile |= group.var("Debug vertex count", mParams.mDebugTotalVertices, -1);
+            dirty |= group.var("Debug vertex count", mParams.mDebugTotalVertices, -1);
             group.tooltip("Only render paths with this many segments.");
-            recompile |= group.var("Debug light vertex count", mParams.mDebugLightVertices, -1);
+            dirty |= group.var("Debug light vertex count", mParams.mDebugLightVertices, -1);
             group.tooltip("Only render paths with this many light vertices.");
         }
         dirty |= recompile;
@@ -668,11 +669,11 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
                 mpLightReservoirHashMapCellDataOffsets = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mCellDataOffsets"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
                 mVarsChanged = true;
             }
-            if (!mpLightReservoirHashMapData || mpLightReservoirHashMapData->getElementCount() != mParams.mLightSubpathCount*mParams.mMaxBounces || mVarsChanged)
+            if (!mpLightReservoirHashMapData || mpLightReservoirHashMapData->getElementCount() != lightVertexCount || mVarsChanged)
             {
-                mpLightReservoirHashMapData            = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mData"]           , mParams.mLightSubpathCount*mParams.mMaxBounces, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-                mpLightReservoirHashMapSortedData      = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mSortedData"]     , mParams.mLightSubpathCount*mParams.mMaxBounces, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-                mpLightReservoirHashMapDataIndices     = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mDataIndices"]    , mParams.mLightSubpathCount*mParams.mMaxBounces, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+                mpLightReservoirHashMapData            = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mData"]       , lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+                mpLightReservoirHashMapSortedData      = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mSortedData"] , lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+                mpLightReservoirHashMapDataIndices     = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mDataIndices"], lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
                 mVarsChanged = true;
             }
             if (!mpLightReservoirHashMapCounters || mVarsChanged)
@@ -1038,7 +1039,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("SPATIAL_RMIS_TYPE", std::to_string(uint(spatialRMIS)));
     defines.add("MIS_POWER_EXPONENT", std::to_string(misPowerExponent));
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
-    defines.add("USE_VIEW_DIR", debugBPT ? "1" : "0");
+    defines.add("USE_VIEW_DIR", "0"); // placeholder
 
     // Sampling utilities configuration.
     FALCOR_ASSERT(owner.mpSampleGenerator);

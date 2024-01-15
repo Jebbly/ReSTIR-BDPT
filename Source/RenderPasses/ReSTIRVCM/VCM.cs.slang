@@ -6,7 +6,7 @@ import Utils.Debug.PixelDebug;
 [numthreads(8, 4, 1)]
 void SampleLightPaths(uint3 index: SV_DispatchThreadID) {
     if (index.y * gPathGenerator.mParams.mOutputDim.x + index.x >= gPathGenerator.mParams.mLightSubpathCount) return;
-    printSetPixel(index.xy);
+    printSetPixel(-1);
 
     gPathGenerator.SampleLightPath(gPathGenerator.mParams.mRandomSeed, index.xy);
 }
@@ -48,21 +48,20 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
     SampleGenerator sg = SampleGenerator(id, gPathGenerator.mParams.mRandomSeed);
 
     PathReservoir r = {};
-    if (!gPathGenerator.gLightTraceOnly)
+    if (!gPathGenerator.gLightTraceOnly) {
         r = gPathGenerator.LoadOutputReservoir(id);
+        r.PrepareMerge();
+    }
 
-    const uint flatId = id.y * gPathGenerator.mParams.mOutputDim.x + id.x;
-    r.PrepareMerge();
-
-    const uint2 range = gPathGenerator.mLightTraceReservoirs.GetCellDataRange(flatId);
+    const uint2 range = gPathGenerator.mLightTraceReservoirs.GetCellDataRange(id.y * gPathGenerator.mParams.mOutputDim.x + id.x);
     for (uint i = range.x; i < range.y; i++) {
         PathReservoir c = gPathGenerator.mLightTraceReservoirs[i];
         c.PrepareMerge();
         r.Merge(sampleNext1D(sg), c);
+        r.mM = 1;
     }
 
     r.FinalizeMerge();
-    r.mM = 1;
 
 	gPathGenerator.StoreReservoir(id, r);
 }

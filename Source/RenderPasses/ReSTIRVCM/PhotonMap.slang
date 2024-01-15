@@ -1,7 +1,7 @@
 #include "BitfieldMacros.slangh"
 import Scene.HitInfo;
 import Random;
-import PathReservoir;
+import PathVertex;
 
 struct LightVertexCache
 {
