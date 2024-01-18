@@ -61,14 +61,15 @@ private:
     {
         // Sampling parameters
         bool        useNEE = true; ///< Use next-event estimation (NEE). This enables shadow ray(s) from each path vertex.
-        bool        useBPT = false; ///< Use bidirectional path tracing. Automatically enables NEE.
+        bool        useBPT = true; ///< Use bidirectional path tracing. Automatically enables NEE.
         bool        useVM  = false; ///< Use vertex merging when using BPT.
         bool        debugBPT = false;
         bool        useLightTraceReservoirs = true;
         bool        lightTraceOnly = false;
         bool        useVMOnly = false;
-        bool        useTemporalReuse = false;
-        uint        spatialReusePasses = 0;
+        bool        useResampling = true;
+        bool        useTemporalReuse = true;
+        uint        spatialReusePasses = 1;
         uint32_t    sampleGenerator = SAMPLE_GENERATOR_TINY_UNIFORM;
         float       misPowerExponent = 2;
 
@@ -95,6 +96,8 @@ private:
     uint                            mFrameCount = 0;
     uint                            mFixedSeed = 0;
     bool                            mUseFixedSeed = false;
+    bool                            mSwapReservoirs = false;
+    uint                            mCurrentSeed = 0;
 
     // Internal state
     ref<Scene>                      mpScene;                     ///< The current scene, or nullptr if no scene loaded.

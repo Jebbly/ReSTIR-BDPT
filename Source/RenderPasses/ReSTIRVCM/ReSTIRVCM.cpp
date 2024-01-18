@@ -80,7 +80,7 @@ ReSTIRVCM::ReSTIRVCM(ref<Device> pDevice, const Properties& props)
 
     // Note: The other programs are lazily created in updatePrograms() because a scene needs to be present when creating them.
 
-    mpPixelDebug = std::make_unique<PixelDebug>(mpDevice);
+    mpPixelDebug = std::make_unique<PixelDebug>(mpDevice, 1000);
 }
 
 void ReSTIRVCM::setProperties(const Properties& props)
@@ -125,6 +125,16 @@ void ReSTIRVCM::validateOptions()
         logWarning("'mReconnectionRoughness' has invalid value. Clamping to range [0,1].");
         mParams.mReconnectionRoughness = std::clamp(mParams.mReconnectionRoughness, 0.f, 1.f);
     }
+
+    if (!mStaticParams.useResampling)
+    {
+        mStaticParams.useLightTraceReservoirs = false;
+        mStaticParams.useTemporalReuse = false;
+        mStaticParams.spatialReusePasses = 0;
+    }
+
+    if (mStaticParams.temporalRMIS == RMISType::ePairwise)
+        mStaticParams.temporalRMIS = RMISType::eConstant;
 }
 
 Properties ReSTIRVCM::getProperties() const
@@ -232,14 +242,14 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         FALCOR_ASSERT(mpSampleLightPathsPass);
         preparePass(pRenderContext, renderData, *mpSampleLightPathsPass);
         mpSampleLightPathsPass->execute(pRenderContext, mParams.mOutputDim.x, (mParams.mLightSubpathCount + mParams.mOutputDim.x-1) / mParams.mOutputDim.x);
-        mParams.mRandomSeed++;
+        mCurrentSeed++;
     }
 
     // Trace camera sub-paths.
     FALCOR_ASSERT(mpSampleCameraPathsPass);
     preparePass(pRenderContext, renderData, *mpSampleCameraPathsPass);
     mpSampleCameraPathsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
-    mParams.mRandomSeed++;
+    mCurrentSeed++;
 
     // Merge pure light tracing reservoirs with camera reservoirs
     if (mStaticParams.useBPT && mStaticParams.useLightTraceReservoirs)
@@ -256,7 +266,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         mpSortLightReservoirsPass->execute(pRenderContext, mParams.mOutputDim.x, (mpLightReservoirHashMapData->getElementCount() + mParams.mOutputDim.x-1) / mParams.mOutputDim.x);
 
         mpLightReservoirResolvePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
-        mParams.mRandomSeed++;
+        mCurrentSeed++;
     }
 
     if (mStaticParams.useTemporalReuse)
@@ -267,9 +277,9 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         preparePass(pRenderContext, renderData, *mpTemporalReusePass);
         if (!mVarsChanged)
             mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
-        mParams.mRandomSeed++;
+        mCurrentSeed++;
     }
-    mParams.mPathReservoirIndex ^= 1;
+    mSwapReservoirs = !mSwapReservoirs;
 
     if (mStaticParams.spatialReusePasses > 0)
     {
@@ -279,15 +289,18 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         {
             preparePass(pRenderContext, renderData, *mpSpatialReusePass);
             mpSpatialReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
-            mParams.mRandomSeed++;
-            mParams.mPathReservoirIndex ^= 1;
+            mCurrentSeed += 2;
+            mSwapReservoirs = !mSwapReservoirs;
         }
     }
 
     // Copy radiance from reservoirs to output.
-    FALCOR_ASSERT(mpCopyRadiancePass);
-    preparePass(pRenderContext, renderData, *mpCopyRadiancePass);
-    mpCopyRadiancePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+    if (mStaticParams.useResampling || mStaticParams.useBPT)
+    {
+        FALCOR_ASSERT(mpCopyRadiancePass);
+        preparePass(pRenderContext, renderData, *mpCopyRadiancePass);
+        mpCopyRadiancePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+    }
 
     endFrame(pRenderContext, renderData);
 }
@@ -314,89 +327,123 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
     bool dirty = false;
     bool runtimeDirty = false;
 
-    runtimeDirty |= widget.var("Max bounces", mParams.mMaxBounces, 0u);
-    widget.tooltip("Maximum number of bounces.\n1 = direct only\n2 = one indirect bounce etc.");
-
     // Sampling options.
 
-    if (widget.dropdown("Sample generator", SampleGenerator::getGuiDropdownList(), mStaticParams.sampleGenerator))
+    if (auto group = widget.group("Path tracing options", true))
     {
-        mpSampleGenerator = SampleGenerator::create(mpDevice, mStaticParams.sampleGenerator);
-        dirty = true;
-    }
-
-    dirty |= widget.checkbox("Bidirectional path tracing (BPT)", mStaticParams.useBPT);
-    widget.tooltip("Use bidirectional path tracing.\nThis option automatically enables NEE and MIS.");
-
-    if (mStaticParams.useBPT)
-    {
-        dirty |= widget.checkbox("Stochastic technique selection", mStaticParams.useWavefrontTechniqueSelection);
-        widget.tooltip("Only evaluate a single random connection technique.\nThis is faster than evaluating every technique, but may be noisier.");
-
-        runtimeDirty |= widget.var("Light sub-path count", mParams.mLightSubpathCount, 1u, 16000000u);
-        widget.tooltip("Number of light sub-paths to trace when BPT is enabled.");
-
-        dirty |= widget.checkbox("Resample pure light paths", mStaticParams.useLightTraceReservoirs);
-        widget.tooltip("Store pure light paths in reservoirs,\nallowing them to be resampled.");
-
-        dirty |= widget.checkbox("Light trace only", mStaticParams.lightTraceOnly);
-        widget.tooltip("Only use light tracing.\nThis option disables tracing paths from the camera.");
-
-        dirty |= widget.checkbox("Vertex merging (VM)", mStaticParams.useVM);
-        widget.tooltip("Enable vertex merging.");
-
-        if (mStaticParams.useVM)
+        if (group.dropdown("Sample generator", SampleGenerator::getGuiDropdownList(), mStaticParams.sampleGenerator))
         {
-            dirty |= widget.checkbox("Vertex merging only", mStaticParams.useVMOnly);
-            widget.tooltip("Only use vertex merging.\nThis is the same as progressive photon mapping.");
+            mpSampleGenerator = SampleGenerator::create(mpDevice, mStaticParams.sampleGenerator);
+            dirty = true;
+        }
 
-            runtimeDirty |= widget.var("Photon radius factor", mVMRadiusFactor, 1e-9f, 0.1f);
-            widget.tooltip("Photon radius as a percentange of the scene radius.");
+        runtimeDirty |= group.var("Max bounces", mParams.mMaxBounces, 0u);
+        group.tooltip("Maximum number of bounces.\n1 = direct only\n2 = one indirect bounce etc.");
 
-            runtimeDirty |= widget.slider("Photon radius alpha", mVMRadiusAlpha, 0.f, 1.f);
-            widget.tooltip("Photon radius shrink factor.\nLower values cause the radius to shrink faster.");
+        dirty |= group.checkbox("Bidirectional path tracing (BPT)", mStaticParams.useBPT);
+        group.tooltip("Use bidirectional path tracing.\nThis option automatically enables NEE and MIS.");
 
-            widget.text("Current radius: " + std::to_string(mParams.mMergeRadius) + " at frame " + std::to_string(mFrameCount));
+        if (mStaticParams.useBPT)
+        {
+            runtimeDirty |= group.var("Light sub-path count", mParams.mLightSubpathCount, 1u, 16000000u);
+            group.tooltip("Number of light sub-paths to trace when BPT is enabled.");
 
-            runtimeDirty |= widget.var("Hash grid cells", mParams.mPhotonCellCount, 1000u, 16000000u);
-            widget.tooltip("Number of cells in the photon hash grid.");
+            dirty |= group.checkbox("Light trace only", mStaticParams.lightTraceOnly);
+            group.tooltip("Only use light tracing.\nThis option disables tracing paths from the camera.");
+
+            if (!mStaticParams.lightTraceOnly)
+            {
+                dirty |= group.checkbox("Vertex merging (VM)", mStaticParams.useVM);
+                group.tooltip("Enable vertex merging.");
+
+                if (mStaticParams.useVM)
+                {
+                    dirty |= group.checkbox("Vertex merging only", mStaticParams.useVMOnly);
+                    group.tooltip("Only use vertex merging.\nThis is the same as progressive photon mapping.");
+
+                    runtimeDirty |= group.var("Photon radius factor", mVMRadiusFactor, 1e-9f, 0.1f);
+                    group.tooltip("Photon radius as a percentange of the scene radius.");
+
+                    runtimeDirty |= group.slider("Photon radius alpha", mVMRadiusAlpha, 0.f, 1.f);
+                    group.tooltip("Photon radius shrink factor.\nLower values cause the radius to shrink faster.");
+
+                    group.text("Current radius: " + std::to_string(mParams.mMergeRadius) + " at frame " + std::to_string(mFrameCount));
+
+                    runtimeDirty |= group.var("Photon hash grid cells", mParams.mPhotonCellCount, 1000u, 16000000u);
+                    group.tooltip("Number of cells in the photon hash grid.");
+                }
+
+                if (!mStaticParams.useVMOnly)
+                {
+                    dirty |= group.checkbox("Stochastic technique selection", mStaticParams.useWavefrontTechniqueSelection);
+                    group.tooltip("Only evaluate a single random connection technique.\nThis is faster than evaluating every technique, but may be noisier.");
+                }
+            }
+        }
+        else
+        {
+            dirty |= group.checkbox("Next-event estimation (NEE)", mStaticParams.useNEE);
+            group.tooltip("Use next-event estimation.\nThis option enables direct illumination sampling at each path vertex.");
+        }
+
+        if (mStaticParams.useNEE || mStaticParams.useBPT)
+        {
+            dirty |= group.var("MIS power exponent", mStaticParams.misPowerExponent, 0.f, 10.f);
+        }
+
+        if (mStaticParams.useNEE || mStaticParams.useBPT || mStaticParams.useTemporalReuse || mStaticParams.spatialReusePasses > 0) {
+            runtimeDirty |= group.var("Connection roughness threshold", mParams.mReconnectionRoughness, 0.f, 1.f);
+            group.tooltip("Minimum roughness for considering connection techniques\nBPT/NEE/VM is only performed on vertices rougher than this.");
         }
     }
-    else
-    {
-        dirty |= widget.checkbox("Next-event estimation (NEE)", mStaticParams.useNEE);
-        widget.tooltip("Use next-event estimation.\nThis option enables direct illumination sampling at each path vertex.");
-    }
 
-    if (mStaticParams.useNEE || mStaticParams.useBPT)
-    {
-        dirty |= widget.var("MIS power exponent", mStaticParams.misPowerExponent, 0.f, 10.f);
-    }
-    dirty |= widget.checkbox("Temporal reuse", mStaticParams.useTemporalReuse);
-    const uint prevSpatialPasses = mStaticParams.spatialReusePasses;
-    if (widget.var("Spatial reuse passes", mStaticParams.spatialReusePasses))
-    {
-        if (prevSpatialPasses == 0 && mStaticParams.spatialReusePasses > 0)
-            dirty = true;
-        else
-            runtimeDirty = true;
-    }
-    if (mStaticParams.spatialReusePasses > 0)
-    {
-        runtimeDirty |= widget.var("Spatial reuse candidates", mParams.mSpatialReuseSamples, 1u);
-        runtimeDirty |= widget.var("Spatial reuse radius", mParams.mSpatialReuseRadius, 1.f);
-    }
-    if (mStaticParams.useTemporalReuse || mStaticParams.spatialReusePasses > 0)
-    {
-        runtimeDirty |= widget.var("M cap", mParams.mMCap, 1u);
-        runtimeDirty |= widget.var("Reconnection distance threshold", mParams.mReconnectionDistance, 0.f, 1.f);
-    }
+    if (auto group = widget.group("Resampling options", true)) {
+        dirty |= widget.checkbox("Enable resampling", mStaticParams.useResampling);
+        widget.tooltip("Enable resampling.");
 
-    if (mStaticParams.useNEE || mStaticParams.useBPT || mStaticParams.useTemporalReuse || mStaticParams.spatialReusePasses > 0) {
-        runtimeDirty |= widget.var("Connection roughness threshold", mParams.mReconnectionRoughness, 0.f, 1.f);
-        widget.tooltip("Minimum roughness for considering connection techniques\nBPT/NEE/VM is only performed on vertices rougher than this.");
-    }
+        if (mStaticParams.useResampling)
+        {
+            if (mStaticParams.useBPT)
+            {
+                dirty |= widget.checkbox("Resample pure light paths", mStaticParams.useLightTraceReservoirs);
+                widget.tooltip("Enable resampling for pure light traced paths (most caustics).");
+            }
 
+            dirty |= group.checkbox("Temporal resampling", mStaticParams.useTemporalReuse);
+            if (mStaticParams.useTemporalReuse)
+            {
+                dirty |= group.dropdown("Temporal RMIS", mStaticParams.temporalRMIS);
+            }
+
+            group.separator();
+
+            const uint prevSpatialPasses = mStaticParams.spatialReusePasses;
+            if (group.var("Spatial passes", mStaticParams.spatialReusePasses, 0u, 32u))
+            {
+                if (prevSpatialPasses == 0 && mStaticParams.spatialReusePasses > 0)
+                    dirty = true;
+                else
+                    runtimeDirty = true;
+            }
+            if (mStaticParams.spatialReusePasses > 0)
+            {
+                dirty |= group.dropdown("Spatial RMIS", mStaticParams.spatialRMIS);
+                runtimeDirty |= group.var("Spatial candidates", mParams.mSpatialReuseSamples, 1u, 32u);
+                runtimeDirty |= group.var("Spatial radius", mParams.mSpatialReuseRadius, 1.f);
+            }
+
+            group.separator();
+
+            if (mStaticParams.useTemporalReuse || mStaticParams.spatialReusePasses > 0)
+            {
+                runtimeDirty |= group.var("M cap", mParams.mMCap, 1u);
+                runtimeDirty |= group.var("Reconnection distance threshold", mParams.mReconnectionDistance, 0.f, 100.f);
+                if (mStaticParams.useBPT) {
+                    runtimeDirty |= group.var("Caustic reuse radius", mParams.mCausticReuseRadius, 0.f, 1.f);
+                }
+            }
+        }
+    }
 
     if ((mStaticParams.useNEE || mStaticParams.useBPT) && mpScene && mpScene->useEmissiveLights())
     {
@@ -440,6 +487,8 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
 
     if (auto group = widget.group("Debugging"))
     {
+        bool recompile = false;
+
         dirty |= group.checkbox("Use fixed seed", mUseFixedSeed);
         group.tooltip("Forces a fixed random seed for each frame.\n\n"
             "This should produce exactly the same image each frame, which can be useful for debugging.");
@@ -448,7 +497,6 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
             dirty |= group.var("Seed", mFixedSeed);
         }
 
-        bool recompile = false;
         recompile |= group.checkbox("Debug BPT", mStaticParams.debugBPT);
         if (mStaticParams.debugBPT)
         {
@@ -457,10 +505,11 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
             dirty |= group.var("Debug light vertex count", mParams.mDebugLightVertices, -1);
             group.tooltip("Only render paths with this many light vertices.");
         }
-        dirty |= recompile;
-        mRecompile |= recompile;
 
         mpPixelDebug->renderUI(group);
+
+        dirty      |= recompile;
+        mRecompile |= recompile;
     }
 
     return dirty;
@@ -965,9 +1014,9 @@ bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& rend
     if (mStaticParams.useBPT) seedsPerFrame++;
     if (mStaticParams.useBPT && mStaticParams.useLightTraceReservoirs) seedsPerFrame++;
     if (mStaticParams.useTemporalReuse) seedsPerFrame++;
-    seedsPerFrame += mStaticParams.spatialReusePasses;
+    seedsPerFrame += mStaticParams.spatialReusePasses*2;
 
-    mParams.mRandomSeed = mUseFixedSeed ? mFixedSeed : mFrameCount * seedsPerFrame;
+    mCurrentSeed = mUseFixedSeed ? mFixedSeed : mFrameCount * seedsPerFrame;
 
     const auto& aabb = mpScene->getSceneBounds();
     mParams.mSceneSphere = float4(aabb.maxPoint + aabb.minPoint, length(aabb.maxPoint - aabb.minPoint))*.5f;
@@ -1024,6 +1073,9 @@ void ReSTIRVCM::preparePass(RenderContext* pRenderContext, const RenderData& ren
 
     bindShaderData(var["gPathGenerator"], renderData);
 
+    var["CB"]["gRandomSeed"] = mCurrentSeed;
+    var["CB"]["gSwapReservoirs"] = uint(mSwapReservoirs ? 1u : 0u);
+
     pass.addDefine("USE_VIEW_DIR", (mpScene->getCamera()->getApertureRadius() > 0 && renderData[kInputViewDir] != nullptr) ? "1" : "0");
 }
 
@@ -1034,6 +1086,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_NEE", (useNEE || useBPT) ? "1" : "0");
     defines.add("USE_BIDIRECTIONAL", useBPT ? "1" : "0");
     defines.add("USE_VERTEX_MERGING", (useBPT && useVM && !lightTraceOnly) ? "1" : "0");
+    defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");
     defines.add("USE_PPM_ONLY", (useBPT && useVM && useVMOnly && !lightTraceOnly) ? "1" : "0");
     defines.add("LIGHT_TRACE_RESERVOIRS", (useBPT && useLightTraceReservoirs) ? "1" : "0");

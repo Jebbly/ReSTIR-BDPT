@@ -8,7 +8,7 @@ void SampleLightPaths(uint3 index: SV_DispatchThreadID) {
     if (index.y * gPathGenerator.mParams.mOutputDim.x + index.x >= gPathGenerator.mParams.mLightSubpathCount) return;
     printSetPixel(-1);
 
-    gPathGenerator.SampleLightPath(gPathGenerator.mParams.mRandomSeed, index.xy);
+    gPathGenerator.SampleLightPath(gRandomSeed, index.xy);
 }
 
 [shader("compute")]
@@ -18,7 +18,7 @@ void SampleCameraPaths(uint3 index : SV_DispatchThreadID) {
     if (any(id >= gPathGenerator.mParams.mOutputDim)) return;
     printSetPixel(id);
 
-    const PathReservoir r = gPathGenerator.SampleCameraPath(gPathGenerator.mParams.mRandomSeed, id);
+    const PathReservoir r = gPathGenerator.SampleCameraPath(gRandomSeed, id);
 
 	gPathGenerator.StoreReservoir(id, r);
 }
@@ -45,7 +45,7 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
     if (!(gPathGenerator.gBidirectional && gPathGenerator.gUseLightTraceReservoirs))
         return;
 
-    SampleGenerator sg = SampleGenerator(id, gPathGenerator.mParams.mRandomSeed);
+    SampleGenerator sg = SampleGenerator(id, gRandomSeed);
 
     PathReservoir r = {};
     if (!gPathGenerator.gLightTraceOnly) {
@@ -76,7 +76,7 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
     float4 radiance = gPathGenerator.mOutputRadiance[id];
 
     // Copy radiance from the pixel's reservoir to the output buffer. This is skipped if we only used the atomic radiance.
-    if (!gPathGenerator.gLightTraceOnly || gPathGenerator.gUseLightTraceReservoirs) {
+    if (gPathGenerator.gUseResampling && (!gPathGenerator.gLightTraceOnly || gPathGenerator.gUseLightTraceReservoirs)) {
         const PathReservoir r = gPathGenerator.LoadInputReservoir(id);
         if (r.mW > 0) radiance.rgb += r.mSample.mRadiance * r.mW;
     }

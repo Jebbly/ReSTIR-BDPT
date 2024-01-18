@@ -24,10 +24,16 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
     float jacobianToCenter = 0;
 	float jacobianToPrev = 0;
 
+    print("\nCenter f:", r.mSample.GetTargetPdf());
+    print("Center W:", r.mW);
+
+    print("Candidate f:", candidateTargetPdf);
+    print("Candidate W:", candidate.mW);
+
     if (candidateTargetPdf > 0) {
-        print("Shifting candidate to center. f: ", candidateTargetPdf);
         candidate.mSample = gPathGenerator.ShiftPath(candidate.mSample, primaryHit, jacobianToCenter);
-        print("Shifted candidate to center", jacobianToCenter);
+        print("Shifted candidate to center. New f:", candidate.mSample.GetTargetPdf());
+        print("jacobianToCenter:", jacobianToCenter);
     }
 
     if (gMISType == RMISType::eTalbot) {
@@ -36,10 +42,10 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
             float mi = r.mM * r.mSample.GetTargetPdf();
             float msum = mi;
             if (any(r.mSample.mRadiance > 0)) {
-                print("Shifting center to candidate. f: ", r.mSample.GetTargetPdf());
-                PathSample shifted = gPathGenerator.ShiftPath(r.mSample, prevVertex, jacobianToPrev);
-                print("Shifted center to candidate", jacobianToPrev);
-                msum += candidate.mM * shifted.GetTargetPdf() * jacobianToPrev;
+                const float shiftedTargetPdf = gPathGenerator.ShiftPath(r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
+                print("Shifted center to candidate. New f:", shiftedTargetPdf);
+                print("jacobianToPrev:", jacobianToPrev);
+                msum += candidate.mM * shiftedTargetPdf * jacobianToPrev;
             }
 
             const float m = SafeDivide(mi, msum);
@@ -54,21 +60,25 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
             const float m = SafeDivide(mi, msum);
             candidate.PrepareMerge(m, jacobianToCenter);
         }
-    } else if (gMISType == RMISType::ePairwise) {
+    } else {
         candidate.PrepareMerge(candidate.mM / (candidate.mM + r.mM), jacobianToCenter);
         if (r.mW > 0) {
             const float shiftedTargetPdf = gPathGenerator.ShiftPath(r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
-            print("Shifted center to candidate", jacobianToPrev);
+            print("Shifted center to candidate. new f:", shiftedTargetPdf);
+            print("jacobianToPrev:", jacobianToPrev);
             r.PrepareMerge(r.mM / (r.mM + (shiftedTargetPdf * jacobianToPrev > 0 ? candidate.mM : 0)));
         }
     }
 
     //print("r ris w: %f\tcandidate ris w: %f\n", r.mW, candidate.mW);
 
-    SampleGenerator sg = SampleGenerator(id, gPathGenerator.mParams.mRandomSeed);
+    SampleGenerator sg = SampleGenerator(id, gRandomSeed);
     r.Merge(sampleNext1D(sg), candidate);
 
     r.FinalizeMerge();
+
+    print("Final center f:", r.mSample.mRadiance);
+    print("Final center W:", r.mW);
 }
 
 [shader("compute")]
