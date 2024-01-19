@@ -24,13 +24,14 @@ struct PathGeneratorParams {
 
     uint2 mOutputDim;
 
-    uint mMaxBounces = 10;
+    uint  mMaxBounces = 10;
+    float mTerminationProbability = .2f;
     uint  mLightSubpathCount = 1000000;
     uint  mPhotonCellCount   = 10000000;
     float mMergeRadius       = 0.0025f;
 
     float mReconnectionDistance  = 0.01f;
-    float mReconnectionRoughness = 0.2f;
+    float mReconnectionRoughness = 0.05f;
     float mCausticReuseRadius = 0.003f;
 
     uint  mSpatialReuseSamples = 4;

@@ -340,8 +340,14 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
         runtimeDirty |= group.var("Max bounces", mParams.mMaxBounces, 0u);
         group.tooltip("Maximum number of bounces.\n1 = direct only\n2 = one indirect bounce etc.");
 
+        runtimeDirty |= group.var("Termination probability", mParams.mTerminationProbability, 0.f, 1.f);
+        group.tooltip("Termination probability at each vertex.\nThis is multiplied by the roughness of the vertex.");
+
+        dirty |= group.checkbox("BSDF importance sampling", mStaticParams.useBsdfImportanceSampling);
+        group.tooltip("Use importance sampling for BSDFs.");
+
         dirty |= group.checkbox("Bidirectional path tracing (BPT)", mStaticParams.useBPT);
-        group.tooltip("Use bidirectional path tracing.\nThis option automatically enables NEE and MIS.");
+        group.tooltip("Use bidirectional path tracing.\nThis option automatically enables NEE.");
 
         if (mStaticParams.useBPT)
         {
@@ -349,7 +355,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             group.tooltip("Number of light sub-paths to trace when BPT is enabled.");
 
             dirty |= group.checkbox("Light trace only", mStaticParams.lightTraceOnly);
-            group.tooltip("Only use light tracing.\nThis option disables tracing paths from the camera.");
+            group.tooltip("Only use light tracing.\nThis option causes camera paths to be discarded.");
 
             if (!mStaticParams.lightTraceOnly)
             {
@@ -386,15 +392,31 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             group.tooltip("Use next-event estimation.\nThis option enables direct illumination sampling at each path vertex.");
         }
 
-        if (mStaticParams.useNEE || mStaticParams.useBPT)
-        {
-            dirty |= group.var("MIS power exponent", mStaticParams.misPowerExponent, 0.f, 10.f);
-        }
-
         if (mStaticParams.useNEE || mStaticParams.useBPT || mStaticParams.useTemporalReuse || mStaticParams.spatialReusePasses > 0) {
             runtimeDirty |= group.var("Connection roughness threshold", mParams.mReconnectionRoughness, 0.f, 1.f);
             group.tooltip("Minimum roughness for considering connection techniques\nBPT/NEE/VM is only performed on vertices rougher than this.");
         }
+
+        if (mStaticParams.useNEE || mStaticParams.useBPT)
+        {
+            dirty |= group.var("MIS power exponent", mStaticParams.misPowerExponent, 0.f, 10.f);
+
+            if (mpScene && mpScene->useEmissiveLights())
+            {
+                if (group.dropdown("Emissive sampler", mStaticParams.emissiveSampler))
+                {
+                    resetLighting();
+                    dirty = true;
+                }
+                group.tooltip("Selects which light sampler to use for importance sampling of emissive geometry.", true);
+
+                if (mpEmissiveSampler)
+                {
+                    if (mpEmissiveSampler->renderUI(group)) mOptionsChanged = true;
+                }
+            }
+        }
+
     }
 
     if (auto group = widget.group("Resampling options", true)) {
@@ -438,27 +460,9 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             {
                 runtimeDirty |= group.var("M cap", mParams.mMCap, 1u);
                 runtimeDirty |= group.var("Reconnection distance threshold", mParams.mReconnectionDistance, 0.f, 100.f);
-                if (mStaticParams.useBPT) {
+                if (mStaticParams.useBPT && mStaticParams.useLightTraceReservoirs) {
                     runtimeDirty |= group.var("Caustic reuse radius", mParams.mCausticReuseRadius, 0.f, 1.f);
                 }
-            }
-        }
-    }
-
-    if ((mStaticParams.useNEE || mStaticParams.useBPT) && mpScene && mpScene->useEmissiveLights())
-    {
-        if (auto group = widget.group("Emissive sampler"))
-        {
-            if (widget.dropdown("Emissive sampler", mStaticParams.emissiveSampler))
-            {
-                resetLighting();
-                dirty = true;
-            }
-            widget.tooltip("Selects which light sampler to use for importance sampling of emissive geometry.", true);
-
-            if (mpEmissiveSampler)
-            {
-                if (mpEmissiveSampler->renderUI(group)) mOptionsChanged = true;
             }
         }
     }
@@ -1087,6 +1091,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_BIDIRECTIONAL", useBPT ? "1" : "0");
     defines.add("USE_VERTEX_MERGING", (useBPT && useVM && !lightTraceOnly) ? "1" : "0");
     defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
+    defines.add("USE_BSDF_IMPORTANCE_SAMPLING", useBsdfImportanceSampling ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");
     defines.add("USE_PPM_ONLY", (useBPT && useVM && useVMOnly && !lightTraceOnly) ? "1" : "0");
     defines.add("LIGHT_TRACE_RESERVOIRS", (useBPT && useLightTraceReservoirs) ? "1" : "0");

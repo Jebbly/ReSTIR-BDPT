@@ -63,6 +63,7 @@ private:
         bool        useNEE = true; ///< Use next-event estimation (NEE). This enables shadow ray(s) from each path vertex.
         bool        useBPT = true; ///< Use bidirectional path tracing. Automatically enables NEE.
         bool        useVM  = false; ///< Use vertex merging when using BPT.
+        bool        useBsdfImportanceSampling = true;
         bool        debugBPT = false;
         bool        useLightTraceReservoirs = true;
         bool        lightTraceOnly = false;

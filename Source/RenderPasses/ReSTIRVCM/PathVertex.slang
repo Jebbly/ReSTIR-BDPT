@@ -62,7 +62,7 @@ struct LightSubpathVertex {
     }
 
     float3 GetDirIn() {
-        return mVertex.mRayDirection;
+        return -mVertex.mRayDirection;
     }
 };
 static const uint LightSubpathVertexSize = sizeof(LightSubpathVertex);
