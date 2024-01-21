@@ -49,6 +49,10 @@ struct LightSubpathVertex {
         get { return BF_GET(mPacked, 0, 8); }
         set { BF_SET(mPacked, newValue, 0, 8); }
     }
+    property uint mDiffuseBounces {
+        get { return asuint(mVertex.pad1); }
+        set { mVertex.pad1 = asfloat(newValue); }
+    }
     property uint2 mRngIdx {
         get {
             return uint2(
@@ -89,12 +93,16 @@ struct PathSample {
         set { BF_SET(mPackedRngIdx, newValue.x, 0, 16); BF_SET(mPackedRngIdx, newValue.y, 16, 16); }
     }
     property uint mBounces {
-        get { return BF_GET(mPackedBounces, 0, 16); }
-        set { BF_SET(mPackedBounces, newValue, 0, 16); }
+        get { return BF_GET(mPackedBounces, 0, 11); }
+        set { BF_SET(mPackedBounces, newValue, 0, 11); }
     }
     property uint mReplayBounces {
-        get { return BF_GET(mPackedBounces, 16, 16); }
-        set { BF_SET(mPackedBounces, newValue, 16, 16); }
+        get { return BF_GET(mPackedBounces, 11, 11); }
+        set { BF_SET(mPackedBounces, newValue, 11, 11); }
+    }
+    property uint mReplayDiffuseBounces {
+        get { return BF_GET(mPackedBounces, 22, 10); }
+        set { BF_SET(mPackedBounces, newValue, 22, 10); }
     }
     property PathShiftType mShiftType {
         get { return (PathShiftType)BF_GET(mPacked, 0, 4); }
@@ -105,11 +113,12 @@ struct PathSample {
         set { BF_SET(mPacked, (uint)newValue, 4, 1); }
     }
 
-    __init(const float3 radiance, const float replayPdfW, const uint bounces, const uint replayBounces, const uint rngSeed, const uint2 rngIdx, const ReconnectionVertex rcv, const PathShiftType shiftType) {
+    __init(const float3 radiance, const float replayPdfW, const uint bounces, const uint replayBounces, const uint replayDiffuseBounces, const uint rngSeed, const uint2 rngIdx, const ReconnectionVertex rcv, const PathShiftType shiftType) {
         mRadiance = radiance;
         mReplayPdfW = replayPdfW;
         mBounces = bounces;
         mReplayBounces = replayBounces;
+        mReplayDiffuseBounces = replayDiffuseBounces;
         mRngSeed = rngSeed;
         mRngIdx = rngIdx;
         mReconnectionVertex = rcv;

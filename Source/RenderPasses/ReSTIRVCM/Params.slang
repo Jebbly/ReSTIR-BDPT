@@ -19,19 +19,23 @@ FALCOR_ENUM_INFO(
 );
 FALCOR_ENUM_REGISTER(RMISType);
 
+
 struct PathGeneratorParams {
+    static const uint kMaxBounces = 2047;
+
     float4 mSceneSphere;
 
     uint2 mOutputDim;
 
-    uint  mMaxBounces = 10;
+    uint  mMaxBounces = 20;
+    uint  mMaxDiffuseBounces = 8;
     float mTerminationProbability = .2f;
     uint  mLightSubpathCount = 1000000;
     uint  mPhotonCellCount   = 10000000;
     float mMergeRadius       = 0.0025f;
 
     float mReconnectionDistance  = 0.01f;
-    float mReconnectionRoughness = 0.05f;
+    float mReconnectionRoughness = 0.08f; ///< sqrt(kMinGGXAlpha)
     float mCausticReuseRadius = 0.003f;
 
     uint  mSpatialReuseSamples = 4;

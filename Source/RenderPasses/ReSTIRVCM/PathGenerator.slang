@@ -429,6 +429,7 @@ extension PathGenerator {
         uint seed;
         uint packedId;
         uint packedBounces = 0;
+        uint packedDiffuseBounces = 0;
 
         property uint bounces {
             get { return BF_GET(packedBounces,    0, 15); }
@@ -437,6 +438,14 @@ extension PathGenerator {
         property uint rcvBounces {
             get { return BF_GET(packedBounces,    15, 15); }
             set { BF_SET(packedBounces, newValue, 15, 15); }
+        }
+        property uint diffuseBounces {
+            get { return BF_GET(packedDiffuseBounces, 0, 16); }
+            set { BF_SET(packedDiffuseBounces, newValue, 0, 16); }
+        }
+        property uint rcvDiffuseBounces {
+            get { return BF_GET(packedDiffuseBounces, 16, 16); }
+            set { BF_SET(packedDiffuseBounces, newValue, 16, 16); }
         }
         property bool isLightPath {
             get { return (bool)BF_GET(packedBounces,    30, 1); }
@@ -498,6 +507,7 @@ extension PathGenerator {
                 s.rcvDirOut = vertex.GetDirIn();
                 s.throughputAtRcv = s.throughput;
                 s.rcvBounces = 0;
+                s.rcvDiffuseBounces = 0;
                 s.rcvCos = cosOut;
                 s.deltaRcv = !prevReconnectable;
             }
@@ -540,6 +550,9 @@ extension PathGenerator {
 
         vertex = PathVertex(TraceRay(ray));
         s.bounces++;
+        if (prevReconnectable) {
+            s.diffuseBounces++;
+        }
 
         const float cosIn = vertex.GetCosN(vertex.GetDirIn());
 
@@ -563,12 +576,13 @@ extension PathGenerator {
 
             if (!bShift && !s.rcvFound) {
                 // set last vertex as rcv if one hasn't been found yet.
-                const bool reconnectable = vertex.mVertex.mRayDistance >= mParams.mReconnectionDistance && (any(le > 0) || (vertex.IsConnectable()));
+                const bool reconnectable = vertex.mVertex.mRayDistance >= mParams.mReconnectionDistance && (any(le > 0) || vertex.IsConnectable());
                 if (prevReconnectable && reconnectable) {
                     s.rcv = vertex.Pack();
                     s.rcvCos = cosIn;
                     s.rcvDist = vertex.mVertex.mRayDistance;
                     s.rcvBounces = s.bounces - 1;
+                    s.rcvDiffuseBounces = s.diffuseBounces - 1;
                     s.pdfAtRcv = prevPdf;
                     // rcvDirOut and throughputAtRcv are assigned next iteration after a direction is sampled
                 }
@@ -622,6 +636,7 @@ extension PathGenerator {
                     hasRcv ? s.pdfAtRcv : s.pdfW,
                     s.bounces,
                     hasRcv ? s.rcvBounces : s.bounces,
+                    hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
                     s.seed,
                     s.id,
                     rcv,
@@ -773,6 +788,7 @@ extension PathGenerator {
             hasRcv ? s.pdfAtRcv : s.pdfW,
             s.bounces + 1,
             hasRcv ? s.rcvBounces : s.bounces,
+            hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
             s.seed,
             s.id,
             rcv,
@@ -787,7 +803,7 @@ extension PathGenerator {
         PathSample result = {};
 
         const uint bounces = s.bounces + v.mBounces + 2;
-        if (bounces > mParams.mMaxBounces || DebugDisablePath(bounces, v.mBounces + 2))
+        if (bounces > mParams.mMaxBounces || s.diffuseBounces + v.mDiffuseBounces + 2 > mParams.mMaxDiffuseBounces || DebugDisablePath(bounces, v.mBounces + 2))
             return result;
 
         // evaluate the bsdf at the light subpath vertex
@@ -887,6 +903,7 @@ extension PathGenerator {
             hasRcv ? s.pdfAtRcv : s.pdfW,
             bounces,
             hasRcv ? s.rcvBounces : s.bounces,
+            hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
             s.seed, s.id,
             rcv,
             PathShiftType::eReconnection);
@@ -900,7 +917,7 @@ extension PathGenerator {
         PathSample result = {};
 
         const uint bounces = s.bounces + v.mBounces + 1;
-        if (bounces > mParams.mMaxBounces || DebugDisablePath(bounces, v.mBounces + 2))
+        if (bounces > mParams.mMaxBounces || s.diffuseBounces + v.mDiffuseBounces + 1 > mParams.mMaxDiffuseBounces || DebugDisablePath(bounces, v.mBounces + 2))
             return result;
 
         const PathVertex photon = PathVertex(v.mVertex);
@@ -908,12 +925,15 @@ extension PathGenerator {
         if (dot(toPhoton, toPhoton) >= sqr(mParams.mMergeRadius))
             return result;
 
-        const float cosOut = vertex.GetCosN(v.GetDirIn());
-        if (cosOut < kMinCosTheta)
-            return result;
-
         ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, v.GetDirIn(), false);
-        const float3 contrib = s.throughput * v.mThroughput * f.mReflectance / cosOut; // divide out dot(N, wo)
+        if (vertex.HasFaceNormal()) {
+            const float3 guideNormal = vertex.mMaterial.getProperties(vertex.mShadingData).guideNormal;
+            const float cosOut = abs(dot(guideNormal, v.GetDirIn()));
+            if (cosOut < kMinCosTheta)
+                return result;
+            f.mReflectance /= cosOut; // divide out dot(N, wo)
+        }
+        const float3 contrib = s.throughput * v.mThroughput * f.mReflectance;
         if (all(contrib <= 0))
             return result;
 
@@ -934,6 +954,7 @@ extension PathGenerator {
             s.pdfW,
             bounces,
             s.bounces,
+            s.diffuseBounces,
             s.seed,
             s.id,
             reinterpret<ReconnectionVertex>(v),
@@ -1002,6 +1023,7 @@ extension PathGenerator {
             contrib,
             1,
             s.bounces + 1,
+            0,
             0,
             s.seed, s.id,
             rcv,
@@ -1125,7 +1147,9 @@ extension PathGenerator {
         s.sgBsdf = SampleGenerator(s.id, -s.seed);
 
         s.bounces = 0;
+        s.diffuseBounces = 0;
         s.rcvBounces = 0;
+        s.rcvDiffuseBounces = 0;
         s.throughput = 1;
         s.throughputAtRcv = 0;
         s.pdfAtRcv = 0;
@@ -1232,7 +1256,9 @@ extension PathGenerator {
 
         s.pdfW = emissionPdfW;
         s.bounces = 0;
+        s.diffuseBounces = 0;
         s.rcvBounces = 0;
+        s.rcvDiffuseBounces = 0;
         s.dVCM = Mis(directPdfA / emissionPdfW);
         s.dVC = finiteEmitter ? Mis(cosLight / emissionPdfW) : 0;
         s.dVM = s.dVC * GetMisVcWeightFactor();
@@ -1294,7 +1320,7 @@ extension PathGenerator {
         PathReservoir r = {};
 
         while (s.bounces + 1 <= mParams.mMaxBounces && any(s.throughput > 0)) {
-            if (vertex.IsConnectable()) {
+            if (vertex.IsConnectable() && s.diffuseBounces < mParams.mMaxDiffuseBounces) {
                 bool doDI = (gBidirectional || gSampleDirectLight) && !gProgressivePhotonMapping;
                 bool doVC = gBidirectional && !gProgressivePhotonMapping;
                 bool doVM = gBidirectional && gVertexMerging;
@@ -1405,14 +1431,32 @@ extension PathGenerator {
     }
 
     void SampleLightPath(const uint seed, const uint2 id) {
+        if (mParams.mMaxBounces == 0 || mParams.mMaxDiffuseBounces == 0)
+            return;
+
         PathVertex vertex;
         PathState<false> s = InitializeLightPath<false>(seed, id, vertex);
 
-        if (mParams.mMaxBounces == 0)
-            return;
-
-        while (any(s.throughput > 0) && s.pdfW > 0) {
+        while (any(s.throughput > 0) && s.pdfW > 0 && s.diffuseBounces < mParams.mMaxDiffuseBounces) {
             if (vertex.IsConnectable()) {
+                // store vertex for connection and merging
+                if (!gLightTraceOnly) {
+                    LightSubpathVertex v;
+                    v.mVertex = vertex.Pack();
+                    v.mThroughput = s.throughput;
+                    v.dVC  = s.dVC;
+                    v.dVM  = s.dVM;
+                    v.dVCM = s.dVCM;
+                    v.mIntegrationWeight = 1/s.pdfW;
+                    v.mRngIdx  = s.id;
+                    v.mBounces = s.bounces;
+                    v.mDiffuseBounces = s.diffuseBounces;
+
+                    const uint i = mLightVertexCache.addVertex(v);
+                    if (gVertexMerging)
+                        mPhotonMap.addPhoton(i, vertex.GetPosition(), mParams.mMergeRadius, mParams.mPhotonCellCount, sampleNext1D(s.sg));
+                }
+
                 // form a full path by connecting the vertex to the camera
                 if (!gProgressivePhotonMapping) {
                     float weight = 0;
@@ -1432,23 +1476,6 @@ extension PathGenerator {
                             mAtomicRadiance.InterlockedAddF32(flatId * sizeof(float3) + sizeof(float)*2, ps.mRadiance.b * (weight * misWeight));
                         }
                     }
-                }
-
-                if (!gLightTraceOnly) {
-                    // store vertex
-                    LightSubpathVertex v;
-                    v.mVertex = vertex.Pack();
-                    v.mThroughput = s.throughput;
-                    v.dVC  = s.dVC;
-                    v.dVM  = s.dVM;
-                    v.dVCM = s.dVCM;
-                    v.mIntegrationWeight = 1/s.pdfW;
-                    v.mRngIdx  = s.id;
-                    v.mBounces = s.bounces;
-
-                    const uint i = mLightVertexCache.addVertex(v);
-                    if (gVertexMerging)
-                        mPhotonMap.addPhoton(i, vertex.GetPosition(), mParams.mMergeRadius, mParams.mPhotonCellCount, sampleNext1D(s.sg));
                 }
             }
 
@@ -1481,6 +1508,8 @@ extension PathGenerator {
             float weight, misWeight;
             result = SampleNextVertex(s, vertex, weight, misWeight);
         }
+        if (s.bounces != basePath.mReplayBounces || s.diffuseBounces != basePath.mReplayDiffuseBounces || !any(s.throughput > 0))
+            return {};
 
         // reconnection strategies
         if (basePath.mShiftType != PathShiftType::eReplay) {

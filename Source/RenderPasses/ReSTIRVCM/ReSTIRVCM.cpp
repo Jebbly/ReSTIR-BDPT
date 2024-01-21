@@ -120,6 +120,9 @@ void ReSTIRVCM::parseProperties(const Properties& props)
 
 void ReSTIRVCM::validateOptions()
 {
+    mParams.mMaxBounces = std::min(mParams.mMaxBounces, PathGeneratorParams::kMaxBounces);
+    mParams.mMaxDiffuseBounces = std::min(mParams.mMaxDiffuseBounces, mParams.mMaxBounces);
+
     if (mParams.mReconnectionRoughness < 0.f || mParams.mReconnectionRoughness > 1.f)
     {
         logWarning("'mReconnectionRoughness' has invalid value. Clamping to range [0,1].");
@@ -337,8 +340,11 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             dirty = true;
         }
 
-        runtimeDirty |= group.var("Max bounces", mParams.mMaxBounces, 0u);
+        runtimeDirty |= group.var("Max bounces", mParams.mMaxBounces, 0u, PathGeneratorParams::kMaxBounces);
         group.tooltip("Maximum number of bounces.\n1 = direct only\n2 = one indirect bounce etc.");
+
+        runtimeDirty |= group.var("Max diffuse bounces", mParams.mMaxDiffuseBounces, 0u, mParams.mMaxBounces);
+        group.tooltip("Maximum number of diffuse bounces.");
 
         runtimeDirty |= group.var("Termination probability", mParams.mTerminationProbability, 0.f, 1.f);
         group.tooltip("Termination probability at each vertex.\nThis is multiplied by the roughness of the vertex.");
@@ -669,7 +675,7 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
     // Note that the sample buffers are padded to whole tiles, while the max path count depends on actual frame dimension.
     // If we don't have a fixed sample count, assume the worst case.
     const uint32_t screenPixelCount = mParams.mOutputDim.x * mParams.mOutputDim.y;
-    const size_t lightVertexCount = mParams.mLightSubpathCount * std::max(1u, mParams.mMaxBounces);
+    const size_t maxLightVertices = mParams.mLightSubpathCount * std::max(1u, mParams.mMaxDiffuseBounces);
 
     auto var = mpReflectTypes->getRootVar();
 
@@ -700,9 +706,9 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
 
     if (mStaticParams.useBPT)
     {
-        if (!mpLightVertices || mpLightVertices->getElementCount() != lightVertexCount || mVarsChanged)
+        if (!mpLightVertices || mpLightVertices->getElementCount() != maxLightVertices || mVarsChanged)
         {
-            mpLightVertices    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightVertexCache"]["lightVertices"], lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpLightVertices    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightVertexCache"]["lightVertices"], maxLightVertices, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
             mpLightVertexCount = mpDevice->createBuffer(sizeof(uint32_t)*2, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
@@ -725,11 +731,11 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
                 mpLightReservoirHashMapCellDataOffsets = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mCellDataOffsets"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
                 mVarsChanged = true;
             }
-            if (!mpLightReservoirHashMapData || mpLightReservoirHashMapData->getElementCount() != lightVertexCount || mVarsChanged)
+            if (!mpLightReservoirHashMapData || mpLightReservoirHashMapData->getElementCount() != maxLightVertices || mVarsChanged)
             {
-                mpLightReservoirHashMapData            = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mData"]       , lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-                mpLightReservoirHashMapSortedData      = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mSortedData"] , lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-                mpLightReservoirHashMapDataIndices     = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mDataIndices"], lightVertexCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+                mpLightReservoirHashMapData            = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mData"]       , maxLightVertices, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+                mpLightReservoirHashMapSortedData      = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mSortedData"] , maxLightVertices, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+                mpLightReservoirHashMapDataIndices     = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mDataIndices"], maxLightVertices, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
                 mVarsChanged = true;
             }
             if (!mpLightReservoirHashMapCounters || mVarsChanged)
