@@ -931,6 +931,8 @@ void ReSTIRVCM::bindShaderData(const ShaderVar& var, const RenderData& renderDat
     var["mLastViewDir"] = mpLastViewDir;
     var["mMotionVectors"] = pMotionVecs; // Required for temporal reuse
     var["mOutputRadiance"] = renderData.getTexture(kOutputColor);
+
+    var["mPhotonMap"]["gHashOffset"] = mFrameCount;
 }
 
 bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& renderData)

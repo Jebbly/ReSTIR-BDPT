@@ -33,6 +33,8 @@ struct PhotonMap
     RWStructuredBuffer<uint> cellSizes;   ///< Number of photons in each cell.
     RWStructuredBuffer<uint> cellOffsets; ///< Index in cellData where each cell starts. First element is the total number of elements.
 
+    uint gHashOffset = 0;
+
     uint getCellOffset(const uint cellIndex)
     {
         return cellOffsets[cellIndex];
@@ -46,7 +48,7 @@ struct PhotonMap
     uint getCellIndex(const float3 posW, const float mergeRadius, const uint cellCount, const int3 offset = int3(0))
     {
         const int3 p = int3(floor(posW / (2.f * mergeRadius))) + offset;
-        return pcg(pcg(p.z + pcg(p.y + pcg(p.x)))) % cellCount;
+        return pcg(gHashOffset + pcg(p.z + pcg(p.y + pcg(p.x)))) % cellCount;
     }
 
     void addPhoton(const uint lightVertexIndex, const float3 posW, const float mergeRadius, const uint cellCount, const float rnd)

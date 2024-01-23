@@ -34,12 +34,12 @@ struct ReconnectionVertex {
     float3 mDirOut = 0;
     float mCos = 0;
 };
-static const uint ReconnectionVertexSize = sizeof(ReconnectionVertex);
 
 struct LightSubpathVertex {
     PackedPathVertex mVertex = {};
     float3 mThroughput = 0;
     uint mPacked;
+
     float mIntegrationWeight = 0;
     float dVCM;
     float dVC;
@@ -69,9 +69,6 @@ struct LightSubpathVertex {
         return -mVertex.mRayDirection;
     }
 };
-static const uint LightSubpathVertexSize = sizeof(LightSubpathVertex);
-
-// static_assert( LightSubpathVertexSize == ReconnectionVertexSize )
 
 enum PathShiftType {
     eReplay,
@@ -85,7 +82,7 @@ struct PathSample {
     uint mRngSeed = 0;
     uint mPackedRngIdx = 0;
     uint mPackedBounces = 0;
-    uint mPacked = 0;
+    uint mPackedFlags = 0;
     ReconnectionVertex mReconnectionVertex = {};
 
     property uint2 mRngIdx {
@@ -105,12 +102,12 @@ struct PathSample {
         set { BF_SET(mPackedBounces, newValue, 22, 10); }
     }
     property PathShiftType mShiftType {
-        get { return (PathShiftType)BF_GET(mPacked, 0, 4); }
-        set { BF_SET(mPacked, (uint)newValue, 0, 4); }
+        get { return (PathShiftType)BF_GET(mPackedFlags, 0, 4); }
+        set { BF_SET(mPackedFlags, (uint)newValue, 0, 4); }
     }
     property bool mIsCausticPath {
-        get { return (bool)BF_GET(mPacked, 4, 1); }
-        set { BF_SET(mPacked, (uint)newValue, 4, 1); }
+        get { return (bool)BF_GET(mPackedFlags, 4, 1); }
+        set { BF_SET(mPackedFlags, (uint)newValue, 4, 1); }
     }
 
     __init(const float3 radiance, const float replayPdfW, const uint bounces, const uint replayBounces, const uint replayDiffuseBounces, const uint rngSeed, const uint2 rngIdx, const ReconnectionVertex rcv, const PathShiftType shiftType) {

@@ -50,6 +50,7 @@ struct PathGenerator {
     static const bool gBidirectional = USE_BIDIRECTIONAL;
     static const bool gVertexMerging = USE_VERTEX_MERGING;
     static const bool gProgressivePhotonMapping = USE_PPM_ONLY;
+    static const bool gAllowEarlyReconnection = true;
     static const bool gLightTraceOnly = LIGHT_TRACE_ONLY;
     static const bool gUseLightTraceReservoirs = LIGHT_TRACE_RESERVOIRS;
     static const bool gUseResampling = USE_RESAMPLING;
@@ -482,7 +483,7 @@ extension PathGenerator {
         // russian roulette
         const float contProb = vertex.GetContinuationProbability();
         const float rrU = sampleNext1D(s.sg);
-        if (!bShift && contProb < 1 && (rrU > contProb)) {
+        if (!bShift && contProb < 1 && rrU > contProb) {
             s.throughput = 0;
             return {};
         }
@@ -757,7 +758,7 @@ extension PathGenerator {
         // divide by pdf
         integrationWeight = 1.f / samplePdf;
 
-        const bool hasRcv = !bShift && s.rcvFound;
+        const bool hasRcv = gAllowEarlyReconnection && !bShift && s.rcvFound;
         ReconnectionVertex rcv = {};
         if (hasRcv) {
             // finalize the existing rcv
@@ -872,7 +873,7 @@ extension PathGenerator {
 
         integrationWeight = cosLight * invDist2 / s.pdfW;
 
-        const bool hasRcv = !bShift && s.rcvFound;
+        const bool hasRcv = gAllowEarlyReconnection && !bShift && s.rcvFound;
         ReconnectionVertex rcv = {};
         if (hasRcv) {
             // finalize the existing rcv
@@ -947,18 +948,40 @@ extension PathGenerator {
 
         integrationWeight = 1.f / (s.pdfW * GetEtaVCM());
 
-        assert(LightSubpathVertexSize == ReconnectionVertexSize);
+        const bool hasRcv = gAllowEarlyReconnection && !bShift && s.rcvFound;
+        ReconnectionVertex rcv = {};
+        if (hasRcv) {
+            // finalize the existing rcv
+            rcv.mVertex = s.rcv;
+            rcv.mCos  = s.rcvCos;
+            rcv.mDist = s.rcvDist;
+            if (s.rcvBounces == s.bounces - 1) {
+                rcv.mDirOut = v.GetDirIn();
+                rcv.mRadiance = v.mThroughput * f.mReflectance;
+            } else {
+                rcv.mDirOut = s.rcvDirOut;
+                rcv.mRadiance = float3(
+                    SafeDivide(contrib.r, s.throughputAtRcv.r),
+                    SafeDivide(contrib.g, s.throughputAtRcv.g),
+                    SafeDivide(contrib.b, s.throughputAtRcv.b));
+            }
+        } else {
+            // store photon as reconnection vertex
+            rcv.mVertex   = v.mVertex;
+            rcv.mRadiance = v.mThroughput;
+            rcv.mDirOut   = v.GetDirIn();
+        }
 
         result = PathSample(
             contrib,
-            s.pdfW,
+            hasRcv ? s.pdfAtRcv : s.pdfW,
             bounces,
-            s.bounces,
-            s.diffuseBounces,
+            hasRcv ? s.rcvBounces : s.bounces,
+            hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
             s.seed,
             s.id,
-            reinterpret<ReconnectionVertex>(v),
-            PathShiftType::eMerge);
+            rcv,
+            hasRcv ? PathShiftType::eReconnection : PathShiftType::eMerge);
 
         return result;
     }
@@ -995,7 +1018,6 @@ extension PathGenerator {
         // Compute pdf conversion factor from image plane area to surface area
         const float cameraPdfA = imageToSolidAngleFactor * cosOut / sqr(dist);
 
-        // const float3 contrib = s.throughput * f.mReflectance / cosOut;
         const float3 contrib = s.throughput * vertex.Reversed(toCamera).EvaluateReflectance(s.sg, vertex.GetDirIn(), false).mReflectance / vertex.GetCosN(vertex.GetDirIn());
         if (!any(contrib > 0))
             return result;
@@ -1037,7 +1059,7 @@ extension PathGenerator {
 
         return result;
     }
-    PathSample ConnectToBasePath(inout PathState<true> s, const PathVertex vertex, const PathSample basePath) {
+    PathSample ConnectToReconnectionVertex(inout PathState<true> s, const PathVertex vertex, const PathSample basePath) {
         if (!vertex.IsConnectable())
             return {};
 
@@ -1124,13 +1146,37 @@ extension PathGenerator {
             return {};
         }
 
-        newRcv.mCos = abs(newRcv.mCos);
-
         PathSample r = basePath;
         r.mRadiance = le;
         r.mReplayPdfW = s.pdfW;
-        r.mReconnectionVertex = newRcv;
+        r.mReconnectionVertex.mCos = abs(newRcv.mCos);
+        r.mReconnectionVertex.mDist = newRcv.mDist;
         return r;
+    }
+    PathSample MergeWithReconnectionVertex(inout PathState<true> s, const PathVertex vertex, const PathSample basePath) {
+        PathSample result = {};
+
+        const PathVertex photon = PathVertex(basePath.mReconnectionVertex.mVertex);
+        const float3 toPhoton = photon.GetPosition() - vertex.GetPosition();
+        if (dot(toPhoton, toPhoton) >= sqr(mParams.mMergeRadius))
+            return result;
+
+        ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, basePath.mReconnectionVertex.mDirOut, false);
+        if (vertex.HasFaceNormal()) {
+            const float3 guideNormal = vertex.mMaterial.getProperties(vertex.mShadingData).guideNormal;
+            const float cosOut = abs(dot(guideNormal, basePath.mReconnectionVertex.mDirOut));
+            if (cosOut < kMinCosTheta)
+                return result;
+            f.mReflectance /= cosOut; // divide out dot(N, wo)
+        }
+        const float3 contrib = s.throughput * basePath.mReconnectionVertex.mRadiance * f.mReflectance;
+        if (all(contrib <= 0))
+            return result;
+
+        result = basePath;
+        result.mRadiance = contrib;
+
+        return result;
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -1523,17 +1569,12 @@ extension PathGenerator {
                 return {};
 
             case PathShiftType::eReconnection:
-                result = ConnectToBasePath(s, vertex, basePath);
+                result = ConnectToReconnectionVertex(s, vertex, basePath);
                 break;
 
             case PathShiftType::eMerge: {
-                if (!gBidirectional || !gVertexMerging || gLightTraceOnly)
-                    break;
-
-                assert(LightSubpathVertexSize == ReconnectionVertexSize);
-
-                float weight, misWeight;
-                result = MergeWithLightVertex(s, vertex, reinterpret<LightSubpathVertex>(basePath.mReconnectionVertex), weight, misWeight);
+                if (gBidirectional && gVertexMerging && !gLightTraceOnly)
+                    result = MergeWithReconnectionVertex(s, vertex, basePath);
                 break;
             }
             }
