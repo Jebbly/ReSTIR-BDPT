@@ -562,6 +562,11 @@ extension PathGenerator {
             }
 
             ray = Ray(vertex.ComputeRayOrigin(r.mDirection), r.mDirection);
+
+            if (prevReconnectable && s.diffuseBounces == mParams.mMaxDiffuseBounces) {
+                s.throughput = 0;
+                return {};
+            }
         }
 
         vertex = PathVertex(TraceRay(ray));
@@ -595,8 +600,9 @@ extension PathGenerator {
                 const bool reconnectable = vertex.mVertex.mRayDistance >= mParams.mReconnectionDistance && (any(le > 0) || vertex.IsConnectable());
                 if (prevReconnectable && reconnectable) {
                     s.rcv = vertex.Pack();
+                    if (!vertex.IsFinite()) s.rcv.mRayDistance = FLT_MAX;
                     s.rcvCos = cosIn;
-                    s.rcvDist = vertex.mVertex.mRayDistance;
+                    s.rcvDist = s.rcv.mRayDistance;
                     s.rcvBounces = s.bounces - 1;
                     s.rcvDiffuseBounces = s.diffuseBounces - 1;
                     s.pdfAtRcv = prevPdf;
@@ -607,13 +613,11 @@ extension PathGenerator {
             // if vertex is emissive, form a path ending at vertex
             if (any(le > 0) && !DebugDisablePath(s.bounces, 0)) {
                 // calculate mis weight
-                float emissionPdfW, directPdfW, directPdfA;
+                float emissionPdfW = 0;
+                float directPdfW = 0;
+                float directPdfA = 0;
                 if (gBidirectional || gSampleDirectLight) {
                     GetLightSamplePdf(vertex, prevPos, prevNormal, upperOnly, emissionPdfW, directPdfW, directPdfA);
-                } else {
-                    emissionPdfW = 0;
-                    directPdfW = 0;
-                    directPdfA = 0;
                 }
 
                 misWeight = 1;
@@ -1093,11 +1097,12 @@ extension PathGenerator {
 
             if (newRcv.mDist < mParams.mReconnectionDistance)
                 return {};
-        }
 
-        const float cosCamera = vertex.GetCosN(newRcv.mVertex.mRayDirection);
-        if (cosCamera < kMinCosTheta)
-            return {};
+            const float cosCamera = vertex.GetCosN(newRcv.mVertex.mRayDirection);
+            if (cosCamera < kMinCosTheta)
+                return {};
+        } else
+            newRcv.mVertex.mRayOrigin = vertex.ComputeRayOrigin(newRcv.mVertex.mRayDirection);
 
         float3 le = s.throughput * basePath.mReconnectionVertex.mRadiance;
         if (!any(le > 0)) {
@@ -1107,7 +1112,7 @@ extension PathGenerator {
 
         le *= vertex.EvaluateReflectance(s.sg, newRcv.mVertex.mRayDirection, false).mReflectance;
         if (!any(le > 0)) {
-            print("Reconnection failed: zero vertex reflectance", cosCamera);
+            print("Reconnection failed: zero vertex reflectance", 0);
             return {};
         }
 
@@ -1143,8 +1148,10 @@ extension PathGenerator {
         PathSample r = basePath;
         r.mRadiance = le;
         r.mReplayPdfW = s.pdfW;
-        r.mReconnectionVertex.mCos = abs(newRcv.mCos);
-        r.mReconnectionVertex.mDist = newRcv.mDist;
+        if (rcvFinite) {
+            r.mReconnectionVertex.mCos = abs(newRcv.mCos);
+            r.mReconnectionVertex.mDist = newRcv.mDist;
+        }
         return r;
     }
     PathSample MergeWithReconnectionVertex(inout PathState<true> s, const PathVertex vertex, const float mergeRadius, const PathSample basePath) {
@@ -1359,7 +1366,7 @@ extension PathGenerator {
 
         PathReservoir r = {};
 
-        while (s.bounces + 1 <= mParams.mMaxBounces && any(s.throughput > 0)) {
+        while (s.bounces + 1 <= mParams.mMaxBounces && any(s.throughput > 0) && vertex.IsFinite()) {
             if (vertex.IsConnectable() && s.diffuseBounces < mParams.mMaxDiffuseBounces) {
                 bool doDI = (gBidirectional || gSampleDirectLight) && !gProgressivePhotonMapping;
                 bool doVC = gBidirectional && !gProgressivePhotonMapping;
@@ -1480,7 +1487,7 @@ extension PathGenerator {
         PathVertex vertex;
         PathState<false> s = InitializeLightPath<false>(seed, id, vertex);
 
-        while (any(s.throughput > 0) && s.pdfW > 0 && s.diffuseBounces < mParams.mMaxDiffuseBounces) {
+        while (any(s.throughput > 0) && s.pdfW > 0 && s.diffuseBounces < mParams.mMaxDiffuseBounces && vertex.IsFinite()) {
             if (vertex.IsConnectable()) {
                 // store vertex for connection and merging
                 if (!gLightTraceOnly) {
