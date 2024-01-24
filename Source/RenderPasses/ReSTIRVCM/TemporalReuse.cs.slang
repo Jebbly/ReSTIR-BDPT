@@ -1,6 +1,6 @@
-import Random;
 import PathGenerator;
 import Utils.Debug.PixelDebug;
+import Utils.Sampling.SampleGenerator;
 
 static const RMISType gMISType = (RMISType)TEMPORAL_RMIS_TYPE;
 

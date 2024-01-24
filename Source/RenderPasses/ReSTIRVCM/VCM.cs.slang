@@ -1,5 +1,5 @@
-import Random;
 import PathGenerator;
+import Utils.Sampling.SampleGenerator;
 import Utils.Debug.PixelDebug;
 
 [shader("compute")]
@@ -20,19 +20,7 @@ void SampleCameraPaths(uint3 index : SV_DispatchThreadID) {
 
     const PathReservoir r = gPathGenerator.SampleCameraPath(gRandomSeed, id);
 
-	gPathGenerator.StoreReservoir(id, r);
-}
-
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void ComputeLightReservoirOffsets(uint3 index: SV_DispatchThreadID) {
-    gPathGenerator.mLightTraceReservoirs.ComputeCellOffset(index.y * gPathGenerator.mParams.mOutputDim.x + index.x);
-}
-
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void SortLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
-    gPathGenerator.mLightTraceReservoirs.Sort(index.y * gPathGenerator.mParams.mOutputDim.x + index.x);
+    gPathGenerator.StoreReservoir(id, r);
 }
 
 [shader("compute")]
@@ -42,7 +30,7 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
     if (any(id >= gPathGenerator.mParams.mOutputDim)) return;
     printSetPixel(id);
 
-    if (!(gPathGenerator.gBidirectional && gPathGenerator.gUseLightTraceReservoirs))
+    if (!(gPathGenerator.gBidirectional && gPathGenerator.gUseResampling))
         return;
 
     SampleGenerator sg = SampleGenerator(id, gRandomSeed);
@@ -76,13 +64,11 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
     float4 radiance = gPathGenerator.mOutputRadiance[id];
 
     // Copy radiance from the pixel's reservoir to the output buffer. This is skipped if we only used the atomic radiance.
-    if (gPathGenerator.gUseResampling && (!gPathGenerator.gLightTraceOnly || gPathGenerator.gUseLightTraceReservoirs)) {
+    if (gPathGenerator.gUseResampling) {
         const PathReservoir r = gPathGenerator.LoadInputReservoir(id);
         if (r.mW > 0) radiance.rgb += r.mSample.mRadiance * r.mW;
-    }
-
-    // Add light trace contribution
-    if (gPathGenerator.gBidirectional && !gPathGenerator.gUseLightTraceReservoirs) {
+    } else if (gPathGenerator.gBidirectional) {
+        // Add light trace contribution from atomic buffer
         const uint flatId = id.y * gPathGenerator.mParams.mOutputDim.x + id.x;
         radiance.rgb += gPathGenerator.mAtomicRadiance.Load<float3>(flatId * sizeof(float3));
     }

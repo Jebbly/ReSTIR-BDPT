@@ -81,6 +81,8 @@ ReSTIRVCM::ReSTIRVCM(ref<Device> pDevice, const Properties& props)
     // Note: The other programs are lazily created in updatePrograms() because a scene needs to be present when creating them.
 
     mpPixelDebug = std::make_unique<PixelDebug>(mpDevice, 1000);
+
+    mpLightReservoirs = std::make_unique<GPUHashMap>(mpDevice);
 }
 
 void ReSTIRVCM::setProperties(const Properties& props)
@@ -131,7 +133,6 @@ void ReSTIRVCM::validateOptions()
 
     if (!mStaticParams.useResampling)
     {
-        mStaticParams.useLightTraceReservoirs = false;
         mStaticParams.useTemporalReuse = false;
         mStaticParams.spatialReusePasses = 0;
     }
@@ -230,11 +231,9 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
             pRenderContext->clearUAV(mpPhotonCellSizes->getUAV().get(), uint4(0));
         }
 
-        if (mStaticParams.useLightTraceReservoirs)
+        if (mStaticParams.useResampling)
         {
-            pRenderContext->clearUAV(mpLightReservoirHashMapCellKeys->getUAV().get(), uint4(0));
-            pRenderContext->clearUAV(mpLightReservoirHashMapCellCounters->getUAV().get(), uint4(0));
-            pRenderContext->clearUAV(mpLightReservoirHashMapCounters->getUAV().get(), uint4(0));
+            mpLightReservoirs->clear(pRenderContext);
         }
         else
         {
@@ -255,19 +254,12 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
     mCurrentSeed++;
 
     // Merge pure light tracing reservoirs with camera reservoirs
-    if (mStaticParams.useBPT && mStaticParams.useLightTraceReservoirs)
+    if (mStaticParams.useBPT && mStaticParams.useResampling)
     {
-        FALCOR_ASSERT(mpComputeLightReservoirOffsetsPass);
-        FALCOR_ASSERT(mpSortLightReservoirsPass);
+        mpLightReservoirs->sort(pRenderContext);
+
         FALCOR_ASSERT(mpLightReservoirResolvePass);
-
-        preparePass(pRenderContext, renderData, *mpComputeLightReservoirOffsetsPass);
-        preparePass(pRenderContext, renderData, *mpSortLightReservoirsPass);
         preparePass(pRenderContext, renderData, *mpLightReservoirResolvePass);
-
-        mpComputeLightReservoirOffsetsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
-        mpSortLightReservoirsPass->execute(pRenderContext, mParams.mOutputDim.x, (mpLightReservoirHashMapData->getElementCount() + mParams.mOutputDim.x-1) / mParams.mOutputDim.x);
-
         mpLightReservoirResolvePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
         mCurrentSeed++;
     }
@@ -439,12 +431,6 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useResampling)
         {
-            if (mStaticParams.useBPT)
-            {
-                dirty |= widget.checkbox("Resample pure light paths", mStaticParams.useLightTraceReservoirs);
-                widget.tooltip("Enable resampling for pure light traced paths (most caustics).");
-            }
-
             dirty |= group.checkbox("Temporal resampling", mStaticParams.useTemporalReuse);
             if (mStaticParams.useTemporalReuse)
             {
@@ -474,7 +460,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             {
                 runtimeDirty |= group.var("M cap", mParams.mMCap, 1u);
                 runtimeDirty |= group.var("Reconnection distance threshold", mParams.mReconnectionDistance, 0.f, 100.f);
-                if (mStaticParams.useBPT && mStaticParams.useLightTraceReservoirs) {
+                if (mStaticParams.useBPT) {
                     runtimeDirty |= group.var("Caustic reuse radius", mParams.mCausticReuseRadius, 0.f, 1.f);
                 }
             }
@@ -552,7 +538,6 @@ void ReSTIRVCM::resetPrograms()
     mpReflectTypes = nullptr;
     mpSampleCameraPathsPass = nullptr;
     mpSampleLightPathsPass = nullptr;
-    mpSortLightReservoirsPass = nullptr;
     mpLightReservoirResolvePass = nullptr;
     mpSpatialReusePass = nullptr;
     mpTemporalReusePass = nullptr;
@@ -596,6 +581,7 @@ void ReSTIRVCM::updatePrograms()
         desc.addShaderLibrary(kVCMPassFilename).csEntry("SampleCameraPaths");
         mpSampleCameraPathsPass = ComputePass::create(mpDevice, desc, defines, false);
     }
+    preparePass(mpSampleCameraPathsPass);
 
     if (mStaticParams.useBPT)
     {
@@ -605,36 +591,18 @@ void ReSTIRVCM::updatePrograms()
             desc.addShaderLibrary(kVCMPassFilename).csEntry("SampleLightPaths");
             mpSampleLightPathsPass = ComputePass::create(mpDevice, desc, defines, false);
         }
+        preparePass(mpSampleLightPathsPass);
 
-        if (mStaticParams.useLightTraceReservoirs)
+        if (mStaticParams.useResampling)
         {
-            if (!mpComputeLightReservoirOffsetsPass)
-            {
-                ProgramDesc desc = baseDesc;
-                desc.addShaderLibrary(kVCMPassFilename).csEntry("ComputeLightReservoirOffsets");
-                mpComputeLightReservoirOffsetsPass = ComputePass::create(mpDevice, desc, defines, false);
-            }
-
-            if (!mpSortLightReservoirsPass)
-            {
-                ProgramDesc desc = baseDesc;
-                desc.addShaderLibrary(kVCMPassFilename).csEntry("SortLightTraceReservoirs");
-                mpSortLightReservoirsPass = ComputePass::create(mpDevice, desc, defines, false);
-            }
-
             if (!mpLightReservoirResolvePass)
             {
                 ProgramDesc desc = baseDesc;
                 desc.addShaderLibrary(kVCMPassFilename).csEntry("ResolveLightTraceReservoirs");
                 mpLightReservoirResolvePass = ComputePass::create(mpDevice, desc, defines, false);
             }
-
-            preparePass(mpComputeLightReservoirOffsetsPass);
-            preparePass(mpSortLightReservoirsPass);
             preparePass(mpLightReservoirResolvePass);
         }
-
-        preparePass(mpSampleLightPathsPass);
     }
 
     if (mStaticParams.useTemporalReuse)
@@ -665,6 +633,7 @@ void ReSTIRVCM::updatePrograms()
         desc.addShaderLibrary(kVCMPassFilename).csEntry("OutputRadiance");
         mpCopyRadiancePass = ComputePass::create(mpDevice, desc, defines, false);
     }
+    preparePass(mpCopyRadiancePass);
 
     if (!mpReflectTypes)
     {
@@ -672,9 +641,6 @@ void ReSTIRVCM::updatePrograms()
         desc.addShaderLibrary(kReflectTypesFile).csEntry("main");
         mpReflectTypes = ComputePass::create(mpDevice, desc, defines, false);
     }
-
-    preparePass(mpSampleCameraPathsPass);
-    preparePass(mpCopyRadiancePass);
     preparePass(mpReflectTypes);
 
     mVarsChanged = true;
@@ -734,25 +700,10 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
             }
         }
 
-        if (mStaticParams.useLightTraceReservoirs)
+        if (mStaticParams.useResampling)
         {
-            if (!mpLightReservoirHashMapCellDataOffsets || mpLightReservoirHashMapCellDataOffsets->getElementCount() != screenPixelCount || mVarsChanged)
+            if (mpLightReservoirs->prepareResources(var["gPathGenerator"]["mLightTraceReservoirs"], screenPixelCount, maxLightVertices))
             {
-                mpLightReservoirHashMapCellKeys        = mpDevice->createBuffer(sizeof(uint32_t)*screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-                mpLightReservoirHashMapCellCounters    = mpDevice->createBuffer(sizeof(uint32_t)*screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-                mpLightReservoirHashMapCellDataOffsets = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mCellDataOffsets"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-                mVarsChanged = true;
-            }
-            if (!mpLightReservoirHashMapData || mpLightReservoirHashMapData->getElementCount() != maxLightVertices || mVarsChanged)
-            {
-                mpLightReservoirHashMapData            = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mData"]       , maxLightVertices, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-                mpLightReservoirHashMapSortedData      = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mSortedData"] , maxLightVertices, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-                mpLightReservoirHashMapDataIndices     = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightTraceReservoirs"]["mDataIndices"], maxLightVertices, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-                mVarsChanged = true;
-            }
-            if (!mpLightReservoirHashMapCounters || mVarsChanged)
-            {
-                mpLightReservoirHashMapCounters        = mpDevice->createBuffer(sizeof(uint32_t)*2, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                 mVarsChanged = true;
             }
         }
@@ -905,17 +856,7 @@ void ReSTIRVCM::bindShaderData(const ShaderVar& var, const RenderData& renderDat
         var["mPathReservoirs0"] = mpReservoirs0;
         var["mPathReservoirs1"] = mpReservoirs1;
 
-        var["mLightTraceReservoirs"]["mCellKeys"]        = mpLightReservoirHashMapCellKeys;
-        var["mLightTraceReservoirs"]["mCellCounters"]    = mpLightReservoirHashMapCellCounters;
-        var["mLightTraceReservoirs"]["mCellDataOffsets"] = mpLightReservoirHashMapCellDataOffsets;
-        var["mLightTraceReservoirs"]["mData"]            = mpLightReservoirHashMapData;
-        var["mLightTraceReservoirs"]["mSortedData"]      = mpLightReservoirHashMapSortedData;
-        var["mLightTraceReservoirs"]["mDataIndices"]     = mpLightReservoirHashMapDataIndices;
-        var["mLightTraceReservoirs"]["mCounters"]        = mpLightReservoirHashMapCounters;
-
-        var["mLightTraceReservoirs"]["mCellCount"] = mpLightReservoirHashMapCellDataOffsets ? mpLightReservoirHashMapCellDataOffsets->getElementCount() : 0u;
-        var["mLightTraceReservoirs"]["mMaxSize"]   = mpLightReservoirHashMapData ? mpLightReservoirHashMapData->getElementCount() : 0u;
-
+        mpLightReservoirs->bindShaderData(var["mLightTraceReservoirs"]);
         mpSampleGenerator->bindShaderData(var);
     }
 
@@ -1038,10 +979,10 @@ bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& rend
         mCurrentSeed = mFixedSeed;
     } else if (mResetSeedOnChange) {
         uint seedsPerFrame = 1;
-        if (mStaticParams.useBPT) seedsPerFrame++;
-        if (mStaticParams.useBPT && mStaticParams.useLightTraceReservoirs) seedsPerFrame++;
-        if (mStaticParams.useTemporalReuse) seedsPerFrame++;
-        seedsPerFrame += mStaticParams.spatialReusePasses*2;
+        if (mStaticParams.useBPT) seedsPerFrame++; // light subpaths
+        if (mStaticParams.useBPT && mStaticParams.useResampling) seedsPerFrame++; // light trace reservoir resample
+        if (mStaticParams.useTemporalReuse) seedsPerFrame++; // teporal resample
+        seedsPerFrame += mStaticParams.spatialReusePasses*2; // spatial reuse pattern + resample
 
         mCurrentSeed = mFrameCount * seedsPerFrame;
     }
@@ -1119,7 +1060,6 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_BSDF_IMPORTANCE_SAMPLING", useBsdfImportanceSampling ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");
     defines.add("USE_PPM_ONLY", (useBPT && useVM && useVMOnly && !lightTraceOnly) ? "1" : "0");
-    defines.add("LIGHT_TRACE_RESERVOIRS", (useBPT && useLightTraceReservoirs) ? "1" : "0");
     defines.add("WAVEFRONT_TECHNIQUE_SELECTION", useWavefrontTechniqueSelection ? "1" : "0");
     defines.add("TEMPORAL_RMIS_TYPE", std::to_string(uint(temporalRMIS)));
     defines.add("SPATIAL_RMIS_TYPE", std::to_string(uint(spatialRMIS)));

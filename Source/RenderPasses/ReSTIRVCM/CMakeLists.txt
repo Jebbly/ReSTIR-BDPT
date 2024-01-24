@@ -3,12 +3,14 @@ add_plugin(ReSTIRVCM)
 target_sources(ReSTIRVCM PRIVATE
     BitfieldMacros.slangh
     HashMap.slang
+    HashMap.cs.slang
+    HashMap.cpp
+    HashMap.h
     LoadShadingData.slang
     Params.slang
     PathGenerator.slang
     PathVertex.slang
     PhotonMap.slang
-    Random.slang
     ReflectTypes.cs.slang
     ReSTIRVCM.cpp
     ReSTIRVCM.h

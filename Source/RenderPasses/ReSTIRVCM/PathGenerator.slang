@@ -5,14 +5,14 @@ import Rendering.Lights.EnvMapSampler;
 import Rendering.Lights.EmissiveLightSampler;
 import Utils.Math.MathHelpers;
 import Utils.Geometry.GeometryHelpers;
+import Utils.Sampling.SampleGenerator;
 import Utils.Color.ColorHelpers;
 import Utils.Debug.PixelDebug;
-import Random;
+import LoadShadingData;
+import HashMap;
+import PhotonMap;
 __exported import Params;
 __exported import PathVertex;
-import PhotonMap;
-import HashMap;
-import LoadShadingData;
 
 cbuffer CB {
     uint gRandomSeed;
@@ -53,7 +53,6 @@ struct PathGenerator {
     static const bool gProgressivePhotonMapping = USE_PPM_ONLY;
     static const bool gAllowEarlyReconnection = true;
     static const bool gLightTraceOnly = LIGHT_TRACE_ONLY;
-    static const bool gUseLightTraceReservoirs = LIGHT_TRACE_RESERVOIRS;
     static const bool gUseResampling = USE_RESAMPLING;
     static const bool gUseBsdfImportanceSampling = USE_BSDF_IMPORTANCE_SAMPLING;
     static const bool gWavefrontTechniqueSelection = WAVEFRONT_TECHNIQUE_SELECTION;
@@ -268,6 +267,10 @@ struct PathVertex {
         return r;
     }
 };
+
+///////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////// Path generator implementation //////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////
 
 extension PathGenerator {
     // ---------------------------------------------------------------------------------------------------------
@@ -1063,11 +1066,7 @@ extension PathGenerator {
             rcv,
             PathShiftType::eReconnection);
 
-        if (s.deltaRcv) {
-            result.mIsCausticPath = true;
-            result.mReconnectionVertex.mRadiance = f.mReflectance / cosOut;
-            result.mReconnectionVertex.mDirOut = vertex.GetPosition();
-        }
+        result.mIsCausticPath = s.deltaRcv;
 
         return result;
     }
@@ -1094,23 +1093,6 @@ extension PathGenerator {
 
             if (newRcv.mDist < mParams.mReconnectionDistance)
                 return {};
-
-            // caustic light path reuse hack
-            if (gBidirectional && gUseLightTraceReservoirs && basePath.mIsCausticPath) {
-                const float pixelSize = length(gScene.camera.getPosition() - vertex.GetPosition());
-                if (length(vertex.GetPosition() - basePath.mReconnectionVertex.mDirOut) < mParams.mCausticReuseRadius * pixelSize) {
-                    PathSample r = basePath;
-                    // divide out the BRDF at vertex
-                    r.mRadiance.r = SafeDivide(r.mRadiance.r, basePath.mReconnectionVertex.mRadiance.r);
-                    r.mRadiance.g = SafeDivide(r.mRadiance.g, basePath.mReconnectionVertex.mRadiance.g);
-                    r.mRadiance.b = SafeDivide(r.mRadiance.b, basePath.mReconnectionVertex.mRadiance.b);
-                    const float3 f = vertex.EvaluateReflectance(s.sg, newRcv.mVertex.mRayDirection, false).mReflectance;
-                    r.mRadiance *= f;
-                    r.mReconnectionVertex.mRadiance = f;
-                    r.mReplayPdfW = s.pdfW;
-                    return r;
-                }
-            }
         }
 
         const float cosCamera = vertex.GetCosN(newRcv.mVertex.mRayDirection);
@@ -1529,7 +1511,7 @@ extension PathGenerator {
                     const PathSample ps = ConnectToCamera(s, vertex, pixelCoord, weight, misWeight);
                     if (weight > 0 && misWeight > 0 && any(ps.mRadiance > 0) && all(pixelCoord >= 0) && all(pixelCoord < mParams.mOutputDim)) {
                         const uint flatId = pixelCoord.y * mParams.mOutputDim.x + pixelCoord.x;
-                        if (gUseLightTraceReservoirs) {
+                        if (gUseResampling) {
                             // store path reservoirs for each pixel in a hash map
                             // these reservoirs are merged into each pixel's reservoir in a later pass
                             mLightTraceReservoirs.Insert(flatId, PathReservoir(ps, (weight * misWeight), 1));
@@ -1554,10 +1536,7 @@ extension PathGenerator {
     PathSample ShiftPath(const PathSample basePath, const PackedPathVertex dstVertex, out float jacobian) {
         jacobian = 0;
 
-        if (gBidirectional && gLightTraceOnly && !gUseLightTraceReservoirs)
-            return {}; // only atomic radiance is used in this case
-
-        if (!dstVertex.IsFinite())
+        if (!dstVertex.IsFinite() || basePath.mIsCausticPath)
             return {};
 
         // initialize path state

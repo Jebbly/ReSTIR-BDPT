@@ -1,5 +1,3 @@
-import Random;
-
 struct HashMap<T> {
     RWStructuredBuffer<uint> mCellKeys;        // Current key for each cell
     RWStructuredBuffer<uint> mCellCounters;    // Number of items in cell
@@ -80,7 +78,7 @@ struct HashMap<T> {
         InterlockedAdd(mCounters[1], mCellCounters[cellIndex], offset);
         mCellDataOffsets[cellIndex] = offset;
     }
-    void Sort(const uint dataIndex) {
+    void SortData(const uint dataIndex) {
         if (dataIndex >= mCounters[0]) return;
 
         const uint2 indices = mDataIndices[dataIndex];

@@ -10,6 +10,7 @@
 #include "Rendering/Lights/EnvMapSampler.h"
 #include "Rendering/Materials/TexLODTypes.slang"
 
+#include "HashMap.h"
 #include "Params.slang"
 
 using namespace Falcor;
@@ -65,7 +66,6 @@ private:
         bool        useVM  = true; ///< Use vertex merging when using BPT.
         bool        useBsdfImportanceSampling = true;
         bool        dynamicMergeRadius = false;
-        bool        useLightTraceReservoirs = true;
         bool        lightTraceOnly = false;
         bool        useVMOnly = false;
         bool        useResampling = true;
@@ -118,10 +118,10 @@ private:
     ref<ComputePass>                mpSampleLightPathsPass;      ///< Light trace pass.
     ref<ComputePass>                mpTemporalReusePass;         ///< Temporal reservoir reuse pass.
     ref<ComputePass>                mpSpatialReusePass;          ///< Spatial reservoir reuse pass.
-    ref<ComputePass>                mpComputeLightReservoirOffsetsPass;   ///<
-    ref<ComputePass>                mpSortLightReservoirsPass;   ///<
     ref<ComputePass>                mpLightReservoirResolvePass; ///< Fullscreen compute pass merging light traced reservoirs within each pixel.
     ref<ComputePass>                mpCopyRadiancePass;          ///< Fullscreen compute pass writing reservoir samples to the output buffer.
+
+    std::unique_ptr<GPUHashMap>     mpLightReservoirs;
 
     ref<Buffer>                     mpLightImage;                ///< Light trace image. Light subpath contributions are atomically added to this.
     ref<Buffer>                     mpLightVertices;             ///< Light sub-path vertices.
@@ -130,14 +130,6 @@ private:
     ref<Buffer>                     mpPhotonCellOffsets;         ///< Photon grid cell offsets.
     ref<Buffer>                     mpReservoirs0;               ///< Per-pixel reservoirs.
     ref<Buffer>                     mpReservoirs1;               ///< Per-pixel reservoirs.
-
-    ref<Buffer>                     mpLightReservoirHashMapCellKeys;
-    ref<Buffer>                     mpLightReservoirHashMapCellCounters;
-    ref<Buffer>                     mpLightReservoirHashMapCellDataOffsets;
-    ref<Buffer>                     mpLightReservoirHashMapData;
-    ref<Buffer>                     mpLightReservoirHashMapSortedData;
-    ref<Buffer>                     mpLightReservoirHashMapDataIndices;
-    ref<Buffer>                     mpLightReservoirHashMapCounters;
 
     ref<Texture>                    mpLastVbuffer;               ///< Copy of the vbuffer from last frame.
     ref<Texture>                    mpLastViewDir;               ///< Copy of the view directions from last frame.
