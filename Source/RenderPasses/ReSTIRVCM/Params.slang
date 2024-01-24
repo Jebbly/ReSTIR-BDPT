@@ -33,6 +33,7 @@ struct PathGeneratorParams {
     uint  mLightSubpathCount = 1000000;
     uint  mPhotonCellCount   = 10000000;
     float mMergeRadius       = 0.0025f;
+    float mDynamicMergeRadius = 2.f;
 
     float mReconnectionDistance  = 0.01f;
     float mReconnectionRoughness = 0.08f; ///< sqrt(kMinGGXAlpha)

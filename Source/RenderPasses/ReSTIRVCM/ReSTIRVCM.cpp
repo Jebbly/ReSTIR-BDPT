@@ -373,16 +373,24 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                     dirty |= group.checkbox("Vertex merging only", mStaticParams.useVMOnly);
                     group.tooltip("Only use vertex merging.\nThis is the same as progressive photon mapping.");
 
+                    runtimeDirty |= group.var("Photon hash grid cells", mParams.mPhotonCellCount, 1000u, 16000000u);
+                    group.tooltip("Number of cells in the photon hash grid.");
+
                     runtimeDirty |= group.var("Photon radius factor", mVMRadiusFactor, 1e-9f, 0.1f);
                     group.tooltip("Photon radius as a percentange of the scene radius.");
 
                     runtimeDirty |= group.slider("Photon radius alpha", mVMRadiusAlpha, 0.f, 1.f);
                     group.tooltip("Photon radius shrink factor.\nLower values cause the radius to shrink faster.");
+                    if (mVMRadiusAlpha < 1.f)
+                        group.text("Current radius: " + std::to_string(mParams.mMergeRadius) + " at frame " + std::to_string(mFrameCount));
 
-                    group.text("Current radius: " + std::to_string(mParams.mMergeRadius) + " at frame " + std::to_string(mFrameCount));
+                    dirty |= group.checkbox("Dynamic merge radius", mStaticParams.dynamicMergeRadius);
+                    group.tooltip("Use a per-pixel merge radius, roughly equal to the pixel spread.\nThis introduces bias as the MIS weights assume a fixed radius.");
 
-                    runtimeDirty |= group.var("Photon hash grid cells", mParams.mPhotonCellCount, 1000u, 16000000u);
-                    group.tooltip("Number of cells in the photon hash grid.");
+                    if (mStaticParams.dynamicMergeRadius) {
+                        runtimeDirty |= group.var("Photon pixel radius", mParams.mDynamicMergeRadius, 1e-9f, 1000.0f);
+                        group.tooltip("Photon radius in pixels.\nNote the above'Photon radius factor' is still used for\ncalculating MIS, and the mismatch causes bias.");
+                    }
                 }
 
                 if (!mStaticParams.useVMOnly)
@@ -506,6 +514,10 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
         {
             dirty |= group.var("Seed", mFixedSeed);
         }
+
+        dirty |= group.var("Reset seed on change", mResetSeedOnChange);
+        group.tooltip("Reset the random seed sequence when the scene changes.");
+
 
         recompile |= group.checkbox("Debug BPT", mStaticParams.debugBPT);
         if (mStaticParams.debugBPT)
@@ -1022,13 +1034,17 @@ bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& rend
     }
 
     // Update the random seed.
-    uint seedsPerFrame = 1;
-    if (mStaticParams.useBPT) seedsPerFrame++;
-    if (mStaticParams.useBPT && mStaticParams.useLightTraceReservoirs) seedsPerFrame++;
-    if (mStaticParams.useTemporalReuse) seedsPerFrame++;
-    seedsPerFrame += mStaticParams.spatialReusePasses*2;
+    if (mUseFixedSeed) {
+        mCurrentSeed = mFixedSeed;
+    } else if (mResetSeedOnChange) {
+        uint seedsPerFrame = 1;
+        if (mStaticParams.useBPT) seedsPerFrame++;
+        if (mStaticParams.useBPT && mStaticParams.useLightTraceReservoirs) seedsPerFrame++;
+        if (mStaticParams.useTemporalReuse) seedsPerFrame++;
+        seedsPerFrame += mStaticParams.spatialReusePasses*2;
 
-    mCurrentSeed = mUseFixedSeed ? mFixedSeed : mFrameCount * seedsPerFrame;
+        mCurrentSeed = mFrameCount * seedsPerFrame;
+    }
 
     const auto& aabb = mpScene->getSceneBounds();
     mParams.mSceneSphere = float4(aabb.maxPoint + aabb.minPoint, length(aabb.maxPoint - aabb.minPoint))*.5f;
@@ -1098,6 +1114,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_NEE", (useNEE || useBPT) ? "1" : "0");
     defines.add("USE_BIDIRECTIONAL", useBPT ? "1" : "0");
     defines.add("USE_VERTEX_MERGING", (useBPT && useVM && !lightTraceOnly) ? "1" : "0");
+    defines.add("DYNAMIC_MERGE_RADIUS", (useBPT && useVM && !lightTraceOnly && dynamicMergeRadius) ? "1" : "0");
     defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
     defines.add("USE_BSDF_IMPORTANCE_SAMPLING", useBsdfImportanceSampling ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");

@@ -62,9 +62,9 @@ private:
         // Sampling parameters
         bool        useNEE = true; ///< Use next-event estimation (NEE). This enables shadow ray(s) from each path vertex.
         bool        useBPT = true; ///< Use bidirectional path tracing. Automatically enables NEE.
-        bool        useVM  = false; ///< Use vertex merging when using BPT.
+        bool        useVM  = true; ///< Use vertex merging when using BPT.
         bool        useBsdfImportanceSampling = true;
-        bool        debugBPT = false;
+        bool        dynamicMergeRadius = false;
         bool        useLightTraceReservoirs = true;
         bool        lightTraceOnly = false;
         bool        useVMOnly = false;
@@ -73,6 +73,7 @@ private:
         uint        spatialReusePasses = 1;
         uint32_t    sampleGenerator = SAMPLE_GENERATOR_TINY_UNIFORM;
         float       misPowerExponent = 2;
+        bool        debugBPT = false;
 
         bool useWavefrontTechniqueSelection = false;
         RMISType temporalRMIS = RMISType::eTalbot;
@@ -93,11 +94,12 @@ private:
     uint2                           mFixedOutputSize = { 512, 512 };                            ///< Output size in pixels when 'Fixed' size is selected.
 
     float                           mVMRadiusFactor  = .001f;    ///< Initial merge radius as a percentage of the scene radius.
-    float                           mVMRadiusAlpha = 0.75f;      ///< Merge radius shrink factor.
+    float                           mVMRadiusAlpha = 1.0f;       ///< Merge radius shrink factor.
     uint                            mFrameCount = 0;
     uint                            mFixedSeed = 0;
     bool                            mUseFixedSeed = false;
     bool                            mSwapReservoirs = false;
+    uint                            mResetSeedOnChange = false;
     uint                            mCurrentSeed = 0;
 
     // Internal state

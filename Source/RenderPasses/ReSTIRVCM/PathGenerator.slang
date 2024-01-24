@@ -49,6 +49,7 @@ struct PathGenerator {
     static const bool gSampleDirectLight = USE_NEE;
     static const bool gBidirectional = USE_BIDIRECTIONAL;
     static const bool gVertexMerging = USE_VERTEX_MERGING;
+    static const bool gDynamicMergeRadius = DYNAMIC_MERGE_RADIUS;
     static const bool gProgressivePhotonMapping = USE_PPM_ONLY;
     static const bool gAllowEarlyReconnection = true;
     static const bool gLightTraceOnly = LIGHT_TRACE_ONLY;
@@ -304,15 +305,26 @@ extension PathGenerator {
                 (mParams.mDebugTotalVertices != -1 && mParams.mDebugTotalVertices != bounces + 2) ||
                 (mParams.mDebugLightVertices != -1 && mParams.mDebugLightVertices != lightVertices));
     }
-    float GetEtaVCM() { return sqr(mParams.mMergeRadius) * M_PI * mParams.mLightSubpathCount; }
-    float GetMisVcWeightFactor() { return Mis(1.f / GetEtaVCM()); }
-    float GetMisVmWeightFactor() { return gVertexMerging ? Mis(GetEtaVCM()) : 0; }
+    float GetMisVcWeightFactor() { return Mis(1.f / (sqr(mParams.mMergeRadius) * M_PI * mParams.mLightSubpathCount)); }
+    float GetMisVmWeightFactor() { return gVertexMerging ? Mis((sqr(mParams.mMergeRadius) * M_PI * mParams.mLightSubpathCount)) : 0; }
 
     float GetImageToSolidAngleFactor(const float3 dir, out float cosCamera) {
         cosCamera = dot(dir, normalize(gScene.camera.data.cameraW));
         const float imagePlaneDist = mParams.mOutputDim.y * (gScene.camera.data.focalLength / gScene.camera.data.frameHeight);
         const float imagePointToCameraDist = imagePlaneDist / cosCamera;
         return (imagePointToCameraDist * imagePointToCameraDist) / cosCamera;
+    }
+    float GetMergeRadius(const float3 pos, const bool discretize = false) {
+        if (gDynamicMergeRadius) {
+            const float d = length(pos - gScene.camera.getPosition());
+            const float pixelSize = tan(2.0f * atan(0.5f * gScene.camera.data.frameHeight / gScene.camera.data.focalLength)) / mParams.mOutputDim.y;
+            float r = mParams.mDynamicMergeRadius * d * pixelSize;
+            //if (discretize) {
+            //    r = ldexp(1, int(ceil(log2(r))));
+            //}
+            return r;
+        }
+        return mParams.mMergeRadius;
     }
 
     PackedPathVertex LoadPrimaryVertex(const uint2 id) {
@@ -911,7 +923,7 @@ extension PathGenerator {
 
         return result;
     }
-    PathSample MergeWithLightVertex<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const LightSubpathVertex v, out float integrationWeight, out float misWeight) {
+    PathSample MergeWithLightVertex<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const LightSubpathVertex v, const float mergeRadius, out float integrationWeight, out float misWeight) {
         integrationWeight = 0;
         misWeight = 0;
 
@@ -923,7 +935,7 @@ extension PathGenerator {
 
         const PathVertex photon = PathVertex(v.mVertex);
         const float3 toPhoton = photon.GetPosition() - vertex.GetPosition();
-        if (dot(toPhoton, toPhoton) >= sqr(mParams.mMergeRadius))
+        if (dot(toPhoton, toPhoton) >= sqr(mergeRadius))
             return result;
 
         ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, v.GetDirIn(), false);
@@ -946,7 +958,7 @@ extension PathGenerator {
         else
             misWeight = 1.f / (wLight + 1.f + wCamera);
 
-        integrationWeight = 1.f / (s.pdfW * GetEtaVCM());
+        integrationWeight = 1.f / (s.pdfW * (sqr(mergeRadius) * M_PI * mParams.mLightSubpathCount));
 
         const bool hasRcv = gAllowEarlyReconnection && !bShift && s.rcvFound;
         ReconnectionVertex rcv = {};
@@ -1153,12 +1165,12 @@ extension PathGenerator {
         r.mReconnectionVertex.mDist = newRcv.mDist;
         return r;
     }
-    PathSample MergeWithReconnectionVertex(inout PathState<true> s, const PathVertex vertex, const PathSample basePath) {
+    PathSample MergeWithReconnectionVertex(inout PathState<true> s, const PathVertex vertex, const float mergeRadius, const PathSample basePath) {
         PathSample result = {};
 
         const PathVertex photon = PathVertex(basePath.mReconnectionVertex.mVertex);
         const float3 toPhoton = photon.GetPosition() - vertex.GetPosition();
-        if (dot(toPhoton, toPhoton) >= sqr(mParams.mMergeRadius))
+        if (dot(toPhoton, toPhoton) >= sqr(mergeRadius))
             return result;
 
         ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, basePath.mReconnectionVertex.mDirOut, false);
@@ -1423,17 +1435,20 @@ extension PathGenerator {
                         uint cell = -1;
                         float cellW = 0.f;
 
+                        const float3 pos = vertex.GetPosition();
+                        const float mergeRadius = GetMergeRadius(pos, true);
+
                         // Iterate the 8 neighbor grid cells and merge with the vertices in them.
                         // pick one random grid cell to merge with, with probability proportional to its count
                         const int3 o = int3(lerp(
                             float3(0, 0, 0),
                             float3(-1, -1, -1),
-                            float3(frac(vertex.GetPosition() / (2.f * mParams.mMergeRadius)) < 0.5f) ));
+                            float3(frac(pos / (2.f * mergeRadius)) < 0.5f) ));
 
                         for (int x = 0; x < 2; x++) {
                             for (int y = 0; y < 2; y++) {
                                 for (int z = 0; z < 2; z++) {
-                                    const uint cellIndex = mPhotonMap.getCellIndex(vertex.GetPosition(), mParams.mMergeRadius, mParams.mPhotonCellCount, int3(x, y, z) + o);
+                                    const uint cellIndex = mPhotonMap.getCellIndex(pos, mergeRadius, mParams.mPhotonCellCount, int3(x, y, z) + o);
                                     if (cellIndex == -1)
                                         continue;
 
@@ -1453,7 +1468,7 @@ extension PathGenerator {
                             float weight = 0;
                             float misWeight = 0;
                             const LightSubpathVertex v = mLightVertexCache[mPhotonMap.getCellOffset(cell)];
-                            const PathSample ps = MergeWithLightVertex(s, vertex, v, weight, misWeight);
+                            const PathSample ps = MergeWithLightVertex(s, vertex, v, GetMergeRadius(pos), weight, misWeight);
                             weight *= v.mIntegrationWeight * cellW;
                             ProcessSample(r, s.sg, ps, (weight * misWeight) * techniqueW);
                         }
@@ -1499,8 +1514,11 @@ extension PathGenerator {
                     v.mDiffuseBounces = s.diffuseBounces;
 
                     const uint i = mLightVertexCache.addVertex(v);
-                    if (gVertexMerging)
-                        mPhotonMap.addPhoton(i, vertex.GetPosition(), mParams.mMergeRadius, mParams.mPhotonCellCount, sampleNext1D(s.sg));
+                    if (gVertexMerging) {
+                        const float3 pos = vertex.GetPosition();
+                        const float mergeRadius = GetMergeRadius(pos, true);
+                        mPhotonMap.addPhoton(i, pos, mergeRadius, mParams.mPhotonCellCount, sampleNext1D(s.sg));
+                    }
                 }
 
                 // form a full path by connecting the vertex to the camera
@@ -1574,7 +1592,7 @@ extension PathGenerator {
 
             case PathShiftType::eMerge: {
                 if (gBidirectional && gVertexMerging && !gLightTraceOnly)
-                    result = MergeWithReconnectionVertex(s, vertex, basePath);
+                    result = MergeWithReconnectionVertex(s, vertex, GetMergeRadius(vertex.GetPosition()), basePath);
                 break;
             }
             }

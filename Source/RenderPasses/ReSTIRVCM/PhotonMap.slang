@@ -3,6 +3,41 @@ import Scene.HitInfo;
 import Random;
 import PathVertex;
 
+struct LightSubpathVertex {
+    PackedPathVertex mVertex = {};
+    float3 mThroughput = 0;
+    uint mPacked;
+
+    float mIntegrationWeight = 0;
+    float dVCM;
+    float dVC;
+    float dVM;
+
+    property uint mBounces {
+        get { return BF_GET(mPacked, 0, 8); }
+        set { BF_SET(mPacked, newValue, 0, 8); }
+    }
+    property uint mDiffuseBounces {
+        get { return asuint(mVertex.pad1); }
+        set { mVertex.pad1 = asfloat(newValue); }
+    }
+    property uint2 mRngIdx {
+        get {
+            return uint2(
+                BF_GET(mPacked, 8, 12),
+                BF_GET(mPacked, 20, 12));
+        }
+        set {
+            BF_SET(mPacked, newValue.x, 8, 12);
+            BF_SET(mPacked, newValue.y, 20, 12);
+        }
+    }
+
+    float3 GetDirIn() {
+        return -mVertex.mRayDirection;
+    }
+};
+
 struct LightVertexCache
 {
     RWStructuredBuffer<LightSubpathVertex> lightVertices; ///< Diffuse light sub-path vertices.
@@ -48,7 +83,9 @@ struct PhotonMap
     uint getCellIndex(const float3 posW, const float mergeRadius, const uint cellCount, const int3 offset = int3(0))
     {
         const int3 p = int3(floor(posW / (2.f * mergeRadius))) + offset;
-        return pcg(gHashOffset + pcg(p.z + pcg(p.y + pcg(p.x)))) % cellCount;
+        uint v = pcg(p.z + pcg(p.y + pcg(p.x)));
+        v = pcg(gHashOffset + v);
+        return v % cellCount;
     }
 
     void addPhoton(const uint lightVertexIndex, const float3 posW, const float mergeRadius, const uint cellCount, const float rnd)
