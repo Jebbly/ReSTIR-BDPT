@@ -41,7 +41,7 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
         {
             float mi = r.mM * r.mSample.GetTargetPdf();
             float msum = mi;
-            if (any(r.mSample.mRadiance > 0)) {
+            if (r.mSample.IsValid()) {
                 const float shiftedTargetPdf = gPathGenerator.ShiftPath(r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
                 print("Shifted center to candidate. New f:", shiftedTargetPdf);
                 print("jacobianToPrev:", jacobianToPrev);

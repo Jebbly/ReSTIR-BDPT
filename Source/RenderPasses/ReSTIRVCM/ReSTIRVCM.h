@@ -70,6 +70,7 @@ private:
         bool        useVMOnly = false;
         bool        useResampling = true;
         bool        useTemporalReuse = true;
+        bool        retraceSuffix = false;
         uint        spatialReusePasses = 1;
         uint32_t    sampleGenerator = SAMPLE_GENERATOR_TINY_UNIFORM;
         float       misPowerExponent = 2;

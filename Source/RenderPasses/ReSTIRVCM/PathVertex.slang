@@ -88,6 +88,7 @@ struct PathSample {
 	}
 
     float GetTargetPdf() { return luminance(mRadiance); }
+    bool IsValid() { return any(mRadiance > 0) && !any(mRadiance < 0) && mReplayPdfW > 0; }
 };
 static const uint PathSampleSize = sizeof(PathSample);
 

@@ -271,7 +271,10 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         FALCOR_ASSERT(renderData.getTexture(kInputMotionVectors));
         preparePass(pRenderContext, renderData, *mpTemporalReusePass);
         if (!mVarsChanged)
+        {
+            mpTemporalReusePass->addDefine("RETRACE_SUFFIX", (mStaticParams.useResampling && mStaticParams.useTemporalReuse && mStaticParams.retraceSuffix) ? "1" : "0");
             mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+        }
         mCurrentSeed++;
     }
     mSwapReservoirs = !mSwapReservoirs;
@@ -435,6 +438,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             if (mStaticParams.useTemporalReuse)
             {
                 dirty |= group.dropdown("Temporal RMIS", mStaticParams.temporalRMIS);
+                dirty |= group.checkbox("Retrace path suffixes", mStaticParams.retraceSuffix);
             }
 
             group.separator();
@@ -1065,6 +1069,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("SPATIAL_RMIS_TYPE", std::to_string(uint(spatialRMIS)));
     defines.add("MIS_POWER_EXPONENT", std::to_string(misPowerExponent));
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
+    defines.add("RETRACE_SUFFIX", "0"); // placeholder
     defines.add("USE_VIEW_DIR", "0"); // placeholder
 
     // Sampling utilities configuration.

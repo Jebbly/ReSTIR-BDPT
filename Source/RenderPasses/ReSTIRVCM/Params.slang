@@ -21,7 +21,7 @@ FALCOR_ENUM_REGISTER(RMISType);
 
 
 struct PathGeneratorParams {
-    static const uint kMaxBounces = 2047;
+    static const uint kMaxBounces = 0xFFFF; ///< reservoirs use 16 bits to store the number of bounces
 
     float4 mSceneSphere;
 
