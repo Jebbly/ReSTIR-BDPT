@@ -109,8 +109,13 @@ void main(uint3 index: SV_DispatchThreadID) {
     uint validNeighbors = 0;
     float mc = 1;
 
-    print("\nCenter f:", center.mSample.GetTargetPdf());
-    print("Center W:", center.mW);
+    if (center.mSample.IsValid()) {
+        print("\nCenter id:", center.mSample.mRngIdx);
+        print("f:", center.mSample.GetTargetPdf());
+        print("W:", center.mW);
+    } else {
+        print("\nInvalid center sample", 0);
+    }
 
     if (gMISType == RMISType::ePairwise) {
         r = {};
@@ -129,10 +134,13 @@ void main(uint3 index: SV_DispatchThreadID) {
 
         PathReservoir candidate = gPathGenerator.LoadInputReservoir(p);
 
-        print("Candidate id:", candidate.mSample.mRngIdx);
-        print("bounces, replay bounces:", uint2(candidate.mSample.mBounces, candidate.mSample.mReplayBounces));
-        print("f:", candidate.mSample.GetTargetPdf());
-        print("W:", candidate.mW);
+        print("Candidate M:", candidate.mM);
+        if (candidate.mSample.IsValid()) {
+            print("Candidate id:", candidate.mSample.mRngIdx);
+            print("prefix bounces:", candidate.mSample.mPrefixBounces);
+            print("f:", candidate.mSample.GetTargetPdf());
+            print("W:", candidate.mW);
+        }
 
         if (gMISType == RMISType::ePairwise) {
             const PackedPathVertex candidateVertex = gPathGenerator.LoadPrimaryVertex(p);
@@ -140,7 +148,7 @@ void main(uint3 index: SV_DispatchThreadID) {
                 continue;
             validNeighbors++;
             mc += 1;
-            if (center.mW > 0 && candidate.mM > 0) {
+            if (center.mSample.IsValid() && candidate.mM > 0) {
                 float jacobianToCandidate;
                 const float shiftedTargetPdf = gPathGenerator.ShiftPath(center.mSample, candidateVertex, jacobianToCandidate).GetTargetPdf();
                 print("jacobianToCandidate:", jacobianToCandidate);
@@ -155,12 +163,13 @@ void main(uint3 index: SV_DispatchThreadID) {
         if (!(candidate.mM > 0) || isinf(candidate.mM))
             continue;
 
-        const float candidateTargetPdf = candidate.mSample.GetTargetPdf();
 
-        if (!(candidate.mW > 0) || isinf(candidate.mW) || !(candidateTargetPdf > 0)) {
+        if (!(candidate.mW > 0) || isinf(candidate.mW) || !candidate.mSample.IsValid()) {
             r.mM += candidate.mM;
             continue;
         }
+
+        const float candidateTargetPdf = candidate.mSample.GetTargetPdf();
 
         // shift candidate's sample to here
         print("Shifting candidate to center", i);
@@ -205,8 +214,9 @@ void main(uint3 index: SV_DispatchThreadID) {
 
     r.FinalizeMerge();
 
-    print("Final center f:", r.mSample.mRadiance);
-    print("Final center W:", r.mW);
+    print("Final center id:", r.mSample.mRngIdx);
+    print("f:", r.mSample.GetTargetPdf());
+    print("W:", r.mW);
 
     if (gPathGenerator.mParams.mMCap > 0) r.mM = min(r.mM, gPathGenerator.mParams.mMCap);
     gPathGenerator.StoreReservoir(id, r);

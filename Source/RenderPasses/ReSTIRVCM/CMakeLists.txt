@@ -9,7 +9,7 @@ target_sources(ReSTIRVCM PRIVATE
     LoadShadingData.slang
     Params.slang
     PathGenerator.slang
-    PathVertex.slang
+    PathReservoir.slang
     PhotonMap.slang
     ReflectTypes.cs.slang
     ReSTIRVCM.cpp

@@ -37,7 +37,7 @@ struct PathGeneratorParams {
 
     float mReconnectionDistance  = 0.01f;
     float mReconnectionRoughness = 0.08f; ///< sqrt(kMinGGXAlpha)
-    float mCausticReuseRadius = 0.003f;
+    float mCausticReuseRadius = 0.f; // in pixels
 
     uint  mSpatialReuseSamples = 4;
     float mSpatialReuseRadius  = 30.f;
@@ -47,8 +47,9 @@ struct PathGeneratorParams {
     float mMergeProb       = 0.5f; ///< Probability of performing vertex merigng at each path vertex.
     float mEnvMapProb      = 0.5f; ///< Probability of sampling the environment map (instead of emissive triangles).
 
-    int mDebugTotalVertices = -1; ///< Only render paths with this many vertices.
-    int mDebugLightVertices = -1; ///< Only render paths with this many light vertices.
+    int mDebugTotalVertices  = -1; ///< Only render paths with this many vertices.
+    int mDebugLightVertices  = -1; ///< Only render paths with this many light vertices.
+    int mDebugDisableMerging = 0;  ///< Don't render paths that use vertex merging.
 };
 
 END_NAMESPACE_FALCOR

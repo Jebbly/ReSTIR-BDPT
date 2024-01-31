@@ -131,6 +131,12 @@ void ReSTIRVCM::validateOptions()
         mParams.mReconnectionRoughness = std::clamp(mParams.mReconnectionRoughness, 0.f, 1.f);
     }
 
+    if (mStaticParams.useBPT && mStaticParams.emissiveSampler == EmissiveLightSamplerType::LightBVH)
+    {
+        logWarning("LightBVH unsupported when using bidirectional path tracing.");
+        mStaticParams.emissiveSampler = EmissiveLightSamplerType::Power;
+    }
+
     if (!mStaticParams.useResampling)
     {
         mStaticParams.useTemporalReuse = false;
@@ -368,10 +374,10 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                     dirty |= group.checkbox("Vertex merging only", mStaticParams.useVMOnly);
                     group.tooltip("Only use vertex merging.\nThis is the same as progressive photon mapping.");
 
-                    runtimeDirty |= group.var("Photon hash grid cells", mParams.mPhotonCellCount, 1000u, 16000000u);
+                    runtimeDirty |= group.var("Photon hash grid cells", mParams.mPhotonCellCount, 1000u, 1000000000u);
                     group.tooltip("Number of cells in the photon hash grid.");
 
-                    runtimeDirty |= group.var("Photon radius factor", mVMRadiusFactor, 1e-9f, 0.1f);
+                    runtimeDirty |= group.var("Photon radius factor", mVMRadiusFactor, 1e-10f, 1.0f);
                     group.tooltip("Photon radius as a percentange of the scene radius.");
 
                     runtimeDirty |= group.slider("Photon radius alpha", mVMRadiusAlpha, 0.f, 1.f);
@@ -430,7 +436,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
     if (auto group = widget.group("Resampling options", true)) {
         dirty |= widget.checkbox("Enable resampling", mStaticParams.useResampling);
-        widget.tooltip("Enable resampling.");
+        widget.tooltip("Enables the use of reservoirs.\nWhen disabled, samples are simply added into the\nframebuffer directly");
 
         if (mStaticParams.useResampling)
         {
@@ -438,7 +444,9 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             if (mStaticParams.useTemporalReuse)
             {
                 dirty |= group.dropdown("Temporal RMIS", mStaticParams.temporalRMIS);
+                group.tooltip("Resampling MIS algorithm for temporal reuse.", true);
                 dirty |= group.checkbox("Retrace path suffixes", mStaticParams.retraceSuffix);
+                group.tooltip("Retrace whole paths during temporal\nresampling, instead of just the prefix.", true);
             }
 
             group.separator();
@@ -454,8 +462,11 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             if (mStaticParams.spatialReusePasses > 0)
             {
                 dirty |= group.dropdown("Spatial RMIS", mStaticParams.spatialRMIS);
+                group.tooltip("Resampling MIS algorithm for spatial reuse.", true);
                 runtimeDirty |= group.var("Spatial candidates", mParams.mSpatialReuseSamples, 1u, 32u);
+                group.tooltip("Number of neighbor pixels to merge with.", true);
                 runtimeDirty |= group.var("Spatial radius", mParams.mSpatialReuseRadius, 1.f);
+                group.tooltip("Spatial reuse radius, in pixels.", true);
             }
 
             group.separator();
@@ -463,9 +474,11 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             if (mStaticParams.useTemporalReuse || mStaticParams.spatialReusePasses > 0)
             {
                 runtimeDirty |= group.var("M cap", mParams.mMCap, 1u);
-                runtimeDirty |= group.var("Reconnection distance threshold", mParams.mReconnectionDistance, 0.f, 100.f);
+                group.tooltip("Maximum M value for reservoirs.", true);
+                runtimeDirty |= group.var("Min reconnection distance", mParams.mReconnectionDistance, 0.f, 100.f);
                 if (mStaticParams.useBPT) {
-                    runtimeDirty |= group.var("Caustic reuse radius", mParams.mCausticReuseRadius, 0.f, 1.f);
+                    runtimeDirty |= group.var("Caustic reuse radius", mParams.mCausticReuseRadius, 0.f, 10.f);
+                    group.tooltip("Radius in pixels which caustic paths are allowed to be reused.", true);
                 }
             }
         }
@@ -512,10 +525,13 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
         recompile |= group.checkbox("Debug BPT", mStaticParams.debugBPT);
         if (mStaticParams.debugBPT)
         {
-            dirty |= group.var("Debug vertex count", mParams.mDebugTotalVertices, -1);
+            dirty |= group.var("Total vertex count", mParams.mDebugTotalVertices, -1);
             group.tooltip("Only render paths with this many segments.");
-            dirty |= group.var("Debug light vertex count", mParams.mDebugLightVertices, -1);
+            dirty |= group.var("Light vertex count", mParams.mDebugLightVertices, -1);
             group.tooltip("Only render paths with this many light vertices.");
+
+            dirty |= group.checkbox("Disable Merging", mParams.mDebugDisableMerging);
+            group.tooltip("Don't render paths that use vertex merging.");
         }
 
         mpPixelDebug->renderUI(group);

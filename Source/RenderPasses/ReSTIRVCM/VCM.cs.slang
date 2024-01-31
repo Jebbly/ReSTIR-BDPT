@@ -46,7 +46,6 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
         PathReservoir c = gPathGenerator.mLightTraceReservoirs[i];
         c.PrepareMerge();
         r.Merge(sampleNext1D(sg), c);
-        r.mM = 1;
     }
 
     r.FinalizeMerge();
@@ -66,7 +65,7 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
     // Copy radiance from the pixel's reservoir to the output buffer. This is skipped if we only used the atomic radiance.
     if (gPathGenerator.gUseResampling) {
         const PathReservoir r = gPathGenerator.LoadInputReservoir(id);
-        if (r.mW > 0) radiance.rgb += r.mSample.mRadiance * r.mW;
+        if (r.mW > 0 && r.mSample.IsValid()) radiance.rgb += r.mSample.mContribution * r.mW;
     } else if (gPathGenerator.gBidirectional) {
         // Add light trace contribution from atomic buffer
         const uint flatId = id.y * gPathGenerator.mParams.mOutputDim.x + id.x;

@@ -8,7 +8,7 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
     const PackedPathVertex primaryHit = gPathGenerator.LoadPrimaryVertex(id);
     if (!primaryHit.IsFinite()) return;
 
-    const int2 prevPixel = int2(id + 0.5 + gPathGenerator.mParams.mOutputDim * gPathGenerator.mMotionVectors[id]);
+    const int2 prevPixel = int2((id + 0.5) + gPathGenerator.mParams.mOutputDim * gPathGenerator.mMotionVectors[id]);
     if (any(prevPixel < 0) || any(prevPixel >= gPathGenerator.mParams.mOutputDim)) return;
 
     const PackedPathVertex prevVertex = gPathGenerator.LoadPrevPrimaryVertex(prevPixel);
@@ -22,18 +22,26 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
     const float candidateTargetPdf = candidate.mSample.GetTargetPdf();
 
     float jacobianToCenter = 0;
-	float jacobianToPrev = 0;
+    float jacobianToPrev = 0;
 
-    print("\nCenter f:", r.mSample.GetTargetPdf());
-    print("Center W:", r.mW);
+    if (r.mSample.IsValid()) {
+        print("\nCenter id, seed:", uint3(r.mSample.mRngIdx, r.mSample.mRngSeed));
+        print("f:", r.mSample.GetTargetPdf());
+        print("W:", r.mW);
+    } else {
+        print("\nInvalid center sample", 0);
+    }
 
-    print("Candidate f:", candidateTargetPdf);
-    print("Candidate W:", candidate.mW);
+    if (candidate.mSample.IsValid()) {
+        print("Candidate id, seed:", uint3(candidate.mSample.mRngIdx, candidate.mSample.mRngSeed));
+        print("f:", candidate.mSample.GetTargetPdf());
+        print("W:", candidate.mW);
+        print("M:", candidate.mM);
 
-    if (candidateTargetPdf > 0) {
         candidate.mSample = gPathGenerator.ShiftPath(candidate.mSample, primaryHit, jacobianToCenter);
-        print("Shifted candidate to center. New f:", candidate.mSample.GetTargetPdf());
         print("jacobianToCenter:", jacobianToCenter);
+    } else {
+        print("Invalid candidate sample", 0);
     }
 
     if (gMISType == RMISType::eTalbot) {
@@ -43,7 +51,6 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
             float msum = mi;
             if (r.mSample.IsValid()) {
                 const float shiftedTargetPdf = gPathGenerator.ShiftPath(r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
-                print("Shifted center to candidate. New f:", shiftedTargetPdf);
                 print("jacobianToPrev:", jacobianToPrev);
                 msum += candidate.mM * shiftedTargetPdf * jacobianToPrev;
             }
@@ -62,7 +69,7 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
         }
     } else {
         candidate.PrepareMerge(candidate.mM / (candidate.mM + r.mM), jacobianToCenter);
-        if (r.mW > 0) {
+        if (r.mSample.IsValid() && r.mW > 0) {
             const float shiftedTargetPdf = gPathGenerator.ShiftPath(r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
             print("Shifted center to candidate. new f:", shiftedTargetPdf);
             print("jacobianToPrev:", jacobianToPrev);
@@ -77,7 +84,7 @@ void DoTemporalReuse(const uint2 id, inout PathReservoir r) {
 
     r.FinalizeMerge();
 
-    print("Final center f:", r.mSample.mRadiance);
+    print("Final center f:", r.mSample.mContribution);
     print("Final center W:", r.mW);
 }
 

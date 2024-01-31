@@ -1,6 +1,6 @@
 #include "BitfieldMacros.slangh"
 import Scene.HitInfo;
-import PathVertex;
+import PathReservoir; // for PackedPathVertex
 
 
 // xxhash https://github.com/Cyan4973/xxHash
