@@ -38,6 +38,7 @@ public:
 
     void clear(RenderContext* pRenderContext) const;
     void sort(RenderContext* pRenderContext) const;
+    void barrier(RenderContext* pRenderContext) const;
 
 private:
     ref<Device> mpDevice;

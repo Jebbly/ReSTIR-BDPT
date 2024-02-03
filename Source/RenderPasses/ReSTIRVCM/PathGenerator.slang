@@ -30,35 +30,41 @@ struct PathGenerator {
 
     RWByteAddressBuffer mAtomicRadiance;
     RWTexture2D<float4> mOutputRadiance;
+    RWByteAddressBuffer mOutputCounterData;
 
     RWStructuredBuffer<PathReservoir> mPathReservoirs0;
     RWStructuredBuffer<PathReservoir> mPathReservoirs1;
+    RWStructuredBuffer<PathReservoir> mCausticReservoirs;
+    RWStructuredBuffer<PathReservoir> mLastCausticReservoirs;
     HashMap<PathReservoir> mLightTraceReservoirs;
+    HashMap<PathReservoir> mCausticReservoirMap;
 
     Texture2D<PackedHitInfo> mVbuffer;
     Texture2D<float3> mViewDir;
+    Texture2D<float2> mMotionVectors;
     Texture2D<float3> mLastViewDir;
     Texture2D<PackedHitInfo> mLastVbuffer;
-    Texture2D<float2> mMotionVectors;
 
     // Static parameters
 
-    static const bool gUseEnvLight = USE_ENV_LIGHT;
-    static const bool gUseEmissiveLights = USE_EMISSIVE_LIGHTS;
-    static const bool gUseViewDir = USE_VIEW_DIR;
-    static const bool gSampleDirectLight = USE_NEE;
-    static const bool gBidirectional = USE_BIDIRECTIONAL;
-    static const bool gVertexMerging = USE_VERTEX_MERGING;
-    static const bool gDynamicMergeRadius = DYNAMIC_MERGE_RADIUS;
-    static const bool gProgressivePhotonMapping = USE_PPM_ONLY;
-    static const bool gAllowEarlyReconnection = false;
-    static const bool gLightTraceOnly = LIGHT_TRACE_ONLY;
-    static const bool gUseResampling = USE_RESAMPLING;
-    static const bool gRetraceSuffix = RETRACE_SUFFIX;
-    static const bool gUseBsdfImportanceSampling = USE_BSDF_IMPORTANCE_SAMPLING;
-    static const bool gWavefrontTechniqueSelection = WAVEFRONT_TECHNIQUE_SELECTION;
-    static const bool gDebugBPT = DEBUG_BPT;
-    static const float gMISPowerExponent = MIS_POWER_EXPONENT;
+    static const bool  gUseEnvLight                 = USE_ENV_LIGHT;
+    static const bool  gUseEmissiveLights           = USE_EMISSIVE_LIGHTS;
+    static const bool  gUseViewDir                  = USE_VIEW_DIR;
+    static const bool  gSampleDirectLight           = USE_NEE;
+    static const bool  gBidirectional               = USE_BIDIRECTIONAL;
+    static const bool  gVertexMerging               = USE_VERTEX_MERGING;
+    static const bool  gDynamicMergeRadius          = DYNAMIC_MERGE_RADIUS;
+    static const bool  gProgressivePhotonMapping    = USE_PPM_ONLY;
+    static const bool  gAllowEarlyReconnection      = false;
+    static const bool  gLightTraceOnly              = LIGHT_TRACE_ONLY;
+    static const bool  gUseResampling               = USE_RESAMPLING;
+    static const bool  gUseCausticReservoirs        = CAUSTIC_RESERVOIRS;
+    static const bool  gRetraceSuffix               = RETRACE_SUFFIX;
+    static const bool  gUseBsdfImportanceSampling   = USE_BSDF_IMPORTANCE_SAMPLING;
+    static const bool  gWavefrontTechniqueSelection = WAVEFRONT_TECHNIQUE_SELECTION;
+    static const bool  gDebugBPT                    = DEBUG_BPT;
+    static const bool  gDebugHeatmap                = DEBUG_HEATMAP;
+    static const float gMISPowerExponent            = MIS_POWER_EXPONENT;
 }
 ParameterBlock<PathGenerator> gPathGenerator;
 
@@ -278,13 +284,34 @@ extension PathGenerator {
     // ------------------------------------------- Helper functions --------------------------------------------
     // ---------------------------------------------------------------------------------------------------------
 
+    static uint debugPixel;
+
+    void DebugSetPixel(const uint2 id) {
+        printSetPixel(id);
+        #if DEBUG_HEATMAP
+        gPixelDebugPixel = id;
+        #endif
+    }
+
+    void IncrementCounter(const DebugCounterType type, const uint increment = 1) {
+        #if DEBUG_HEATMAP
+        if ((uint(type) & uint(mParams.mDebugCounter)) != 0) {
+            uint prevValue;
+            mOutputCounterData.InterlockedAdd((1 + gPixelDebugPixel.y * mParams.mOutputDim.x + gPixelDebugPixel.x) * sizeof(uint), increment, prevValue);
+            mOutputCounterData.InterlockedMax(0, prevValue + increment);
+        }
+        #endif
+    }
+
     PackedPathVertex TraceRay(const Ray ray) {
+        IncrementCounter(DebugCounterType::eRays);
         HitInfo hit;
         float dist;
         traceSceneRay<true>(ray, hit, dist, 0, 0xFFFFFFFF);
         return PackedPathVertex(ray, hit, dist);
     }
     bool Occluded(const Ray ray) {
+        IncrementCounter(DebugCounterType::eOcclusionRays);
         return !traceSceneVisibilityRay<true>(ray, 0, 0xFFFFFFFF);
     }
 
@@ -511,6 +538,8 @@ extension PathGenerator {
         uint packedId;
         uint packedBounces = 0;
         uint packedDiffuseBounces = 0;
+
+        PackedHitInfo firstVertex = {};
 
         property uint bounces {
             get { return BF_GET(packedBounces,    0, 15); }
@@ -918,12 +947,16 @@ extension PathGenerator {
         const float imageToSolidAngleFactor = GetImageToSolidAngleFactor(-toCamera, cosAtCamera);
 
         pixelCoord = GetPixelCoord(vertex.GetPosition());
-        if (any(pixelCoord < 0) || any(pixelCoord >= mParams.mOutputDim) || cosAtCamera <= 0)
+        if (any(pixelCoord < 0) || any(pixelCoord >= mParams.mOutputDim) || cosAtCamera <= 0) {
+            if (bShift) print("Caustic shift failed: offscreen", pixelCoord);
             return result;
+        }
 
         const float cosOut = vertex.GetCosN(toCamera);
-        if (cosOut < kMinCosTheta)
+        if (cosOut < kMinCosTheta) {
+            if (bShift) print("Caustic shift failed: cosOut < kMinCosTheta", cosOut);
             return result;
+        }
 
         let f = vertex.EvaluateReflectance(s.sg, toCamera, true);
 
@@ -932,24 +965,28 @@ extension PathGenerator {
 
         const float cosIn = vertex.GetCosN(vertex.GetDirIn());
 
-        const float3 contrib = s.throughput * vertex.Reversed(toCamera).EvaluateReflectance(s.sg, vertex.GetDirIn(), false).mReflectance / cosIn;
-        if (!any(contrib > 0))
+        float3 contrib = s.throughput * vertex.Reversed(toCamera).EvaluateReflectance(s.sg, vertex.GetDirIn(), false).mReflectance / cosIn;
+        if (!any(contrib > 0)) {
+            if (bShift) print("Caustic shift failed: zero contrib", contrib);
             return result;
+        }
 
         const float samplePdf = s.pdfW * (1 / cameraPdfA) * mParams.mLightSubpathCount;
-        if (!(samplePdf > 0))
+        if (!(samplePdf > 0)) {
+            if (bShift) print("Caustic shift failed: Invalid samplePdf", samplePdf);
             return result;
+        }
+        if (Occluded(Ray(rayOrigin, toCamera, 0, dist))) {
+            if (bShift) print("Caustic shift failed: Occluded", samplePdf);
+            return result;
+        }
 
         const float wLight = Mis(cameraPdfA / mParams.mLightSubpathCount) * (GetMisVmWeightFactor() + s.dVCM + s.dVC * Mis(f.mRevPdfW));
         misWeight = (gLightTraceOnly || DebugDisableMIS()) ? 1.f : (1.f / (wLight + 1.f));
-
-        if (Occluded(Ray(rayOrigin, toCamera, 0, dist)))
-            return result;
-
         integrationWeight = 1.f / samplePdf;
 
         PathSuffix suffix = {};
-        if (s.deltaRcv) {
+        if (s.deltaRcv || bShift) {
             // if the rcv is unconnectable, this is a caustic light path and we store the primary vertex as the rcv instead.
             suffix.mVertex = vertex.Pack();
             suffix.mContribution = s.throughput;
@@ -957,6 +994,11 @@ extension PathGenerator {
             suffix.mCos = cosIn;
             suffix.mDist = dist;
             suffix.mNumVertices = s.bounces + 2;
+            suffix.mPdf = s.pdfW;
+
+            // for caustic paths, the mis weight is in the path contribution instead of the resampling/integration weights
+            contrib *= misWeight;
+            misWeight = 1;
         } else {
             suffix.mVertex = s.rcv;
             suffix.mContribution = s.throughputAtRcv;
@@ -977,6 +1019,8 @@ extension PathGenerator {
             suffix,
             s.deltaRcv ? PathFlags::eCausticLightPath : PathFlags::eNone);
 
+        result.mLightSubpathVertex = s.firstVertex;
+
         return result;
     }
     PathSample ConnectToSuffix(inout PathState<true> s, const PathVertex vertex, const PathSample basePath, out float jacobian) {
@@ -995,14 +1039,10 @@ extension PathGenerator {
 
         float newCos, newDist;
 
-        if (gRetraceSuffix) {
-
-        }
-
         const PathVertex suffixVertex = PathVertex(basePath.mSuffix.mVertex);
 
-        if (basePath.HasFlag(PathFlags::eCausticLightPath)) {
-            // For caustic light paths, reconnection is always impossible
+        if (!gUseCausticReservoirs && basePath.HasFlag(PathFlags::eCausticLightPath)) {
+            // For caustic light paths, reconnection is always impossible, but we copy the path anyways.
             const int2 offsetPixel = GetPixelCoord(vertex.GetPosition());
             const int2 basePixel   = GetPixelCoord(suffixVertex.GetPosition());
             if (mParams.mCausticReuseRadius > 0) {
@@ -1176,7 +1216,7 @@ extension PathGenerator {
         }
         return s;
     }
-    PathState<bShift> InitializeLightPath<let bShift : bool>(const uint seed, const uint2 id, out PathVertex vertex) {
+    PathState<bShift> InitializeLightPath<let bShift : bool>(const uint seed, const uint2 id, out PathVertex vertex, PackedHitInfo firstVertex = {}) {
         PathState<bShift> s = {};
         s.seed = seed;
         s.id = id;
@@ -1190,17 +1230,18 @@ extension PathGenerator {
         s.sg     = SampleGenerator(s.id, s.seed);
         s.sgBsdf = SampleGenerator(s.id, -s.seed);
 
+        vertex.mVertex = {};
+
         float cosLight = 0;
         float directPdfA = 0;
         float emissionPdfW = 0;
         Ray ray = {};
         PackedPathVertex l = {};
-        vertex.mVertex = {};
         {
             const bool useEnvMap = sampleNext1D(s.sg) < mParams.mEnvMapProb;
             const float4 sampleU = sampleNext4D(s.sg);
 
-            if (gUseEnvLight && (!gUseEmissiveLights || useEnvMap)) {
+            if (gUseEnvLight && (!gUseEmissiveLights || useEnvMap || (bShift && !HitInfo(firstVertex).isValid()))) {
                 EnvMapSample envSample;
                 if (!mEnvMapSampler.sample(sampleU.xy, envSample))
                     return s;
@@ -1220,7 +1261,13 @@ extension PathGenerator {
                 emissionPdfW = directPdfA * gConcentricDiscPdfA / sqr(mParams.mSceneSphere.w);
             } else if (gUseEmissiveLights && !(gUseEnvLight && useEnvMap)) {
                 float selectionPdf;
-                const uint triangleIndex = mEmissiveSampler.sampleLight(s.sg, selectionPdf);
+                uint triangleIndex = mEmissiveSampler.sampleLight(s.sg, selectionPdf);
+
+                if (bShift) {
+                    TriangleHit triHit = HitInfo(firstVertex).getTriangleHit();
+                    triangleIndex = gScene.lightCollection.getTriangleIndex(triHit.instanceID, triHit.primitiveIndex);
+                }
+
                 if (triangleIndex == LightCollection::kInvalidIndex)
                     return s;
 
@@ -1261,6 +1308,8 @@ extension PathGenerator {
         }
 
         const bool finiteEmitter = l.IsFinite();
+
+        s.firstVertex = l.mPackedHit;
 
         s.pdfW = emissionPdfW;
         s.bounces = 0;
@@ -1595,6 +1644,15 @@ extension PathGenerator {
                     int2 pixelCoord;
                     const PathSample ps = ConnectToCamera(s, vertex, pixelCoord, weight, misWeight);
                     if (weight > 0 && misWeight > 0 && any(ps.mContribution > 0) && all(pixelCoord >= 0) && all(pixelCoord < mParams.mOutputDim)) {
+                        DebugSetPixel(pixelCoord);
+                        if (!gUseResampling && ps.IsValid() && weight > 0) {
+                            print("Found path. contrib:", ps.mContribution);
+                            print("\tLight subpath vertices:", ps.mNumLightSubpathVertices);
+                            print("\tMerge:", ps.HasFlag(PathFlags::eMergeAtRcv));
+                            print("\tPrefix bounces:", ps.mPrefixBounces);
+                        }
+                        DebugSetPixel(-1);
+
                         const uint flatId = pixelCoord.y * mParams.mOutputDim.x + pixelCoord.x;
                         if (gUseResampling) {
                             // store path reservoirs for each pixel in a hash map
@@ -1637,11 +1695,7 @@ extension PathGenerator {
         jacobian = 0;
         PathSample result = {};
 
-        if (!newPrimaryHit.IsFinite())
-            return result;
-
         PathVertex vertex = PathVertex(newPrimaryHit);
-
 
         // initialize path state
         PathState<true> s = InitializeCameraPath<true>(basePath.mRngSeed, basePath.mRngIdx, vertex);
@@ -1685,6 +1739,63 @@ extension PathGenerator {
             jacobian = 0;
             return {};
         }
+
+        return result;
+    }
+
+    // Shift a pure light path
+    PathSample ShiftCausticPath(const PathSample basePath, out float jacobian, out int2 pixelCoord) {
+        jacobian = 0;
+        pixelCoord = -1;
+
+        PathVertex vertex;
+        PathState<true> s = InitializeLightPath<true>(basePath.mRngSeed, basePath.mRngIdx, vertex, basePath.mLightSubpathVertex);
+
+        while (any(s.throughput > 0) && s.pdfW > 0 && s.bounces + 2 < basePath.mNumLightSubpathVertices && vertex.IsFinite()) {
+            const bool connectable = vertex.IsConnectable();
+
+            // for light paths: rcv is always the 2nd to last vertex
+            s.rcv = vertex.Pack();
+            s.rcvDirOut = vertex.GetDirIn();
+            s.throughputAtRcv = s.throughput;
+            s.rcvBounces = 0;
+            s.rcvDiffuseBounces = 0;
+
+            const float3 prevN = vertex.GetFaceNormal();
+
+            float bsdfPdfW;
+            bool deltaLobe;
+            SampleNextVertex(s, vertex, bsdfPdfW, deltaLobe);
+
+            s.rcvCos = abs(dot(prevN, vertex.mVertex.mRayDirection));
+            s.rcvDist = vertex.mVertex.mRayDistance;
+            s.deltaRcv = !connectable || deltaLobe;
+        }
+
+        if (s.bounces + 2 != basePath.mNumLightSubpathVertices) {
+            print("Caustic shift failed: Path length mismatch", uint2(s.bounces + 2, basePath.mNumLightSubpathVertices));
+            return {};
+        }
+
+
+        float integrationWeight, misWeight;
+        PathSample result = ConnectToCamera(s, vertex, pixelCoord, integrationWeight, misWeight);
+
+        if (!result.IsValid()) {
+            print("Caustic shift failed: invalid result", 0);
+            print("base pos:", PathVertex(basePath.mSuffix.mVertex).GetPosition());
+            print("vertex pos:", vertex.GetPosition());
+            return {};
+        }
+
+        if (!result.HasFlag(PathFlags::eCausticLightPath)) {
+            print("Shift failed: Result not caustic", 0);
+            return {};
+        }
+
+
+        // random replay jacobian
+        jacobian = basePath.mSuffix.mPdf / result.mSuffix.mPdf;
 
         return result;
     }

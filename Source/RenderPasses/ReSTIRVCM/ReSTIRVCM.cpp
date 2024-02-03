@@ -83,6 +83,7 @@ ReSTIRVCM::ReSTIRVCM(ref<Device> pDevice, const Properties& props)
     mpPixelDebug = std::make_unique<PixelDebug>(mpDevice, 1000);
 
     mpLightReservoirs = std::make_unique<GPUHashMap>(mpDevice);
+    mpCausticReservoirMap = std::make_unique<GPUHashMap>(mpDevice);
 }
 
 void ReSTIRVCM::setProperties(const Properties& props)
@@ -142,9 +143,6 @@ void ReSTIRVCM::validateOptions()
         mStaticParams.useTemporalReuse = false;
         mStaticParams.spatialReusePasses = 0;
     }
-
-    if (mStaticParams.temporalRMIS == RMISType::ePairwise)
-        mStaticParams.temporalRMIS = RMISType::eConstant;
 }
 
 Properties ReSTIRVCM::getProperties() const
@@ -240,6 +238,8 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         if (mStaticParams.useResampling)
         {
             mpLightReservoirs->clear(pRenderContext);
+            if (mStaticParams.useCausticReservoirs)
+                mpCausticReservoirMap->clear(pRenderContext);
         }
         else
         {
@@ -253,48 +253,69 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         mCurrentSeed++;
     }
 
+    if (mStaticParams.debugHeatmap)
+    {
+        pRenderContext->clearUAV(mpPixelCounterData->getUAV().get(), uint4(0));
+    }
+
     // Trace camera sub-paths.
     FALCOR_ASSERT(mpSampleCameraPathsPass);
     preparePass(pRenderContext, renderData, *mpSampleCameraPathsPass);
     mpSampleCameraPathsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
     mCurrentSeed++;
 
-    // Merge pure light tracing reservoirs with camera reservoirs
-    if (mStaticParams.useBPT && mStaticParams.useResampling)
-    {
-        mpLightReservoirs->sort(pRenderContext);
-
-        FALCOR_ASSERT(mpLightReservoirResolvePass);
-        preparePass(pRenderContext, renderData, *mpLightReservoirResolvePass);
-        mpLightReservoirResolvePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
-        mCurrentSeed++;
-    }
-
-    if (mStaticParams.useTemporalReuse)
-    {
-        // Temporal reservoir reuse.
-        FALCOR_ASSERT(mpTemporalReusePass);
-        FALCOR_ASSERT(renderData.getTexture(kInputMotionVectors));
-        preparePass(pRenderContext, renderData, *mpTemporalReusePass);
-        if (!mVarsChanged)
+    if (mStaticParams.useResampling) {
+        // Merge pure light tracing reservoirs with camera reservoirs
+        if (mStaticParams.useBPT)
         {
-            mpTemporalReusePass->addDefine("RETRACE_SUFFIX", (mStaticParams.useResampling && mStaticParams.useTemporalReuse && mStaticParams.retraceSuffix) ? "1" : "0");
-            mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+            mpLightReservoirs->sort(pRenderContext);
+
+            FALCOR_ASSERT(mpLightReservoirResolvePass);
+            preparePass(pRenderContext, renderData, *mpLightReservoirResolvePass);
+            mpLightReservoirResolvePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+            mCurrentSeed++;
         }
-        mCurrentSeed++;
-    }
-    mSwapReservoirs = !mSwapReservoirs;
 
-    if (mStaticParams.spatialReusePasses > 0)
-    {
-        // Spatial reservoir reuse.
-        FALCOR_ASSERT(mpSpatialReusePass);
-        for (uint i = 0; i < mStaticParams.spatialReusePasses; i++)
+        if (mStaticParams.useTemporalReuse)
         {
-            preparePass(pRenderContext, renderData, *mpSpatialReusePass);
-            mpSpatialReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
-            mCurrentSeed += 2;
-            mSwapReservoirs = !mSwapReservoirs;
+            // Temporal reservoir reuse.
+            FALCOR_ASSERT(mpTemporalReusePass);
+            FALCOR_ASSERT(renderData.getTexture(kInputMotionVectors));
+            preparePass(pRenderContext, renderData, *mpTemporalReusePass);
+            if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs)
+            {
+                FALCOR_ASSERT(mpShiftCausticsPass);
+                preparePass(pRenderContext, renderData, *mpShiftCausticsPass);
+            }
+
+            if (!mVarsChanged)
+            {
+                // Shift caustics
+                if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs)
+                {
+                    mpShiftCausticsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+
+                    mpCausticReservoirMap->sort(pRenderContext);
+                }
+
+                mpTemporalReusePass->addDefine("RETRACE_SUFFIX", mStaticParams.retraceSuffix ? "1" : "0");
+                mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+            }
+            mCurrentSeed++;
+        }
+        mSwapReservoirs = !mSwapReservoirs;
+
+        if (mStaticParams.spatialReusePasses > 0)
+        {
+            // Spatial reservoir reuse.
+            FALCOR_ASSERT(mpSpatialReusePass);
+            for (uint i = 0; i < mStaticParams.spatialReusePasses; i++)
+            {
+                preparePass(pRenderContext, renderData, *mpSpatialReusePass);
+                mpSpatialReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+                mCurrentSeed += 2;
+                mSwapReservoirs = !mSwapReservoirs;
+            }
         }
     }
 
@@ -440,11 +461,14 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useResampling)
         {
+            if (mStaticParams.useBPT) {
+                dirty |= group.checkbox("Caustic reservoirs", mStaticParams.useCausticReservoirs);
+                group.tooltip("Use separate reservoirs for caustic light paths.", true);
+            }
+
             dirty |= group.checkbox("Temporal resampling", mStaticParams.useTemporalReuse);
             if (mStaticParams.useTemporalReuse)
             {
-                dirty |= group.dropdown("Temporal RMIS", mStaticParams.temporalRMIS);
-                group.tooltip("Resampling MIS algorithm for temporal reuse.", true);
                 dirty |= group.checkbox("Retrace path suffixes", mStaticParams.retraceSuffix);
                 group.tooltip("Retrace whole paths during temporal\nresampling, instead of just the prefix.", true);
             }
@@ -473,7 +497,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
             if (mStaticParams.useTemporalReuse || mStaticParams.spatialReusePasses > 0)
             {
-                runtimeDirty |= group.var("M cap", mParams.mMCap, 1u);
+                runtimeDirty |= group.var("M cap", mParams.mMCap, 0u);
                 group.tooltip("Maximum M value for reservoirs.", true);
                 runtimeDirty |= group.var("Min reconnection distance", mParams.mReconnectionDistance, 0.f, 100.f);
                 if (mStaticParams.useBPT) {
@@ -510,6 +534,21 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
     {
         bool recompile = false;
 
+        group.checkbox("Pause rendering", mPauseRendering);
+        if (mPauseRendering)
+        {
+            if (group.button("Render frame"))
+            {
+                mRenderOnce = true;
+                mKeepFrameIndex = true;
+            }
+            if (group.button("Render frame & advance", true))
+            {
+                mRenderOnce = true;
+            }
+            group.var("Frame index", mFrameCount);
+        }
+
         dirty |= group.checkbox("Use fixed seed", mUseFixedSeed);
         group.tooltip("Forces a fixed random seed for each frame.\n\n"
             "This should produce exactly the same image each frame, which can be useful for debugging.");
@@ -518,9 +557,13 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
             dirty |= group.var("Seed", mFixedSeed);
         }
 
-        dirty |= group.var("Reset seed on change", mResetSeedOnChange);
-        group.tooltip("Reset the random seed sequence when the scene changes.");
+        dirty |= group.checkbox("Fix seed per-frame", mUsePerFrameSeed);
+        group.tooltip("Calculate the random seed from the frame index.");
 
+        if (mStaticParams.useTemporalReuse)
+        {
+            group.checkbox("Freeze history", mFreezeHistory);
+        }
 
         recompile |= group.checkbox("Debug BPT", mStaticParams.debugBPT);
         if (mStaticParams.debugBPT)
@@ -532,6 +575,13 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
 
             dirty |= group.checkbox("Disable Merging", mParams.mDebugDisableMerging);
             group.tooltip("Don't render paths that use vertex merging.");
+        }
+
+        recompile |= group.checkbox("Visualize counter data", mStaticParams.debugHeatmap);
+        if (mStaticParams.debugHeatmap)
+        {
+            dirty |= group.dropdown("Counter type", mParams.mDebugCounter);
+            group.tooltip("Debug counter to visualize.");
         }
 
         mpPixelDebug->renderUI(group);
@@ -547,6 +597,42 @@ bool ReSTIRVCM::onMouseEvent(const MouseEvent& mouseEvent)
 {
     return mpPixelDebug->onMouseEvent(mouseEvent);
 }
+bool ReSTIRVCM::onKeyEvent(const KeyboardEvent& keyEvent)
+{
+    if (keyEvent.type == KeyboardEvent::Type::KeyPressed)
+    {
+        switch (keyEvent.key) {
+        case Input::Key::K:
+            mPauseRendering = !mPauseRendering;
+            return true;
+            break;
+        case Input::Key::Left:
+            if (mPauseRendering) {
+                mFrameCount--;
+                mRenderOnce = true;
+                mKeepFrameIndex = true;
+                return true;
+            }
+            break;
+        case Input::Key::Right:
+            if (mPauseRendering) {
+                mFrameCount++;
+                mRenderOnce = true;
+                mKeepFrameIndex = true;
+                return true;
+            }
+            break;
+        case Input::Key::Down:
+            if (mPauseRendering) {
+                mRenderOnce = true;
+                mKeepFrameIndex = true;
+                return true;
+            }
+            break;
+        }
+    }
+    return false;
+}
 
 void ReSTIRVCM::reset()
 {
@@ -561,6 +647,7 @@ void ReSTIRVCM::resetPrograms()
     mpLightReservoirResolvePass = nullptr;
     mpSpatialReusePass = nullptr;
     mpTemporalReusePass = nullptr;
+    mpShiftCausticsPass = nullptr;
     mpCopyRadiancePass = nullptr;
 
     mRecompile = true;
@@ -634,6 +721,17 @@ void ReSTIRVCM::updatePrograms()
             mpTemporalReusePass = ComputePass::create(mpDevice, desc, defines, false);
         }
         preparePass(mpTemporalReusePass);
+
+        if (mStaticParams.useCausticReservoirs)
+        {
+            if (!mpShiftCausticsPass)
+            {
+                ProgramDesc desc = baseDesc;
+                desc.addShaderLibrary(kTemporalReusePassFilename).csEntry("ShiftCaustics");
+                mpShiftCausticsPass = ComputePass::create(mpDevice, desc, defines, false);
+            }
+            preparePass(mpShiftCausticsPass);
+        }
     }
 
     if (mStaticParams.spatialReusePasses > 0)
@@ -677,27 +775,57 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
 
     auto var = mpReflectTypes->getRootVar();
 
-    if (!mpReservoirs0 || mpReservoirs0->getElementCount() != screenPixelCount)
+    if (mStaticParams.useResampling)
     {
-        mpReservoirs0 = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs0"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-        mpReservoirs1 = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs1"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-        mVarsChanged = true;
-    }
-
-    if (mStaticParams.useTemporalReuse)
-    {
-        if (!mpLastVbuffer || mpLastVbuffer->getWidth() != mParams.mOutputDim.x || mpLastVbuffer->getHeight() != mParams.mOutputDim.y)
+        if (!mpReservoirs0 || mpReservoirs0->getElementCount() != screenPixelCount)
         {
-            mpLastVbuffer  = mpDevice->createTexture2D(mParams.mOutputDim.x, mParams.mOutputDim.y, mpScene->getHitInfo().getFormat(), 1, 1);
+            mpReservoirs0 = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs0"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpReservoirs1 = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs1"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
-        if (mpScene->getCamera()->getApertureRadius() > 0.f)
+
+        if (mStaticParams.useBPT)
         {
-            if (!mpLastViewDir || mpLastViewDir->getWidth() != mParams.mOutputDim.x || mpLastViewDir->getHeight() != mParams.mOutputDim.y)
+            if (mpLightReservoirs->prepareResources(var["gPathGenerator"]["mLightTraceReservoirs"], screenPixelCount, maxLightVertices))
             {
-                const auto& pViewDir = renderData.getTexture(kInputViewDir);
-                mpLastViewDir = mpDevice->createTexture2D(mParams.mOutputDim.x, mParams.mOutputDim.y, pViewDir->getFormat(), 1, 1);
                 mVarsChanged = true;
+            }
+            if (mStaticParams.useCausticReservoirs) {
+                if (mpCausticReservoirMap->prepareResources(var["gPathGenerator"]["mCausticReservoirMap"], screenPixelCount, maxLightVertices))
+                {
+                    mVarsChanged = true;
+                }
+                if (!mpCausticReservoirs || mpCausticReservoirs->getElementCount() != screenPixelCount)
+                {
+                    mpCausticReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mCausticReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+                    mVarsChanged = true;
+                }
+            }
+        }
+
+        if (mStaticParams.useTemporalReuse)
+        {
+            if (!mpLastVbuffer || mpLastVbuffer->getWidth() != mParams.mOutputDim.x || mpLastVbuffer->getHeight() != mParams.mOutputDim.y)
+            {
+                mpLastVbuffer  = mpDevice->createTexture2D(mParams.mOutputDim.x, mParams.mOutputDim.y, mpScene->getHitInfo().getFormat(), 1, 1);
+                mVarsChanged = true;
+            }
+            if (mpScene->getCamera()->getApertureRadius() > 0.f)
+            {
+                if (!mpLastViewDir || mpLastViewDir->getWidth() != mParams.mOutputDim.x || mpLastViewDir->getHeight() != mParams.mOutputDim.y)
+                {
+                    const auto& pViewDir = renderData.getTexture(kInputViewDir);
+                    mpLastViewDir = mpDevice->createTexture2D(mParams.mOutputDim.x, mParams.mOutputDim.y, pViewDir->getFormat(), 1, 1);
+                    mVarsChanged = true;
+                }
+            }
+
+            if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs) {
+                if (!mpLastCausticReservoirs || mpLastCausticReservoirs->getElementCount() != screenPixelCount)
+                {
+                    mpLastCausticReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLastCausticReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+                    mVarsChanged = true;
+                }
             }
         }
     }
@@ -720,16 +848,21 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
             }
         }
 
-        if (mStaticParams.useResampling)
+        if (!mStaticParams.useResampling)
         {
-            if (mpLightReservoirs->prepareResources(var["gPathGenerator"]["mLightTraceReservoirs"], screenPixelCount, maxLightVertices))
+            if (!mpLightImage || mpLightImage->getSize() != sizeof(float3) * screenPixelCount || mVarsChanged)
             {
+                mpLightImage = mpDevice->createBuffer(sizeof(float3) * screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                 mVarsChanged = true;
             }
         }
-        else if (!mpLightImage || mpLightImage->getSize() != sizeof(float3) * screenPixelCount || mVarsChanged)
+    }
+
+    if (mStaticParams.debugHeatmap)
+    {
+        if (!mpPixelCounterData || mpPixelCounterData->getSize() != sizeof(uint32_t)*(screenPixelCount+1) || mVarsChanged)
         {
-            mpLightImage = mpDevice->createBuffer(sizeof(float3) * screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpPixelCounterData = mpDevice->createBuffer(sizeof(uint32_t)*(screenPixelCount+1), ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
     }
@@ -873,10 +1006,15 @@ void ReSTIRVCM::bindShaderData(const ShaderVar& var, const RenderData& renderDat
         var["mPhotonMap"]["cellSizes"]   = mpPhotonCellSizes;
         var["mPhotonMap"]["cellOffsets"] = mpPhotonCellOffsets;
 
+        var["mOutputCounterData"] = mpPixelCounterData;
+
         var["mPathReservoirs0"] = mpReservoirs0;
         var["mPathReservoirs1"] = mpReservoirs1;
+        var["mCausticReservoirs"] = mpCausticReservoirs;
+        var["mLastCausticReservoirs"] = mpLastCausticReservoirs;
 
         mpLightReservoirs->bindShaderData(var["mLightTraceReservoirs"]);
+        mpCausticReservoirMap->bindShaderData(var["mCausticReservoirMap"]);
         mpSampleGenerator->bindShaderData(var);
     }
 
@@ -910,6 +1048,22 @@ void ReSTIRVCM::bindShaderData(const ShaderVar& var, const RenderData& renderDat
 
 bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& renderData)
 {
+    if (mPauseRendering)
+    {
+        if (!mRenderOnce) return false;
+
+        if (!mRenderOnceSceneUpdated)
+        {
+            if (mpScene) mpScene->update(pRenderContext, mFrameCount / 24.0);
+            mRenderOnceSceneUpdated = true;
+            // skip a frame to let the other passes process the scene update
+            return false;
+        }
+
+        mRenderOnce = false;
+        mRenderOnceSceneUpdated = false;
+    }
+
     const auto& pOutputColor = renderData.getTexture(kOutputColor);
     FALCOR_ASSERT(pOutputColor);
 
@@ -997,11 +1151,11 @@ bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& rend
     // Update the random seed.
     if (mUseFixedSeed) {
         mCurrentSeed = mFixedSeed;
-    } else if (mResetSeedOnChange) {
+    } else if (mUsePerFrameSeed) {
         uint seedsPerFrame = 1;
         if (mStaticParams.useBPT) seedsPerFrame++; // light subpaths
         if (mStaticParams.useBPT && mStaticParams.useResampling) seedsPerFrame++; // light trace reservoir resample
-        if (mStaticParams.useTemporalReuse) seedsPerFrame++; // teporal resample
+        if (mStaticParams.useTemporalReuse) seedsPerFrame++; // temporal resample
         seedsPerFrame += mStaticParams.spatialReusePasses*2; // spatial reuse pattern + resample
 
         mCurrentSeed = mFrameCount * seedsPerFrame;
@@ -1024,7 +1178,7 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
     mpPixelDebug->endFrame(pRenderContext);
 
     // Copy pixel stats to outputs if available.
-    if (mStaticParams.useTemporalReuse)
+    if (mStaticParams.useTemporalReuse && !mFreezeHistory)
     {
         auto copyTexture = [pRenderContext](Texture* pDst, const Texture* pSrc)
         {
@@ -1043,10 +1197,16 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
 
         copyTexture( mpLastVbuffer.get(), renderData.getTexture(kInputVBuffer).get() );
         copyTexture( mpLastViewDir.get(), renderData.getTexture(kInputViewDir).get() );
+
+        if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs)
+            pRenderContext->copyResource(mpLastCausticReservoirs.get(), mpCausticReservoirs.get());
     }
 
+    if (!mKeepFrameIndex)
+        mFrameCount++;
+    mKeepFrameIndex = false;
+
     mVarsChanged = false;
-    mFrameCount++;
 }
 
 void ReSTIRVCM::preparePass(RenderContext* pRenderContext, const RenderData& renderData, ComputePass& pass) const
@@ -1072,19 +1232,20 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
 {
     DefineList defines;
 
+    defines.add("USE_BSDF_IMPORTANCE_SAMPLING", useBsdfImportanceSampling ? "1" : "0");
+    defines.add("MIS_POWER_EXPONENT", std::to_string(misPowerExponent));
     defines.add("USE_NEE", (useNEE || useBPT) ? "1" : "0");
     defines.add("USE_BIDIRECTIONAL", useBPT ? "1" : "0");
-    defines.add("USE_VERTEX_MERGING", (useBPT && useVM && !lightTraceOnly) ? "1" : "0");
-    defines.add("DYNAMIC_MERGE_RADIUS", (useBPT && useVM && !lightTraceOnly && dynamicMergeRadius) ? "1" : "0");
-    defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
-    defines.add("USE_BSDF_IMPORTANCE_SAMPLING", useBsdfImportanceSampling ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");
+    defines.add("USE_VERTEX_MERGING", (useBPT && useVM && !lightTraceOnly) ? "1" : "0");
     defines.add("USE_PPM_ONLY", (useBPT && useVM && useVMOnly && !lightTraceOnly) ? "1" : "0");
+    defines.add("DYNAMIC_MERGE_RADIUS", (useBPT && useVM && !lightTraceOnly && dynamicMergeRadius) ? "1" : "0");
     defines.add("WAVEFRONT_TECHNIQUE_SELECTION", useWavefrontTechniqueSelection ? "1" : "0");
-    defines.add("TEMPORAL_RMIS_TYPE", std::to_string(uint(temporalRMIS)));
+    defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
+    defines.add("CAUSTIC_RESERVOIRS", useResampling && useBPT && useCausticReservoirs ? "1" : "0");
     defines.add("SPATIAL_RMIS_TYPE", std::to_string(uint(spatialRMIS)));
-    defines.add("MIS_POWER_EXPONENT", std::to_string(misPowerExponent));
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
+    defines.add("DEBUG_HEATMAP", debugHeatmap ? "1" : "0");
     defines.add("RETRACE_SUFFIX", "0"); // placeholder
     defines.add("USE_VIEW_DIR", "0"); // placeholder
 

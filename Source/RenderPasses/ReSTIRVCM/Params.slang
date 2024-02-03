@@ -6,9 +6,7 @@ BEGIN_NAMESPACE_FALCOR
 enum class RMISType {
     eConstant,
     ePairwise,
-    eTalbot,
-
-
+    eTalbot
 };
 FALCOR_ENUM_INFO(
     RMISType, {
@@ -18,6 +16,44 @@ FALCOR_ENUM_INFO(
     }
 );
 FALCOR_ENUM_REGISTER(RMISType);
+
+enum class DebugCounterType : uint {
+    eScatterRays            = (1 << 0),
+    eOcclusionRays          = (1 << 1),
+    eTemporalShiftSuccesses = (1 << 2),
+    eSpatialShiftSuccesses  = (1 << 3),
+    eCausticShiftSuccesses  = (1 << 4),
+
+    eTemporalReuseAcceptances = (1 << 5),
+    eSpatialReuseAcceptances  = (1 << 6),
+    eCausticReuseAcceptances  = (1 << 7),
+
+    eCausticShiftFailures = (1 << 8),
+
+    eRays             = 3,
+    eShiftSuccesses   = (1 << 2) | (1 << 3) | (1 << 4),
+    eReuseAcceptances = (1 << 5) | (1 << 6) | (1 << 7)
+};
+FALCOR_ENUM_INFO(
+    DebugCounterType, {
+        { DebugCounterType::eScatterRays, "Scatter rays" },
+        { DebugCounterType::eOcclusionRays, "Occlusion rays" },
+        { DebugCounterType::eRays, "Rays" },
+
+        { DebugCounterType::eTemporalShiftSuccesses, "Temporal shift successes" },
+        { DebugCounterType::eSpatialShiftSuccesses, "Spatial shift successes" },
+        { DebugCounterType::eCausticShiftSuccesses, "Caustic shift successes" },
+        { DebugCounterType::eShiftSuccesses, "Shift successes" },
+
+        { DebugCounterType::eCausticShiftFailures, "Caustic shift failures" },
+
+        { DebugCounterType::eTemporalReuseAcceptances, "Temporal reuse acceptances" },
+        { DebugCounterType::eSpatialReuseAcceptances, "Spatial reuse acceptances" },
+        { DebugCounterType::eCausticReuseAcceptances, "Caustic reuse acceptances" },
+        { DebugCounterType::eReuseAcceptances, "Reuse acceptances" },
+    }
+);
+FALCOR_ENUM_REGISTER(DebugCounterType);
 
 
 struct PathGeneratorParams {
@@ -50,6 +86,7 @@ struct PathGeneratorParams {
     int mDebugTotalVertices  = -1; ///< Only render paths with this many vertices.
     int mDebugLightVertices  = -1; ///< Only render paths with this many light vertices.
     int mDebugDisableMerging = 0;  ///< Don't render paths that use vertex merging.
+    DebugCounterType mDebugCounter = DebugCounterType::eRays;
 };
 
 END_NAMESPACE_FALCOR

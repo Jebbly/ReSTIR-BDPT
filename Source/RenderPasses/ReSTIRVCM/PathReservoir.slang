@@ -49,7 +49,8 @@ struct PathSample {
     uint  mRngSeed;
     uint  mPackedRngIdx;
 
-    PathSuffix mSuffix;
+    PathSuffix mSuffix = {};
+    PackedHitInfo mLightSubpathVertex = {}; ///< First vertex in the light subpath
 
     // Number of bounces before the reconnection vertex.
     property uint mPrefixBounces {

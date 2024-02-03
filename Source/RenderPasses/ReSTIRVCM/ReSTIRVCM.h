@@ -33,7 +33,7 @@ public:
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
     virtual bool onMouseEvent(const MouseEvent& mouseEvent) override;
-    virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override { return false; }
+    virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override;
 
     void reset();
 
@@ -71,13 +71,14 @@ private:
         bool        useResampling = true;
         bool        useTemporalReuse = true;
         bool        retraceSuffix = false;
+        bool        useCausticReservoirs = false;
         uint        spatialReusePasses = 1;
         uint32_t    sampleGenerator = SAMPLE_GENERATOR_TINY_UNIFORM;
         float       misPowerExponent = 2;
         bool        debugBPT = false;
+        bool        debugHeatmap = false;
 
         bool useWavefrontTechniqueSelection = false;
-        RMISType temporalRMIS = RMISType::eTalbot;
         RMISType spatialRMIS = RMISType::ePairwise;
 
         EmissiveLightSamplerType emissiveSampler = EmissiveLightSamplerType::Power;
@@ -94,13 +95,19 @@ private:
     RenderPassHelpers::IOSize       mOutputSizeSelection = RenderPassHelpers::IOSize::Default;  ///< Selected output size.
     uint2                           mFixedOutputSize = { 512, 512 };                            ///< Output size in pixels when 'Fixed' size is selected.
 
+    bool                            mPauseRendering  = false;
+    bool                            mRenderOnce      = false;
+    bool                            mRenderOnceSceneUpdated = false;
+    bool                            mKeepFrameIndex = false;
+    bool                            mFreezeHistory = false;
+
     float                           mVMRadiusFactor  = .001f;    ///< Initial merge radius as a percentage of the scene radius.
     float                           mVMRadiusAlpha = 1.0f;       ///< Merge radius shrink factor.
     uint                            mFrameCount = 0;
     uint                            mFixedSeed = 0;
     bool                            mUseFixedSeed = false;
     bool                            mSwapReservoirs = false;
-    uint                            mResetSeedOnChange = false;
+    bool                            mUsePerFrameSeed = false;
     uint                            mCurrentSeed = 0;
 
     // Internal state
@@ -119,10 +126,12 @@ private:
     ref<ComputePass>                mpSampleLightPathsPass;      ///< Light trace pass.
     ref<ComputePass>                mpTemporalReusePass;         ///< Temporal reservoir reuse pass.
     ref<ComputePass>                mpSpatialReusePass;          ///< Spatial reservoir reuse pass.
+    ref<ComputePass>                mpShiftCausticsPass;         ///< Shift caustic reservoirs pass.
     ref<ComputePass>                mpLightReservoirResolvePass; ///< Fullscreen compute pass merging light traced reservoirs within each pixel.
     ref<ComputePass>                mpCopyRadiancePass;          ///< Fullscreen compute pass writing reservoir samples to the output buffer.
 
     std::unique_ptr<GPUHashMap>     mpLightReservoirs;
+    std::unique_ptr<GPUHashMap>     mpCausticReservoirMap;
 
     ref<Buffer>                     mpLightImage;                ///< Light trace image. Light subpath contributions are atomically added to this.
     ref<Buffer>                     mpLightVertices;             ///< Light sub-path vertices.
@@ -131,6 +140,9 @@ private:
     ref<Buffer>                     mpPhotonCellOffsets;         ///< Photon grid cell offsets.
     ref<Buffer>                     mpReservoirs0;               ///< Per-pixel reservoirs.
     ref<Buffer>                     mpReservoirs1;               ///< Per-pixel reservoirs.
+    ref<Buffer>                     mpCausticReservoirs;         ///< Per-pixel reservoirs.
+    ref<Buffer>                     mpLastCausticReservoirs;     ///< Per-pixel reservoirs.
+    ref<Buffer>                     mpPixelCounterData;
 
     ref<Texture>                    mpLastVbuffer;               ///< Copy of the vbuffer from last frame.
     ref<Texture>                    mpLastViewDir;               ///< Copy of the view directions from last frame.

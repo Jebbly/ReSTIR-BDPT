@@ -69,6 +69,12 @@ void GPUHashMap::clear(RenderContext* pRenderContext) const
     pRenderContext->clearUAV(mpCellCounters->getUAV().get(), uint4(0));
     pRenderContext->clearUAV(mpCounters->getUAV().get(), uint4(0));
 }
+void GPUHashMap::barrier(RenderContext* pRenderContext) const
+{
+    pRenderContext->uavBarrier(mpCellKeys.get());
+    pRenderContext->uavBarrier(mpCellCounters.get());
+    pRenderContext->uavBarrier(mpCounters.get());
+}
 
 void GPUHashMap::sort(RenderContext* pRenderContext) const
 {

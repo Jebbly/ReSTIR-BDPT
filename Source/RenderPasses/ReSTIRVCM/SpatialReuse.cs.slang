@@ -93,7 +93,7 @@ void main(uint3 index: SV_DispatchThreadID) {
     uint2 id = index.xy;
     if (any(id >= gPathGenerator.mParams.mOutputDim))
         return;
-    printSetPixel(id);
+    gPathGenerator.DebugSetPixel(id);
 
     PathReservoir r = gPathGenerator.LoadInputReservoir(id);
 
@@ -182,6 +182,8 @@ void main(uint3 index: SV_DispatchThreadID) {
             continue;
         }
 
+        gPathGenerator.IncrementCounter(DebugCounterType::eSpatialShiftSuccesses);
+
         float m;
         if (gMISType == RMISType::ePairwise) {
             m = SafeDivide(
@@ -197,15 +199,20 @@ void main(uint3 index: SV_DispatchThreadID) {
 
         if (r.Merge(sampleNext1D(sg), candidate)) {
             selectedIndex = i;
+            if (gMISType != RMISType::ePairwise) gPathGenerator.IncrementCounter(DebugCounterType::eSpatialReuseAcceptances);
         }
     }
 
     if (gMISType == RMISType::ePairwise) {
         if (center.mW > 0 && mc > 0 && isfinite(mc)) {
             center.PrepareMerge(mc);
-            r.Merge(sampleNext1D(sg), center);
-        } else
+            if (!r.Merge(sampleNext1D(sg), center)) {
+                if (r.mSample.IsValid()) gPathGenerator.IncrementCounter(DebugCounterType::eSpatialReuseAcceptances);
+            }
+        } else {
             r.mM += center.mM;
+            if (r.mSample.IsValid()) gPathGenerator.IncrementCounter(DebugCounterType::eSpatialReuseAcceptances);
+        }
 
         r.mW /= validNeighbors + 1;
     } else if (gMISType == RMISType::eConstant) {
