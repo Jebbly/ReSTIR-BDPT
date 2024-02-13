@@ -13,7 +13,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
     if (!prevVertex.IsFinite())
         return;
 
-    PathReservoir candidate = gPathGenerator.LoadInputReservoir(prevPixel);
+    PathReservoir candidate = gPathGenerator.LoadPrevReservoir(prevPixel);
     if (!(candidate.mM > 0) || isinf(candidate.mM))
         return;
 
@@ -79,7 +79,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
 
     r.FinalizeMerge();
 
-    print("Final center f:", r.mSample.mContribution);
+    print("Final center f:", r.mSample.GetTargetPdf());
     print("Final center W:", r.mW);
 }
 

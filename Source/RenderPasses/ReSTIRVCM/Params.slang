@@ -18,17 +18,20 @@ FALCOR_ENUM_INFO(
 FALCOR_ENUM_REGISTER(RMISType);
 
 enum class DebugCounterType : uint {
-    eScatterRays            = (1 << 0),
-    eOcclusionRays          = (1 << 1),
-    eTemporalShiftSuccesses = (1 << 2),
-    eSpatialShiftSuccesses  = (1 << 3),
-    eCausticShiftSuccesses  = (1 << 4),
+    eScatterRays              = (1 << 0),
+    eOcclusionRays            = (1 << 1),
 
-    eTemporalReuseAcceptances = (1 << 5),
-    eSpatialReuseAcceptances  = (1 << 6),
-    eCausticReuseAcceptances  = (1 << 7),
+    eTemporalShiftSuccesses   = (1 << 2),
+    eSpatialShiftSuccesses    = (1 << 3),
+    eCausticShiftSuccesses    = (1 << 4),
 
-    eCausticShiftFailures = (1 << 8),
+    eCausticReservoirM        = (1 << 5),
+
+    eTemporalReuseAcceptances = (1 << 6),
+    eSpatialReuseAcceptances  = (1 << 7),
+    eCausticReuseAcceptances  = (1 << 8),
+
+    eCausticShiftFailures     = (1 << 9),
 
     eRays             = 3,
     eShiftSuccesses   = (1 << 2) | (1 << 3) | (1 << 4),
@@ -44,6 +47,8 @@ FALCOR_ENUM_INFO(
         { DebugCounterType::eSpatialShiftSuccesses, "Spatial shift successes" },
         { DebugCounterType::eCausticShiftSuccesses, "Caustic shift successes" },
         { DebugCounterType::eShiftSuccesses, "Shift successes" },
+
+        { DebugCounterType::eCausticReservoirM, "Caustic reservoir M" },
 
         { DebugCounterType::eCausticShiftFailures, "Caustic shift failures" },
 

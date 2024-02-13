@@ -61,16 +61,16 @@ private:
     struct StaticParams
     {
         // Sampling parameters
-        bool        useNEE = true; ///< Use next-event estimation (NEE). This enables shadow ray(s) from each path vertex.
-        bool        useBPT = true; ///< Use bidirectional path tracing. Automatically enables NEE.
-        bool        useVM  = true; ///< Use vertex merging when using BPT.
+        bool        useNEE = true;                    ///< Use next-event estimation (NEE). This enables shadow ray(s) from each path vertex.
+        bool        useBPT = true;                    ///< Use bidirectional path tracing. Automatically enables NEE.
+        bool        useVM  = false;                   ///< Use vertex merging when using BPT.
         bool        useBsdfImportanceSampling = true;
         bool        dynamicMergeRadius = false;
         bool        lightTraceOnly = false;
         bool        useVMOnly = false;
         bool        useResampling = true;
         bool        useTemporalReuse = true;
-        bool        retraceSuffix = false;
+        bool        validateSuffixes = false;
         bool        useCausticReservoirs = false;
         uint        spatialReusePasses = 1;
         uint32_t    sampleGenerator = SAMPLE_GENERATOR_TINY_UNIFORM;
@@ -140,6 +140,7 @@ private:
     ref<Buffer>                     mpPhotonCellOffsets;         ///< Photon grid cell offsets.
     ref<Buffer>                     mpReservoirs0;               ///< Per-pixel reservoirs.
     ref<Buffer>                     mpReservoirs1;               ///< Per-pixel reservoirs.
+    ref<Buffer>                     mpLastReservoirs;            ///< Per-pixel reservoirs.
     ref<Buffer>                     mpCausticReservoirs;         ///< Per-pixel reservoirs.
     ref<Buffer>                     mpLastCausticReservoirs;     ///< Per-pixel reservoirs.
     ref<Buffer>                     mpPixelCounterData;

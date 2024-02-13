@@ -298,12 +298,13 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                     mpCausticReservoirMap->sort(pRenderContext);
                 }
 
-                mpTemporalReusePass->addDefine("RETRACE_SUFFIX", mStaticParams.retraceSuffix ? "1" : "0");
+                mpTemporalReusePass->addDefine("VALIDATE_SUFFIXES", mStaticParams.validateSuffixes ? "1" : "0");
                 mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
             }
             mCurrentSeed++;
         }
-        mSwapReservoirs = !mSwapReservoirs;
+
+        mSwapReservoirs = !mSwapReservoirs; // swap input and output reservoirs for the next pass
 
         if (mStaticParams.spatialReusePasses > 0)
         {
@@ -469,7 +470,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             dirty |= group.checkbox("Temporal resampling", mStaticParams.useTemporalReuse);
             if (mStaticParams.useTemporalReuse)
             {
-                dirty |= group.checkbox("Retrace path suffixes", mStaticParams.retraceSuffix);
+                dirty |= group.checkbox("Validate path suffixes", mStaticParams.validateSuffixes);
                 group.tooltip("Retrace whole paths during temporal\nresampling, instead of just the prefix.", true);
             }
 
@@ -779,8 +780,9 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
     {
         if (!mpReservoirs0 || mpReservoirs0->getElementCount() != screenPixelCount)
         {
-            mpReservoirs0 = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs0"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-            mpReservoirs1 = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs1"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpReservoirs0    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs0"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpReservoirs1    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs1"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpLastReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLastReservoirs"] , screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
 
@@ -1010,6 +1012,7 @@ void ReSTIRVCM::bindShaderData(const ShaderVar& var, const RenderData& renderDat
 
         var["mPathReservoirs0"] = mpReservoirs0;
         var["mPathReservoirs1"] = mpReservoirs1;
+        var["mLastReservoirs"]  = mpLastReservoirs;
         var["mCausticReservoirs"] = mpCausticReservoirs;
         var["mLastCausticReservoirs"] = mpLastCausticReservoirs;
 
@@ -1198,6 +1201,8 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
         copyTexture( mpLastVbuffer.get(), renderData.getTexture(kInputVBuffer).get() );
         copyTexture( mpLastViewDir.get(), renderData.getTexture(kInputViewDir).get() );
 
+        pRenderContext->copyResource(mpLastReservoirs.get(), mSwapReservoirs ? mpReservoirs1.get() : mpReservoirs0.get());
+
         if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs)
             pRenderContext->copyResource(mpLastCausticReservoirs.get(), mpCausticReservoirs.get());
     }
@@ -1246,7 +1251,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("SPATIAL_RMIS_TYPE", std::to_string(uint(spatialRMIS)));
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("DEBUG_HEATMAP", debugHeatmap ? "1" : "0");
-    defines.add("RETRACE_SUFFIX", "0"); // placeholder
+    defines.add("VALIDATE_SUFFIXES", "0"); // placeholder
     defines.add("USE_VIEW_DIR", "0"); // placeholder
 
     // Sampling utilities configuration.

@@ -697,11 +697,15 @@ namespace Mogwai
             // Update scene and camera.
             if (mpScene)
             {
+                //*
+                auto sceneUpdates = mpScene->update(pRenderContext, getGlobalClock().getTime());
+                /*/
                 Falcor::Scene::UpdateFlags sceneUpdates = Falcor::Scene::UpdateFlags::None;
                 if (!getGlobalClock().isPaused())
                 {
                     sceneUpdates |= mpScene->update(pRenderContext, getGlobalClock().getTime());
                 }
+                //*/
 
                 // Accumulate scene update flags for each graph.
                 // The update flags are passed to the active graph, or accumulated until a graph becomes active to avoid missing updates.

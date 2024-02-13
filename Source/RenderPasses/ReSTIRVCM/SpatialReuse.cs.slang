@@ -137,7 +137,6 @@ void main(uint3 index: SV_DispatchThreadID) {
         print("Candidate M:", candidate.mM);
         if (candidate.mSample.IsValid()) {
             print("Candidate id:", candidate.mSample.mRngIdx);
-            print("prefix bounces:", candidate.mSample.mPrefixBounces);
             print("f:", candidate.mSample.GetTargetPdf());
             print("W:", candidate.mW);
         }

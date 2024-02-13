@@ -35,13 +35,15 @@ struct PathGenerator {
     RWStructuredBuffer<PathReservoir> mPathReservoirs0;
     RWStructuredBuffer<PathReservoir> mPathReservoirs1;
     RWStructuredBuffer<PathReservoir> mCausticReservoirs;
-    RWStructuredBuffer<PathReservoir> mLastCausticReservoirs;
     HashMap<PathReservoir> mLightTraceReservoirs;
     HashMap<PathReservoir> mCausticReservoirMap;
 
     Texture2D<PackedHitInfo> mVbuffer;
     Texture2D<float3> mViewDir;
     Texture2D<float2> mMotionVectors;
+
+    RWStructuredBuffer<PathReservoir> mLastReservoirs;
+    RWStructuredBuffer<PathReservoir> mLastCausticReservoirs;
     Texture2D<float3> mLastViewDir;
     Texture2D<PackedHitInfo> mLastVbuffer;
 
@@ -59,7 +61,7 @@ struct PathGenerator {
     static const bool  gLightTraceOnly              = LIGHT_TRACE_ONLY;
     static const bool  gUseResampling               = USE_RESAMPLING;
     static const bool  gUseCausticReservoirs        = CAUSTIC_RESERVOIRS;
-    static const bool  gRetraceSuffix               = RETRACE_SUFFIX;
+    static const bool  gValidateSuffixes            = VALIDATE_SUFFIXES;
     static const bool  gUseBsdfImportanceSampling   = USE_BSDF_IMPORTANCE_SAMPLING;
     static const bool  gWavefrontTechniqueSelection = WAVEFRONT_TECHNIQUE_SELECTION;
     static const bool  gDebugBPT                    = DEBUG_BPT;
@@ -378,6 +380,11 @@ extension PathGenerator {
         return PackedPathVertex(cameraRay, HitInfo(mLastVbuffer[id]), cameraRay.tMax);
     }
 
+    PathReservoir LoadPrevReservoir(const uint2 index) {
+        if (!gUseResampling) return {};
+        const uint flatIndex = index.y * mParams.mOutputDim.x + index.x;
+        return mLastReservoirs[flatIndex];
+    }
     PathReservoir LoadInputReservoir(const uint2 index) {
         if (!gUseResampling) return {};
         const uint flatIndex = index.y * mParams.mOutputDim.x + index.x;
@@ -505,8 +512,8 @@ extension PathGenerator {
             }
         } else if (ps.IsValid() && weight > 0) {
             print("Found path. contrib:", ps.mContribution);
-            print("\tLight subpath vertices:", ps.mNumLightSubpathVertices);
-            print("\tMerge:", ps.HasFlag(PathFlags::eMergeAtRcv));
+            print("\tLight subpath vertices:", ps.mSuffix.mLightVertexCount);
+            print("\tMerge:", ps.HasFlag(PathFlags::eVertexMerging));
             print("\tPrefix bounces:", ps.mPrefixBounces);
             mOutputRadiance[ps.mRngIdx].rgb += ps.mContribution * weight;
         }
@@ -527,6 +534,7 @@ extension PathGenerator {
         float3 throughputAtRcv = 0;
         float pdfAtRcv = 0;
         float3 rcvDirOut;
+        float prefixPdf = 0;
         float rcvCos = 0;
         float rcvDist = 0;
 
@@ -545,7 +553,7 @@ extension PathGenerator {
             get { return BF_GET(packedBounces,    0, 15); }
             set { BF_SET(packedBounces, newValue, 0, 15); }
         }
-        property uint rcvBounces {
+        property uint prefixBounces {
             get { return BF_GET(packedBounces,    15, 15); }
             set { BF_SET(packedBounces, newValue, 15, 15); }
         }
@@ -566,7 +574,7 @@ extension PathGenerator {
             set { BF_SET(packedBounces, (uint)newValue, 31, 1); }
         }
         property bool rcvFound {
-            get { return pdfAtRcv > 0; }
+            get { return prefixPdf > 0; }
         }
         property uint2 id {
             get { return uint2(packedId & 0xFFFF, packedId >> 16); }
@@ -594,14 +602,19 @@ extension PathGenerator {
 
         // Sample emissive path vertex
 
+        const uint lightRngSeed = s.sg.next();
+        const uint2 lightRngId  = uint2(s.sg.next(), s.sg.next());
+        SampleGenerator sg = SampleGenerator(lightRngId, lightRngSeed);
+
+        float directPdfA = 0;
         float directPdfW = 0;
         float emissionPdfW = 0;
         PackedPathVertex l = {};
         float cosLight = 1;
         float3 le = 0;
         {
-            const bool useEnvMap = sampleNext1D(s.sg) < mParams.mEnvMapProb;
-            const float2 uv = sampleNext2D(s.sg);
+            const bool useEnvMap = sampleNext1D(sg) < mParams.mEnvMapProb;
+            const float2 uv = sampleNext2D(sg);
 
             if (gUseEnvLight && (!gUseEmissiveLights || useEnvMap)) {
                 EnvMapSample envSample;
@@ -616,12 +629,13 @@ extension PathGenerator {
 
                 l = PackedPathVertex(Ray(vertex.ComputeRayOrigin(envSample.dir), envSample.dir), HitInfo(0), FLT_MAX);
 
+                directPdfA = envSample.pdf;
                 directPdfW = envSample.pdf;
                 emissionPdfW = directPdfW * gConcentricDiscPdfA / sqr(mParams.mSceneSphere.w);
             } else if (gUseEmissiveLights && !(gUseEnvLight && useEnvMap)) {
                 const float3 vertexNormal = upperOnly ? vertex.GetFaceNormal() : 0;
                 float selectionPdf;
-                uint triangleIndex = mEmissiveSampler.sampleLight(vertex.GetPosition(), vertexNormal, upperOnly, s.sg, selectionPdf);
+                uint triangleIndex = mEmissiveSampler.sampleLight(vertex.GetPosition(), vertexNormal, upperOnly, sg, selectionPdf);
                 if (triangleIndex == LightCollection::kInvalidIndex)
                     return result;
 
@@ -634,7 +648,7 @@ extension PathGenerator {
                 if (!any(le > 0))
                     return result;
 
-                const float directPdfA = selectionPdf / tri.area;
+                directPdfA = selectionPdf / tri.area;
 
                 const float3 triPos = computeRayOrigin(tri.getPosition(barycentrics), tri.normal);
                 const float3 rayOrigin = vertex.ComputeRayOrigin(triPos - vertex.GetPosition());
@@ -692,37 +706,50 @@ extension PathGenerator {
         // divide by pdf
         integrationWeight = 1.f / samplePdf;
 
+        float3 suffixContrib;
+        float3 suffixDir;
+        float suffixPdf;
         const bool hasRcv = gAllowEarlyReconnection && !bShift && s.rcvFound;
-        PathSuffix suffix = {};
         if (hasRcv) {
-            // finalize the existing rcv
-            suffix.mVertex = s.rcv;
-            suffix.mCos  = s.rcvCos;
-            suffix.mDist = s.rcvDist;
-            if (s.rcvBounces == s.bounces - 1) {
-                suffix.mDirOut = l.mRayDirection;
-                suffix.mContribution = le;
+            // use rcv found earlier along the camera subpath
+            if (s.bounces == s.prefixBounces + 1) {
+                // the light vertex is the 2nd vertex in the suffix
+                suffixContrib = le;
+                suffixDir = l.mRayDirection;
+                suffixPdf = directPdfW;
             } else {
-                suffix.mDirOut = s.rcvDirOut;
-                suffix.mContribution = SafeDivide(contrib, s.throughputAtRcv);
+                // the light vertex is after the 2nd suffix vertex
+                suffixContrib = SafeDivide(contrib, s.throughputAtRcv);
+                suffixDir = s.rcvDirOut;
+                suffixPdf = directPdfW * (s.pdfW / s.pdfAtRcv);
             }
-            suffix.mNumVertices = (s.bounces - s.rcvBounces) + 1;
         } else {
-            // set sampled light vertex as the rcv
-            suffix.mVertex = l;
-            suffix.mCos = cosLight;
-            suffix.mDist = l.mRayDistance;
-            suffix.mNumVertices = 1;
-            suffix.mDirOut = 0;
-            suffix.mContribution = le;
+            // light vertex is the first vertex in the suffix
+            suffixContrib = le;
+            suffixDir = 0;
+            suffixPdf = directPdfA;
         }
+
+        const PathSuffix suffix = PathSuffix::Create(
+            suffixContrib,
+            suffixPdf,
+            hasRcv ? s.rcv : l,
+            suffixDir,
+            hasRcv ? s.rcvDist : l.mRayDistance,
+            hasRcv ? s.rcvCos  : cosLight,
+            l.mPackedHit,
+            lightRngSeed,
+            lightRngId,
+            1,
+            0
+        );
 
         result = PathSample::Create(
             contrib,
-            hasRcv ? s.pdfAtRcv          : s.pdfW,
-            hasRcv ? s.rcvBounces        : s.bounces,
+            s.bounces + 1,
+            hasRcv ? s.prefixPdf         : s.pdfW,
+            hasRcv ? s.prefixBounces     : s.bounces,
             hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
-            1,
             s.seed,
             s.id,
             suffix,
@@ -803,39 +830,51 @@ extension PathGenerator {
             misWeight = 1 / (wLight + 1.f + wCamera);
         }
 
-        integrationWeight = subpathWeight * v.mIntegrationWeight * (cosLight * invDist2) / s.pdfW;
+        integrationWeight = subpathWeight * (cosLight * invDist2) / (s.pdfW * v.mSubpathPdf);
 
+        float3 suffixContrib;
+        float3 suffixDir;
+        float suffixPdf = v.mSubpathPdf;
         const bool hasRcv = gAllowEarlyReconnection && !bShift && s.rcvFound;
-        PathSuffix suffix = {};
         if (hasRcv) {
-            // finalize the existing rcv
-            suffix.mVertex = s.rcv;
-            suffix.mCos = s.rcvCos;
-            suffix.mDist = s.rcvDist;
-            if (s.rcvBounces == s.bounces - 1) {
-                suffix.mDirOut = toLight;
-                suffix.mContribution = v.mThroughput * (r.mReflectance / cosLight);
+            // use rcv found earlier along the camera subpath
+            if (s.bounces == s.prefixBounces + 1) {
+                // the light vertex is the 2nd vertex in the suffix
+                suffixContrib = v.mThroughput * (r.mReflectance / cosLight);
+                suffixDir = toLight;
+                suffixPdf *= sqr(dist) / cosLight;
             } else {
-                suffix.mDirOut = s.rcvDirOut;
-                suffix.mContribution = SafeDivide(contrib, s.throughputAtRcv);
+                // the light vertex is after the 2nd suffix vertex
+                suffixContrib = SafeDivide(contrib, s.throughputAtRcv);
+                suffixDir = s.rcvDirOut;
+                suffixPdf *= (s.pdfW / s.pdfAtRcv);
             }
-            suffix.mNumVertices = (s.bounces - s.rcvBounces) + v.mBounces + 2;
         } else {
             // use the light subpath vertex as the rcv
-            suffix.mVertex = v.mVertex;
-            suffix.mContribution = v.mThroughput;
-            suffix.mDirOut = v.GetDirIn();
-            suffix.mCos = cosLight;
-            suffix.mDist = dist;
-            suffix.mNumVertices = v.mBounces + 2;
+            suffixContrib = v.mThroughput;
+            suffixDir = v.GetDirIn();
         }
+
+        const PathSuffix suffix = PathSuffix::Create(
+            suffixContrib,
+            suffixPdf,
+            hasRcv ? s.rcv : v.mVertex,
+            suffixDir,
+            hasRcv ? s.rcvDist : dist,
+            hasRcv ? s.rcvCos  : cosLight,
+            v.mFirstVertex,
+            v.mRngSeed,
+            v.mRngIdx,
+            v.mBounces + 2,
+            v.mDiffuseBounces
+        );
 
         result = PathSample::Create(
             contrib,
-            hasRcv ? s.pdfAtRcv          : s.pdfW,
-            hasRcv ? s.rcvBounces        : s.bounces,
+            bounces,
+            hasRcv ? s.prefixPdf         : s.pdfW,
+            hasRcv ? s.prefixBounces     : s.bounces,
             hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
-            v.mBounces + 1,
             s.seed,
             s.id,
             suffix,
@@ -884,46 +923,60 @@ extension PathGenerator {
         else
             misWeight = 1.f / (wLight + 1.f + wCamera);
 
-        integrationWeight = subpathWeight * v.mIntegrationWeight / (s.pdfW * (sqr(mergeRadius) * M_PI * mParams.mLightSubpathCount));
+        integrationWeight = subpathWeight / (s.pdfW * v.mSubpathPdf * (sqr(mergeRadius) * M_PI * mParams.mLightSubpathCount));
 
+
+        float3 suffixContrib;
+        float3 suffixDir;
+        float suffixPdf = v.mSubpathPdf;
         const bool hasRcv = gAllowEarlyReconnection && !bShift && s.rcvFound;
-        PathSuffix suffix = {};
         if (hasRcv) {
-            // finalize the existing rcv
-            suffix.mVertex = s.rcv;
-            suffix.mCos = s.rcvCos;
-            suffix.mDist = s.rcvDist;
-            if (s.rcvBounces == s.bounces - 1) {
-                suffix.mDirOut = v.GetDirIn();
-                suffix.mContribution = v.mThroughput * f.mReflectance;
+            // use rcv found earlier along the camera subpath
+            if (s.bounces == s.prefixBounces + 1) {
+                // the light vertex is the 2nd vertex in the suffix
+                suffixContrib = v.mThroughput * f.mReflectance;
+                suffixDir = v.GetDirIn();
             } else {
-                suffix.mDirOut = s.rcvDirOut;
-                suffix.mContribution = SafeDivide(contrib, s.throughputAtRcv);
+                // the light vertex is after the 2nd suffix vertex
+                suffixContrib = SafeDivide(contrib, s.throughputAtRcv);
+                suffixDir = s.rcvDirOut;
+                suffixPdf *= (s.pdfW / s.pdfAtRcv);
             }
-            suffix.mNumVertices = (s.bounces - s.rcvBounces) + v.mBounces + 2;
         } else {
-            // store photon as reconnection vertex
-            suffix.mVertex = v.mVertex;
-            suffix.mContribution = v.mThroughput;
-            suffix.mDirOut = v.GetDirIn();
-            suffix.mNumVertices = v.mBounces + 2;
+            // use the light subpath vertex as the rcv
+            suffixContrib = v.mThroughput;
+            suffixDir = v.GetDirIn();
         }
+
+        const PathSuffix suffix = PathSuffix::Create(
+            suffixContrib,
+            suffixPdf,
+            hasRcv ? s.rcv     : v.mVertex,
+            suffixDir,
+            hasRcv ? s.rcvDist : 0,
+            hasRcv ? s.rcvCos  : 0,
+            v.mFirstVertex,
+            v.mRngSeed,
+            v.mRngIdx,
+            v.mBounces + 2,
+            v.mDiffuseBounces
+        );
 
         result = PathSample::Create(
             contrib,
-            hasRcv ? s.pdfAtRcv          : s.pdfW,
-            hasRcv ? s.rcvBounces        : s.bounces,
+            bounces,
+            hasRcv ? s.prefixPdf         : s.pdfW,
+            hasRcv ? s.prefixBounces     : s.bounces,
             hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
-            v.mBounces + 2,
             s.seed,
             s.id,
             suffix,
-            hasRcv ? PathFlags::eNone : PathFlags::eMergeAtRcv);
+            PathFlags::eVertexMerging);
 
         if (!gUseResampling) {
             print("Merged with path id", v.mRngIdx);
             print("Photon throughput", v.mThroughput);
-            print("bounces, subpath bounces", uint2(s.bounces, v.mBounces));
+            print("camera, light bounces", uint2(s.bounces, v.mBounces));
         }
 
         return result;
@@ -988,38 +1041,49 @@ extension PathGenerator {
         PathSuffix suffix = {};
         if (s.deltaRcv || bShift) {
             // if the rcv is unconnectable, this is a caustic light path and we store the primary vertex as the rcv instead.
-            suffix.mVertex = vertex.Pack();
-            suffix.mContribution = s.throughput;
-            suffix.mDirOut = vertex.GetDirIn();
-            suffix.mCos = cosIn;
-            suffix.mDist = dist;
-            suffix.mNumVertices = s.bounces + 2;
-            suffix.mPdf = s.pdfW;
+            suffix = PathSuffix::Create(
+                s.throughput,
+                s.pdfW,
+                vertex.Pack(),
+                vertex.GetDirIn(),
+                dist,
+                cosIn,
+                s.firstVertex,
+                s.seed,
+                s.id,
+                s.bounces + 2,
+                s.diffuseBounces + 1
+            );
 
             // for caustic paths, the mis weight is in the path contribution instead of the resampling/integration weights
             contrib *= misWeight;
             misWeight = 1;
         } else {
-            suffix.mVertex = s.rcv;
-            suffix.mContribution = s.throughputAtRcv;
-            suffix.mDirOut = s.rcvDirOut;
-            suffix.mCos    = s.rcvCos;
-            suffix.mDist   = s.rcvDist;
-            suffix.mNumVertices = s.bounces + 1;
+            suffix = PathSuffix::Create(
+                s.throughputAtRcv,
+                s.prefixPdf,
+                s.rcv,
+                s.rcvDirOut,
+                s.rcvDist,
+                s.rcvCos,
+                s.firstVertex,
+                s.seed,
+                s.id,
+                s.bounces + 1,
+                s.diffuseBounces + 1
+            );
         }
 
         result = PathSample::Create(
             contrib,
+            s.bounces + 1,
             1,
             0,
             0,
-            s.bounces + 2,
-            s.seed,
-            s.id,
+            -1,
+            -1,
             suffix,
             s.deltaRcv ? PathFlags::eCausticLightPath : PathFlags::eNone);
-
-        result.mLightSubpathVertex = s.firstVertex;
 
         return result;
     }
@@ -1090,7 +1154,7 @@ extension PathGenerator {
                 newDist = newRcv.mRayDistance;
                 visibilityRay = Ray(newRcv.mRayOrigin, newRcv.mRayDirection, 0, newRcv.mRayDistance);
 
-                if (basePath.mSuffix.mNumVertices == 1) {
+                if (basePath.mSuffix.mLightVertexCount <= 1) {
                     // triangle lights are one-sided
                     if (newCos < kMinCosTheta) {
                         print("Reconnection failed: newCos < kMinCosTheta", newCos);
@@ -1196,11 +1260,11 @@ extension PathGenerator {
 
         s.bounces = 0;
         s.diffuseBounces = 0;
-        s.rcvBounces = 0;
+        s.prefixBounces = 0;
         s.rcvDiffuseBounces = 0;
         s.throughput = 1;
         s.throughputAtRcv = 0;
-        s.pdfAtRcv = 0;
+        s.prefixPdf = 0;
         s.rcvDirOut = 0;
         s.pdfW = 1;
         if (gBidirectional) {
@@ -1314,7 +1378,7 @@ extension PathGenerator {
         s.pdfW = emissionPdfW;
         s.bounces = 0;
         s.diffuseBounces = 0;
-        s.rcvBounces = 0;
+        s.prefixBounces = 0;
         s.rcvDiffuseBounces = 0;
         s.dVCM = Mis(directPdfA / emissionPdfW);
         s.dVC = finiteEmitter ? Mis(cosLight / emissionPdfW) : 0;
@@ -1533,16 +1597,17 @@ extension PathGenerator {
                     if (!vertex.IsFinite()) s.rcv.mRayDistance = FLT_MAX;
                     s.rcvCos = vertex.HasFaceNormal() ? abs(dot(vertex.GetDirIn(), vertex.GetFaceNormal())) : 1;
                     s.rcvDist = s.rcv.mRayDistance;
-                    s.rcvBounces = s.bounces - 1;
+                    s.prefixBounces     = s.bounces - 1;
                     s.rcvDiffuseBounces = s.diffuseBounces - 1;
-                    s.pdfAtRcv = prevPdf;
+                    s.prefixPdf = prevPdf;
                     // throughputAtRcv and rcvDirOut are assigned next iteration after a direction is sampled
                 }
 
                 // update rcvDirOut and throughputAtRcv if this vertex was selected as the rcv last iteration
-                if (s.rcvFound && s.rcvBounces == s.bounces - 2) {
+                if (s.rcvFound && s.bounces == s.prefixBounces + 2) {
                     s.rcvDirOut = vertex.mVertex.mRayDirection;
                     s.throughputAtRcv = s.throughput;
+                    s.pdfAtRcv = s.pdfW;
                 }
 
                 // if vertex is emissive, form a path ending at vertex
@@ -1567,30 +1632,42 @@ extension PathGenerator {
                     // divide by pdf
                     weight /= s.pdfW;
 
-                    // finalize reconnection vertex
-                    const bool hasRcv = s.rcvFound;
                     PathSuffix suffix = {};
+                    const bool hasRcv = s.rcvFound;
                     if (hasRcv) {
                         // finalize the existing rcv
-                        suffix.mVertex = s.rcv;
-                        suffix.mCos = s.rcvCos;
-                        suffix.mDist = s.rcvDist;
-                        suffix.mNumVertices = s.bounces - s.rcvBounces;
-                        if (suffix.mNumVertices == 1) {
-                            suffix.mContribution = le; // rcv is the last vertex
+                        float suffixPdf;
+                        float3 suffixContrib = le;
+                        if (s.bounces == s.prefixBounces + 1) {
+                            // rcv is the last vertex
+                            suffixPdf = 1;
                         } else {
                             suffix.mDirOut = s.rcvDirOut;
-                            suffix.mContribution = le * SafeDivide(s.throughput, s.throughputAtRcv);
+                            suffixPdf = s.pdfW / s.pdfAtRcv;
+                            suffixContrib *= SafeDivide(s.throughput, s.throughputAtRcv);
                         }
-                    } else
-                        suffix.mNumVertices = 0;
+
+                        suffix = PathSuffix::Create(
+                            suffixContrib,
+                            suffixPdf,
+                            s.rcv,
+                            s.rcvDirOut,
+                            s.rcvDist,
+                            s.rcvCos,
+                            vertex.mVertex.mPackedHit,
+                            -1,
+                            -1,
+                            0,
+                            0
+                        );
+                    }
 
                     const PathSample ps = PathSample::Create(
                         s.throughput * le,
-                        hasRcv ? s.pdfAtRcv : s.pdfW,
-                        hasRcv ? s.rcvBounces : s.bounces,
+                        s.bounces,
+                        hasRcv ? s.prefixPdf         : s.pdfW,
+                        hasRcv ? s.prefixBounces     : s.bounces,
                         hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
-                        0,
                         s.seed,
                         s.id,
                         suffix,
@@ -1624,7 +1701,7 @@ extension PathGenerator {
                     v.dVC  = s.dVC;
                     v.dVM  = s.dVM;
                     v.dVCM = s.dVCM;
-                    v.mIntegrationWeight = 1/s.pdfW;
+                    v.mSubpathPdf = s.pdfW;
                     v.mRngIdx  = s.id;
                     v.mBounces = s.bounces;
                     v.mDiffuseBounces = s.diffuseBounces;
@@ -1647,8 +1724,8 @@ extension PathGenerator {
                         DebugSetPixel(pixelCoord);
                         if (!gUseResampling && ps.IsValid() && weight > 0) {
                             print("Found path. contrib:", ps.mContribution);
-                            print("\tLight subpath vertices:", ps.mNumLightSubpathVertices);
-                            print("\tMerge:", ps.HasFlag(PathFlags::eMergeAtRcv));
+                            print("\tLight subpath vertices:", ps.mSuffix.mLightVertexCount);
+                            print("\tMerge:", ps.HasFlag(PathFlags::eVertexMerging));
                             print("\tPrefix bounces:", ps.mPrefixBounces);
                         }
                         DebugSetPixel(-1);
@@ -1675,7 +1752,8 @@ extension PathGenerator {
             s.rcv = vertex.Pack();
             s.rcvDirOut = vertex.GetDirIn();
             s.throughputAtRcv = s.throughput;
-            s.rcvBounces = 0;
+            s.prefixPdf = s.pdfW;
+            s.prefixBounces = 0;
             s.rcvDiffuseBounces = 0;
 
             const float3 prevN = vertex.GetFaceNormal();
@@ -1711,7 +1789,7 @@ extension PathGenerator {
             return result;
         }
 
-        if (basePath.mSuffix.mNumVertices == 0) {
+        if (!basePath.HasSuffix()) {
             // pure random replay path, no suffix
             const float3 le = vertex.GetEmission();
             if (!any(le > 0)) {
@@ -1728,7 +1806,7 @@ extension PathGenerator {
                 return result;
             }
 
-            if (basePath.HasFlag(PathFlags::eMergeAtRcv) && (gBidirectional && gVertexMerging && !gLightTraceOnly)) {
+            if (basePath.HasFlag(PathFlags::eVertexMerging) && (gBidirectional && gVertexMerging && !gLightTraceOnly)) {
                 result = MergeWithSuffix(s, vertex, GetMergeRadius(vertex.GetPosition()), basePath, jacobian);
             } else {
                 result = ConnectToSuffix(s, vertex, basePath, jacobian);
@@ -1749,16 +1827,16 @@ extension PathGenerator {
         pixelCoord = -1;
 
         PathVertex vertex;
-        PathState<true> s = InitializeLightPath<true>(basePath.mRngSeed, basePath.mRngIdx, vertex, basePath.mLightSubpathVertex);
+        PathState<true> s = InitializeLightPath<true>(basePath.mSuffix.mLightSubpathRngSeed, basePath.mSuffix.mLightSubpathRngIdx, vertex, basePath.mSuffix.mLightSubpathVertex);
 
-        while (any(s.throughput > 0) && s.pdfW > 0 && s.bounces + 2 < basePath.mNumLightSubpathVertices && vertex.IsFinite()) {
+        while (any(s.throughput > 0) && s.pdfW > 0 && s.bounces + 2 < basePath.mSuffix.mLightVertexCount && vertex.IsFinite()) {
             const bool connectable = vertex.IsConnectable();
 
             // for light paths: rcv is always the 2nd to last vertex
-            s.rcv = vertex.Pack();
+            s.rcv       = vertex.Pack();
             s.rcvDirOut = vertex.GetDirIn();
             s.throughputAtRcv = s.throughput;
-            s.rcvBounces = 0;
+            s.prefixBounces = 0;
             s.rcvDiffuseBounces = 0;
 
             const float3 prevN = vertex.GetFaceNormal();
@@ -1772,8 +1850,8 @@ extension PathGenerator {
             s.deltaRcv = !connectable || deltaLobe;
         }
 
-        if (s.bounces + 2 != basePath.mNumLightSubpathVertices) {
-            print("Caustic shift failed: Path length mismatch", uint2(s.bounces + 2, basePath.mNumLightSubpathVertices));
+        if (s.bounces + 2 != basePath.mSuffix.mLightVertexCount) {
+            print("Caustic shift failed: Path length mismatch", uint2(s.bounces + 2, basePath.mSuffix.mLightVertexCount));
             return {};
         }
 
@@ -1792,7 +1870,6 @@ extension PathGenerator {
             print("Shift failed: Result not caustic", 0);
             return {};
         }
-
 
         // random replay jacobian
         jacobian = basePath.mSuffix.mPdf / result.mSuffix.mPdf;

@@ -25,73 +25,123 @@ struct PackedPathVertex {
 };
 
 struct PathSuffix {
-    float3 mContribution = 0;      ///< Contribution from vertices after the reconnection vertex.
-    float mPdf = 0;                ///< Product of solid-angle sampling PDFs after the reconnection vertex.
-    PackedPathVertex mVertex = {}; ///< First vertex in the suffix.
-    float3 mDirOut;                ///< Outgoing direction at the reconnection vertex.
-    float mDist = 0;               ///< Geometry term between the prefix and the suffix.
-    float mCos = 0;                ///< Geometry term between the prefix and the suffix.
-    uint mNumVertices = 0;         ///< Includes the reconnection vertex.
+    PackedPathVertex mVertex = {};          ///< First vertex in the suffix.
+    PackedHitInfo mLightSubpathVertex = {}; ///< First vertex in the light subpath
+    float3 mContribution = 0;               ///< Contribution from reflectance at vertices after the reconnection vertex and emission.
+    float mPdf = 0;                         ///< Product of solid-angle sampling PDFs after the reconnection vertex.
+    float3 mDirOut;                         ///< Outgoing direction from the reconnection vertex.
+    float mDist = 0;                        ///< Geometry term between the prefix and the suffix.
+    float mCos = 0;                         ///< Geometry term between the prefix and the suffix.
+    uint mLightSubpathRngSeed;
+    uint mPackedLightSubpathRngIdx;
+    uint mPackedLightSubpathBounces = 0;
+
+    // Number of light subpath vertices in the suffix.
+    property uint mLightVertexCount {
+        get { return BF_GET(mPackedLightSubpathBounces, 0, 16); }
+        set { BF_SET(mPackedLightSubpathBounces, newValue, 0, 16); }
+    }
+    property uint mLightSubpathDiffuseBounces {
+        get { return BF_GET(mPackedLightSubpathBounces, 16, 16); }
+        set { BF_SET(mPackedLightSubpathBounces, newValue, 16, 16); }
+    }
+    property uint2 mLightSubpathRngIdx {
+        get { return uint2(
+            BF_GET(mPackedLightSubpathRngIdx, 0, 16),
+            BF_GET(mPackedLightSubpathRngIdx, 16, 16)); }
+        set {
+            BF_SET(mPackedLightSubpathRngIdx, newValue.x, 0, 16);
+            BF_SET(mPackedLightSubpathRngIdx, newValue.y, 16, 16);
+        }
+    }
+
+    static PathSuffix Create(
+        const float3 contribution,
+        const float  pdf,
+        const PackedPathVertex reconnectionVertex,
+        const float3 reconnectionDirOut,
+        const float reconnectionDistance,
+        const float reconnectionCos,
+        const PackedHitInfo lightSubpathVertex,
+        const uint lightSubpathSeed,
+        const uint2 lightSubpathId,
+        const uint lightSubpathVertices,
+        const uint lightSubpathDiffuseBounces ) {
+        PathSuffix s = {};
+        s.mContribution = contribution;
+        s.mPdf = pdf;
+        s.mVertex = reconnectionVertex;
+        s.mDirOut = reconnectionDirOut;
+        s.mDist   = reconnectionDistance;
+        s.mCos    = reconnectionCos;
+        s.mLightSubpathVertex         = lightSubpathVertex;
+        s.mLightSubpathRngSeed        = lightSubpathSeed;
+        s.mLightSubpathRngIdx         = lightSubpathId;
+        s.mLightVertexCount           = lightSubpathVertices;
+        s.mLightSubpathDiffuseBounces = lightSubpathDiffuseBounces;
+        return s;
+    }
 };
 
 enum PathFlags : uint {
     eNone             = 0,
-    eMergeAtRcv       = 1,
-    eCausticLightPath = 2
+    eCausticLightPath = 1,
+    eVertexMerging    = 2,
 };
+
 
 // Represents an unweighted path sample, which can be shifted between domains.
 struct PathSample {
     float3 mContribution = 0; ///< Full path contribution. This is the product of BSDFs from each vertex, and emission from the last vertex.
     float  mPrefixPdf = 0;    ///< Product of solid-angle sampling PDFs before the reconnection vertex (excluding the bounce which ends on the reconnection vertex).
 
-    uint2 mPackedBounces = 0;
-    uint  mRngSeed;
-    uint  mPackedRngIdx;
+    uint mPackedBounces = 0;
+    uint mFlags = 0;
+    uint mRngSeed;
+    uint mPackedRngIdx;
 
     PathSuffix mSuffix = {};
-    PackedHitInfo mLightSubpathVertex = {}; ///< First vertex in the light subpath
+
+    // Number of bounces in the full path.
+    property uint mBounces {
+        get { return BF_GET(mPackedBounces, 0, 11); }
+        set { BF_SET(mPackedBounces, newValue, 0, 11); }
+    }
 
     // Number of bounces before the reconnection vertex.
     property uint mPrefixBounces {
-        get { return BF_GET(mPackedBounces[0], 0, 16); }
-        set { BF_SET(mPackedBounces[0], newValue, 0, 16); }
+        get { return BF_GET(mPackedBounces, 11, 11); }
+        set { BF_SET(mPackedBounces, newValue, 11, 11); }
     }
 
-    // Number of diffuse bounces in the full path.
+    // Number of diffuse bounces before the reconnection vertex.
     property uint mPrefixDiffuseBounces {
-        get { return BF_GET(mPackedBounces[0], 16, 16); }
-        set { BF_SET(mPackedBounces[0], newValue, 16, 16); }
-    }
-
-    // Number of diffuse bounces in the full path.
-    property uint mNumLightSubpathVertices {
-        get { return BF_GET(mPackedBounces[1], 0, 16); }
-        set { BF_SET(mPackedBounces[1], newValue, 0, 16); }
-    }
-
-    property uint mFlags {
-        get { return BF_GET(mPackedBounces[1], 16, 16); }
-        set { BF_SET(mPackedBounces[1], newValue, 16, 16); }
+        get { return BF_GET(mPackedBounces, 22, 10); }
+        set { BF_SET(mPackedBounces, newValue, 22, 10); }
     }
 
     property uint2 mRngIdx {
-        get { return uint2(BF_GET(mPackedRngIdx, 0, 16), BF_GET(mPackedRngIdx, 16, 16)); }
-        set { BF_SET(mPackedRngIdx, newValue.x, 0, 16); BF_SET(mPackedRngIdx, newValue.y, 16, 16); }
+        get { return uint2(
+            BF_GET(mPackedRngIdx, 0, 16),
+            BF_GET(mPackedRngIdx, 16, 16)); }
+        set {
+            BF_SET(mPackedRngIdx, newValue.x, 0, 16);
+            BF_SET(mPackedRngIdx, newValue.y, 16, 16);
+        }
     }
 
     bool IsValid() { return any(mContribution > 0) && mPrefixPdf > 0; }
-
     bool HasFlag(const PathFlags flag) { return (mFlags & uint(flag)) != 0; };
+    bool HasSuffix() { return mBounces > mPrefixBounces; }
 
     float GetTargetPdf() { return luminance(mContribution); }
 
     static PathSample Create(
         const float3 contrib,
+        const uint bounces,
         const float prefixPdf,
         const uint prefixBounces,
         const uint prefixDiffuseBounces,
-        const uint lightSubpathVertices,
         const uint rngSeed,
         const uint2 rngIdx,
         const PathSuffix suffix,
@@ -99,12 +149,12 @@ struct PathSample {
         PathSample ps = {};
         ps.mContribution = contrib;
         ps.mPrefixPdf = prefixPdf;
+        ps.mBounces = bounces;
         ps.mPrefixBounces = prefixBounces;
         ps.mPrefixDiffuseBounces = prefixDiffuseBounces;
-        ps.mNumLightSubpathVertices = lightSubpathVertices;
+        ps.mFlags = uint(flags);
         ps.mRngSeed = rngSeed;
         ps.mRngIdx = rngIdx;
-        ps.mFlags = uint(flags);
         ps.mSuffix = suffix;
         return ps;
 	}

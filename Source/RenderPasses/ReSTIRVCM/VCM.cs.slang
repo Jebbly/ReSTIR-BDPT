@@ -64,6 +64,8 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
     if (gPathGenerator.gUseCausticReservoirs) {
         cr.FinalizeMerge();
         gPathGenerator.mCausticReservoirs[id.y * gPathGenerator.mParams.mOutputDim.x + id.x] = cr;
+
+        gPathGenerator.IncrementCounter(DebugCounterType::eCausticReservoirM, uint(cr.mM));
     }
 }
 

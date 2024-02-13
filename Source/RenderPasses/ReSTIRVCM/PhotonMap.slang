@@ -22,41 +22,37 @@ uint pcg(uint v) {
     return (word >> 22u) ^ word;
 }
 
-
 struct LightSubpathVertex {
     PackedPathVertex mVertex = {};
     float3 mThroughput = 0;
-    uint mPacked;
+    float mSubpathPdf = 0;
 
-    float mIntegrationWeight = 0;
     float dVCM;
     float dVC;
     float dVM;
+    float pad;
 
-    property uint mBounces {
-        get { return BF_GET(mPacked, 0, 8); }
-        set { BF_SET(mPacked, newValue, 0, 8); }
-    }
-    property uint mDiffuseBounces {
-        get { return asuint(mVertex.pad1); }
-        set { mVertex.pad1 = asfloat(newValue); }
-    }
+    uint mRngSeed;
+    uint mPackedRngIdx;
+    uint mBounces;
+    uint mDiffuseBounces;
+    PackedHitInfo mFirstVertex;
+
     property uint2 mRngIdx {
         get {
             return uint2(
-                BF_GET(mPacked, 8, 12),
-                BF_GET(mPacked, 20, 12));
+                BF_GET(mPackedRngIdx, 0, 16),
+                BF_GET(mPackedRngIdx, 16, 16));
         }
         set {
-            BF_SET(mPacked, newValue.x, 8, 12);
-            BF_SET(mPacked, newValue.y, 20, 12);
+            BF_SET(mPackedRngIdx, newValue.x, 0, 16);
+            BF_SET(mPackedRngIdx, newValue.y, 16, 16);
         }
     }
 
-    float3 GetDirIn() {
-        return -mVertex.mRayDirection;
-    }
+    float3 GetDirIn() { return -mVertex.mRayDirection; }
 };
+static const uint LightSubpathVertexSize = sizeof(LightSubpathVertex);
 
 struct LightVertexCache
 {
