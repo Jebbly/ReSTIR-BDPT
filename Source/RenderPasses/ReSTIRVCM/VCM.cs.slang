@@ -9,7 +9,7 @@ void SampleLightPaths(uint3 index: SV_DispatchThreadID) {
     if (index.y * gPathGenerator.mParams.mOutputDim.x + index.x >= gPathGenerator.mParams.mLightSubpathCount) return;
     gPathGenerator.DebugSetPixel(-1);
 
-    gPathGenerator.SampleLightPath(gRandomSeed, index.xy);
+    gPathGenerator.SampleLightPath(PathId(gRandomSeed, index.xy));
 }
 
 [shader("compute")]
@@ -19,7 +19,7 @@ void SampleCameraPaths(uint3 index : SV_DispatchThreadID) {
     if (any(id >= gPathGenerator.mParams.mOutputDim)) return;
     gPathGenerator.DebugSetPixel(id);
 
-    const PathReservoir r = gPathGenerator.SampleCameraPath(gRandomSeed, id);
+    const PathReservoir r = gPathGenerator.SampleCameraPath(PathId(gRandomSeed, id));
 
     gPathGenerator.StoreReservoir(id, r);
 }

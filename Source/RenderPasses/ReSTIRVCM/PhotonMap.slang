@@ -27,26 +27,30 @@ struct LightSubpathVertex {
     float3 mThroughput = 0;
     float mSubpathPdf = 0;
 
+    PackedHitInfo mFirstVertex;
+    PathId mPathId;
+    uint mPackedBounces;
+    uint mTemporalJacobian;
+
     float dVCM;
     float dVC;
     float dVM;
     float pad;
 
-    uint mRngSeed;
-    uint mPackedRngIdx;
-    uint mBounces;
-    uint mDiffuseBounces;
-    PackedHitInfo mFirstVertex;
-
-    property uint2 mRngIdx {
+    property uint mBounces {
         get {
-            return uint2(
-                BF_GET(mPackedRngIdx, 0, 16),
-                BF_GET(mPackedRngIdx, 16, 16));
+            return BF_GET(mPackedBounces, 0, 16);
         }
         set {
-            BF_SET(mPackedRngIdx, newValue.x, 0, 16);
-            BF_SET(mPackedRngIdx, newValue.y, 16, 16);
+            BF_SET(mPackedBounces, newValue, 0, 16);
+        }
+    }
+    property uint mDiffuseBounces {
+        get {
+            return BF_GET(mPackedBounces, 16, 16);
+        }
+        set {
+            BF_SET(mPackedBounces, newValue, 16, 16);
         }
     }
 
@@ -54,8 +58,7 @@ struct LightSubpathVertex {
 };
 static const uint LightSubpathVertexSize = sizeof(LightSubpathVertex);
 
-struct LightVertexCache
-{
+struct LightVertexCache {
     RWStructuredBuffer<LightSubpathVertex> lightVertices; ///< Diffuse light sub-path vertices.
     RWStructuredBuffer<uint> lightVertexCount;            ///< Number of items in lightVertices.
 
@@ -70,7 +73,7 @@ struct LightVertexCache
         set { lightVertices[i] = newValue; }
     }
 
-    uint addVertex(const LightSubpathVertex v)
+    uint Insert(const LightSubpathVertex v)
     {
         uint i;
         InterlockedAdd(lightVertexCount[0], 1, i);
@@ -79,8 +82,7 @@ struct LightVertexCache
     }
 }
 
-struct PhotonMap
-{
+struct PhotonMap {
     RWStructuredBuffer<uint> cellSizes;   ///< Number of photons in each cell.
     RWStructuredBuffer<uint> cellOffsets; ///< Index in cellData where each cell starts. First element is the total number of elements.
 

@@ -110,7 +110,7 @@ void main(uint3 index: SV_DispatchThreadID) {
     float mc = 1;
 
     if (center.mSample.IsValid()) {
-        print("\nCenter id:", center.mSample.mRngIdx);
+        print("\nCenter id:", center.mSample.mId.mId);
         print("f:", center.mSample.GetTargetPdf());
         print("W:", center.mW);
     } else {
@@ -136,7 +136,7 @@ void main(uint3 index: SV_DispatchThreadID) {
 
         print("Candidate M:", candidate.mM);
         if (candidate.mSample.IsValid()) {
-            print("Candidate id:", candidate.mSample.mRngIdx);
+            print("Candidate id:", candidate.mSample.mId.mId);
             print("f:", candidate.mSample.GetTargetPdf());
             print("W:", candidate.mW);
         }
@@ -220,7 +220,7 @@ void main(uint3 index: SV_DispatchThreadID) {
 
     r.FinalizeMerge();
 
-    print("Final center id:", r.mSample.mRngIdx);
+    print("Final center id:", r.mSample.mId.mId);
     print("f:", r.mSample.GetTargetPdf());
     print("W:", r.mW);
 

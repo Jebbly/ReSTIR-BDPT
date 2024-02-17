@@ -22,7 +22,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
     float jacobianToCenter = 0;
 
     if (r.mSample.IsValid()) {
-        print("\nCenter id, seed:", uint3(r.mSample.mRngIdx, r.mSample.mRngSeed));
+        print("\nCenter id, seed:", uint3(r.mSample.mId.mId, r.mSample.mId.mSeed));
         print("f:", r.mSample.GetTargetPdf());
         print("W:", r.mW);
     } else {
@@ -30,7 +30,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
     }
 
     if (candidate.mSample.IsValid()) {
-        print("Candidate id, seed:", uint3(candidate.mSample.mRngIdx, candidate.mSample.mRngSeed));
+        print("Candidate id, seed:", uint3(candidate.mSample.mId.mId, candidate.mSample.mId.mSeed));
         print("f:", candidate.mSample.GetTargetPdf());
         print("W:", candidate.mW);
         print("M:", candidate.mM);
