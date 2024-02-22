@@ -111,8 +111,7 @@ void main(uint3 index: SV_DispatchThreadID) {
 
     if (center.mSample.IsValid()) {
         print("\nCenter id:", center.mSample.mId.mId);
-        print("f:", center.mSample.GetTargetPdf());
-        print("W:", center.mW);
+        print("f, W:", float2(center.mSample.GetTargetPdf(), center.mW));
     } else {
         print("\nInvalid center sample", 0);
     }
@@ -134,11 +133,9 @@ void main(uint3 index: SV_DispatchThreadID) {
 
         PathReservoir candidate = gPathGenerator.LoadInputReservoir(p);
 
-        print("Candidate M:", candidate.mM);
         if (candidate.mSample.IsValid()) {
             print("Candidate id:", candidate.mSample.mId.mId);
-            print("f:", candidate.mSample.GetTargetPdf());
-            print("W:", candidate.mW);
+            print("f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
         }
 
         if (gMISType == RMISType::ePairwise) {
@@ -176,8 +173,9 @@ void main(uint3 index: SV_DispatchThreadID) {
         candidate.mSample = gPathGenerator.ShiftPath(candidate.mSample, vertex, jacobianToCenter);
         print("jacobianToCenter:", jacobianToCenter);
 
-        if (!(jacobianToCenter > 0)) {
+        if (!candidate.mSample.IsValid() || !(jacobianToCenter > 0)) {
             r.mM += candidate.mM;
+            gPathGenerator.IncrementCounter(DebugCounterType::eSpatialShiftFailures);
             continue;
         }
 
@@ -221,8 +219,7 @@ void main(uint3 index: SV_DispatchThreadID) {
     r.FinalizeMerge();
 
     print("Final center id:", r.mSample.mId.mId);
-    print("f:", r.mSample.GetTargetPdf());
-    print("W:", r.mW);
+    print("f, W, M:", float3(r.mSample.GetTargetPdf(), r.mW, r.mM));
 
     if (gPathGenerator.mParams.mMCap > 0) r.mM = min(r.mM, gPathGenerator.mParams.mMCap);
     gPathGenerator.StoreReservoir(id, r);

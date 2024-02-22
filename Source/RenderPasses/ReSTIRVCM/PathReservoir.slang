@@ -46,26 +46,46 @@ struct PackedPathVertex {
     bool IsFinite() { return HitInfo(mPackedHit).isValid(); }
 };
 
-struct PathSuffix {
-    PackedPathVertex mVertex = {};          ///< First vertex in the suffix.
-    PackedHitInfo mLightSubpathVertex = {}; ///< First vertex in the light subpath
-    float3 mContribution = 0;               ///< Contribution from reflectance at vertices after the reconnection vertex and emission.
-    float mPdf = 0;                         ///< Product of solid-angle sampling PDFs after the reconnection vertex.
-    float3 mDirOut;                         ///< Outgoing direction from the reconnection vertex.
-    float mDist = 0;                        ///< Geometry term between the prefix and the suffix.
-    float mCos = 0;                         ///< Geometry term between the prefix and the suffix.
-    PathId mLightSubpathId;
-    uint mPackedLightSubpathBounces = 0;
+struct LightSubpathData {
+    PackedHitInfo mFirstVertex = {};
+    PathId mId;
+    uint mPackedBounces = 0;
+    uint mRefractMask = 0;
 
-    // Number of light subpath vertices in the suffix.
-    property uint mLightVertexCount {
-        get { return BF_GET(mPackedLightSubpathBounces, 0, 16); }
-        set { BF_SET(mPackedLightSubpathBounces, newValue, 0, 16); }
+    property uint mVertexCount {
+        get { return BF_GET(mPackedBounces, 0, 16); }
+        set { BF_SET(mPackedBounces, newValue, 0, 16); }
     }
-    property uint mLightSubpathDiffuseBounces {
-        get { return BF_GET(mPackedLightSubpathBounces, 16, 16); }
-        set { BF_SET(mPackedLightSubpathBounces, newValue, 16, 16); }
+
+    property uint mDiffuseBounces {
+        get { return BF_GET(mPackedBounces, 16, 16); }
+        set { BF_SET(mPackedBounces, newValue, 16, 16); }
     }
+
+    static LightSubpathData Create(
+        const PackedHitInfo firstVertex,
+        const PathId id,
+        const uint vertexCount,
+        const uint diffuseBounces,
+        const uint refractMask ) {
+        LightSubpathData d = {};
+        d.mFirstVertex = firstVertex;
+        d.mId = id;
+        d.mVertexCount = vertexCount;
+        d.mDiffuseBounces = diffuseBounces;
+        d.mRefractMask = refractMask;
+        return d;
+    }
+};
+
+struct PathSuffix {
+    PackedPathVertex mVertex = {};       ///< First vertex in the suffix.
+    LightSubpathData mLightSubpath = {}; ///< Light subpath id
+    float3 mContribution = 0;            ///< Contribution from reflectance at vertices after the reconnection vertex and emission.
+    float mPdf = 0;                      ///< Product of solid-angle sampling PDFs after the reconnection vertex.
+    float3 mDirOut;                      ///< Outgoing direction from the reconnection vertex.
+    float mDist = 0;                     ///< Geometry term between the prefix and the suffix.
+    float mCos = 0;                      ///< Geometry term between the prefix and the suffix.
 
     static PathSuffix Create(
         const float3 contribution,
@@ -74,21 +94,15 @@ struct PathSuffix {
         const float3 reconnectionDirOut,
         const float reconnectionDistance,
         const float reconnectionCos,
-        const PackedHitInfo lightSubpathVertex,
-        const PathId mLightSubpathId,
-        const uint lightSubpathVertices,
-        const uint lightSubpathDiffuseBounces ) {
+        const LightSubpathData lightSubpath ) {
         PathSuffix s = {};
         s.mContribution = contribution;
         s.mPdf = pdf;
-        s.mVertex = reconnectionVertex;
         s.mDirOut = reconnectionDirOut;
         s.mDist   = reconnectionDistance;
         s.mCos    = reconnectionCos;
-        s.mLightSubpathVertex         = lightSubpathVertex;
-        s.mLightSubpathId             = mLightSubpathId;
-        s.mLightVertexCount           = lightSubpathVertices;
-        s.mLightSubpathDiffuseBounces = lightSubpathDiffuseBounces;
+        s.mVertex = reconnectionVertex;
+        s.mLightSubpath = lightSubpath;
         return s;
     }
 };

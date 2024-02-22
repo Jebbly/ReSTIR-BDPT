@@ -23,35 +23,21 @@ uint pcg(uint v) {
 }
 
 struct LightSubpathVertex {
+    LightSubpathData mLightSubpath = {};
     PackedPathVertex mVertex = {};
     float3 mThroughput = 0;
     float mSubpathPdf = 0;
-
-    PackedHitInfo mFirstVertex;
-    PathId mPathId;
-    uint mPackedBounces;
-    uint mTemporalJacobian;
-
     float dVCM;
     float dVC;
     float dVM;
-    float pad;
+    float pad1;
 
     property uint mBounces {
-        get {
-            return BF_GET(mPackedBounces, 0, 16);
-        }
-        set {
-            BF_SET(mPackedBounces, newValue, 0, 16);
-        }
+        get { return mLightSubpath.mVertexCount - 2; }
     }
     property uint mDiffuseBounces {
-        get {
-            return BF_GET(mPackedBounces, 16, 16);
-        }
-        set {
-            BF_SET(mPackedBounces, newValue, 16, 16);
-        }
+        get { return mLightSubpath.mDiffuseBounces; }
+        set { mLightSubpath.mDiffuseBounces = newValue; }
     }
 
     float3 GetDirIn() { return -mVertex.mRayDirection; }

@@ -9,40 +9,56 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
     const int2 prevPixel = int2((id + 0.5) + gPathGenerator.mParams.mOutputDim * gPathGenerator.mMotionVectors[id]);
     if (any(prevPixel < 0) || any(prevPixel >= gPathGenerator.mParams.mOutputDim)) return;
 
-    const PackedPathVertex prevVertex = gPathGenerator.LoadPrevPrimaryVertex(prevPixel);
-    if (!prevVertex.IsFinite())
-        return;
-
     PathReservoir candidate = gPathGenerator.LoadPrevReservoir(prevPixel);
     if (!(candidate.mM > 0) || isinf(candidate.mM))
         return;
 
-    const float candidateTargetPdf = candidate.mSample.GetTargetPdf();
+    const PackedPathVertex prevVertex = gPathGenerator.LoadPrevPrimaryVertex(prevPixel);
+    if (!prevVertex.IsFinite())
+        return;
 
+    float candidateTargetPdf = candidate.mSample.GetTargetPdf();
     float jacobianToCenter = 0;
 
     if (r.mSample.IsValid()) {
         print("\nCenter id, seed:", uint3(r.mSample.mId.mId, r.mSample.mId.mSeed));
-        print("f:", r.mSample.GetTargetPdf());
-        print("W:", r.mW);
+        print("f, W:", float2(r.mSample.GetTargetPdf(), r.mW));
     } else {
         print("\nInvalid center sample", 0);
     }
 
     if (candidate.mSample.IsValid()) {
         print("Candidate id, seed:", uint3(candidate.mSample.mId.mId, candidate.mSample.mId.mSeed));
-        print("f:", candidate.mSample.GetTargetPdf());
-        print("W:", candidate.mW);
-        print("M:", candidate.mM);
+        print("f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
 
-        candidate.mSample = gPathGenerator.ShiftPath(candidate.mSample, primaryHit, jacobianToCenter);
+        if (gPathGenerator.gUseCausticMotionVectors && candidate.mSample.HasFlag(PathFlags::eCausticLightPath)) {
+            // sample was already shifted in ShiftCaustics
+            // HACK: store jacobian and original target pdf in reservoir
+            jacobianToCenter   = candidate.mSample.mSuffix.mVertex.pad1;
+            candidateTargetPdf = candidate.mSample.mPrefixPdf;
+            candidate.mSample.mPrefixPdf = 1.f; // prefixPdf is not used (and always 1) for caustic paths
+
+            // reject path if it's not in the same pixel (or close)
+            const float2 d = float2(int2(id) - gPathGenerator.GetPixelCoord(PathVertex(candidate.mSample.mSuffix.mVertex).GetPosition()));
+            const float d2 = dot(d, d);
+            const float r = gPathGenerator.mParams.mCausticReuseRadius;
+            if ((r == 0 && any(d != 0.f)) ||
+                (r > 0 && d2 > r*r)) {
+                candidate.mSample = {};
+                jacobianToCenter = 0.f;
+            }
+        } else {
+            candidate.mSample = gPathGenerator.ShiftPath(candidate.mSample, primaryHit, jacobianToCenter);
+        }
         print("jacobianToCenter:", jacobianToCenter);
 
         if (candidate.mSample.IsValid() && jacobianToCenter > 0) {
             gPathGenerator.IncrementCounter(DebugCounterType::eTemporalShiftSuccesses);
-            if (!gPathGenerator.gUseCausticReservoirs && candidate.mSample.HasFlag(PathFlags::eCausticLightPath))
-                gPathGenerator.IncrementCounter(DebugCounterType::eCausticShiftSuccesses);
-        }
+            if (!gPathGenerator.gUseCausticReservoirs && candidate.mSample.HasFlag(PathFlags::eCausticLightPath)) {
+                gPathGenerator.IncrementCounter(DebugCounterType::eCausticReservoirM, uint(candidate.mM));
+            }
+        } else
+            gPathGenerator.IncrementCounter(DebugCounterType::eTemporalShiftFailures);
     } else {
         print("Invalid candidate sample", 0);
     }
@@ -79,61 +95,68 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
 
     r.FinalizeMerge();
 
-    print("Final center f:", r.mSample.GetTargetPdf());
-    print("Final center W:", r.mW);
+    print("Final center f, W:", float2(r.mSample.GetTargetPdf(), r.mW));
 }
 
 void TemporalCausticReuse(const uint2 id, inout SampleGenerator sg) {
+    PathReservoir center = gPathGenerator.LoadCausticReservoir(id);
+
     const uint flatId = id.y * gPathGenerator.mParams.mOutputDim.x + id.x;
-
-    // load the canonical sample from the current frame
-    PathReservoir center = gPathGenerator.mCausticReservoirs[flatId];
-    const float centerM = max(1, center.mM);
-
-    // shift current sample to the previous frame
-    float jacobianToPrev = 0;
-    float shiftedTargetPdf = 0;
-    float prevM = 0;
-    if (center.mSample.IsValid()) {
-        int2 prevId = id;
-        jacobianToPrev = 1;
-        shiftedTargetPdf = center.mSample /*gPathGenerator.ShiftCausticPath(center.mSample, jacobianToPrev, prevId)*/.GetTargetPdf();
-        if (all(prevId >= 0) && all(prevId < gPathGenerator.mParams.mOutputDim)) {
-            prevM = 1;
-            const PathReservoir prevReservoir = gPathGenerator.mLastCausticReservoirs[prevId.y * gPathGenerator.mParams.mOutputDim.x + prevId.x];
-            if (prevReservoir.mSample.IsValid())
-                prevM = prevReservoir.mM;
-        }
-    }
-
-    center.PrepareMerge(centerM / (centerM + prevM));
-    center.mM += prevM;
-
     const uint2 range = gPathGenerator.mCausticReservoirMap.GetCellDataRange(flatId);
-    if (range.y > range.x) {
-        float Msum = 1;
-        for (uint i = range.x; i < range.y; i++) {
-            Msum += gPathGenerator.mCausticReservoirMap[i].mM;
+
+    float Msum = 1;
+    for (uint i = range.x; i < range.y; i++)
+        Msum += gPathGenerator.mCausticReservoirMap[i].mM;
+
+    // apply RMIS to canonical sample from the current frame
+    {
+        /*
+        // shift center sample to the previous frame
+        float jacobianToPrev = 0;
+        float shiftedTargetPdf = 0;
+        float previousM = 0;
+        if (center.mSample.IsValid()) {
+            #if 1
+            const int2 prevId = gPathGenerator.GetPrevPixelCoord(PathVertex(center.mSample.mSuffix.mVertex).GetPosition());
+            jacobianToPrev = 1;
+            shiftedTargetPdf = center.mSample.GetTargetPdf();
+            #else
+            int2 prevId;
+            shiftedTargetPdf = gPathGenerator.ShiftCausticPath(center.mSample, jacobianToPrev, prevId).GetTargetPdf();
+            #endif
+
+            if (shiftedTargetPdf > 0 && all(prevId >= 0) && all(prevId < gPathGenerator.mParams.mOutputDim)) {
+                previousM = max(1, gPathGenerator.LoadPrevCausticReservoir(prevId).mM);
+            }
         }
 
-        for (uint i = range.x; i < range.y; i++) {
-            PathReservoir candidate = gPathGenerator.mCausticReservoirMap[i];
-
-            // HACK: store jacobian and original target pdf in reservoir
-            const float jacobianToCenter   = candidate.mSample.mSuffix.mVertex.pad1;
-            const float candidateTargetPdf = candidate.mSample.mPrefixPdf;
-            candidate.mSample.mPrefixPdf = 1.f; // prefixPdf is not used (and always 1) for caustic paths
-
-            candidate.PrepareMerge(candidate.mM / (1.0 + candidate.mM), jacobianToCenter);
-
-            if (!center.Merge(sampleNext1D(sg), candidate))
-                gPathGenerator.IncrementCounter(DebugCounterType::eCausticReuseAcceptances);
-        }
+        center.PrepareMerge(1.0 / (1.0 + previousM));
+        */
+        center.PrepareMerge(1 / Msum);
     }
+
+    // Merge shifted samples from previous frame
+
+    for (uint i = range.x; i < range.y; i++) {
+        PathReservoir candidate = gPathGenerator.mCausticReservoirMap[i];
+
+        // HACK: store jacobian and original target pdf in reservoir
+        const float jacobianToCenter   = candidate.mSample.mSuffix.mVertex.pad1;
+        const float candidateTargetPdf = candidate.mSample.mPrefixPdf;
+        candidate.mSample.mPrefixPdf = 1.f; // prefixPdf is not used (and always 1) for caustic paths
+
+        candidate.PrepareMerge(candidate.mM / Msum, jacobianToCenter);
+
+        if (!center.Merge(sampleNext1D(sg), candidate))
+            gPathGenerator.IncrementCounter(DebugCounterType::eCausticReuseAcceptances);
+
+        gPathGenerator.IncrementCounter(DebugCounterType::eCausticReservoirM, uint(candidate.mM));
+    }
+
     center.FinalizeMerge();
 
     if (gPathGenerator.mParams.mMCap > 0) center.mM = min(center.mM, gPathGenerator.mParams.mMCap);
-    gPathGenerator.mCausticReservoirs[flatId] = center;
+    gPathGenerator.StoreCausticReservoir(id, center);
 }
 
 [shader("compute")]
@@ -163,7 +186,9 @@ void ShiftCaustics(uint3 index: SV_DispatchThreadID) {
     if (any(id >= gPathGenerator.mParams.mOutputDim)) return;
     gPathGenerator.DebugSetPixel(id);
 
-    PathReservoir r = gPathGenerator.mLastCausticReservoirs[id.y * gPathGenerator.mParams.mOutputDim.x + id.x];
+    PathReservoir r = gPathGenerator.gUseCausticReservoirs ?
+        gPathGenerator.LoadPrevCausticReservoir(id) :
+        gPathGenerator.LoadPrevReservoir(id);
     if (!(r.mW > 0) || !r.mSample.IsValid() || !r.mSample.HasFlag(PathFlags::eCausticLightPath))
         return;
 
@@ -179,14 +204,27 @@ void ShiftCaustics(uint3 index: SV_DispatchThreadID) {
         return;
     }
 
+    gPathGenerator.IncrementCounter(DebugCounterType::eCausticShiftSuccesses);
+
     print("Shifted caustic path. new f, jacobian:", float4(r.mSample.mContribution, jacobian));
 
     // HACK: store jacobian and original target pdf in reservoir
     r.mSample.mSuffix.mVertex.pad1 = jacobian;
     r.mSample.mPrefixPdf = originalTargetPdf; // prefixPdf is not used (and always 1) for caustic paths
 
-    gPathGenerator.mCausticReservoirMap.Insert(newId.y * gPathGenerator.mParams.mOutputDim.x + newId.x, r);
+    const uint flatId = newId.y * gPathGenerator.mParams.mOutputDim.x + newId.x;
 
-    gPathGenerator.DebugSetPixel(newId);
-    gPathGenerator.IncrementCounter(DebugCounterType::eCausticShiftSuccesses);
+    if (gPathGenerator.gUseCausticReservoirs)
+        gPathGenerator.mCausticReservoirMap.Insert(flatId, r);
+
+    if (gPathGenerator.gUseCausticMotionVectors) {
+        gPathGenerator.mLastReservoirs[id.y * gPathGenerator.mParams.mOutputDim.x + id.x] = r;
+
+        const uint byte = flatId / 8;
+        const uint bit = 1 << (flatId % 8);
+        uint m;
+        gPathGenerator.mCausticMotionVectorMutex.InterlockedOr(byte, bit, m);
+        if ((m & bit) != 0)
+            gPathGenerator.mMotionVectors[newId] = (id - (newId + 0.5)) / gPathGenerator.mParams.mOutputDim;
+    }
 }

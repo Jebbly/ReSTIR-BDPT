@@ -25,20 +25,25 @@ enum class DebugCounterType : uint {
     eSpatialShiftSuccesses    = (1 << 3),
     eCausticShiftSuccesses    = (1 << 4),
 
-    eCausticReservoirM        = (1 << 5),
+    eTemporalShiftFailures    = (1 << 5),
+    eSpatialShiftFailures     = (1 << 6),
+    eCausticShiftFailures     = (1 << 7),
 
-    eTemporalReuseAcceptances = (1 << 6),
-    eSpatialReuseAcceptances  = (1 << 7),
-    eCausticReuseAcceptances  = (1 << 8),
+    eTemporalReuseAcceptances = (1 << 8),
+    eSpatialReuseAcceptances  = (1 << 9),
+    eCausticReuseAcceptances  = (1 << 10),
 
-    eCausticShiftFailures     = (1 << 9),
+    eCausticReservoirM        = (1 << 11),
 
-    eRays             = 3,
-    eShiftSuccesses   = (1 << 2) | (1 << 3) | (1 << 4),
-    eReuseAcceptances = (1 << 5) | (1 << 6) | (1 << 7)
+    eRays                     = (1 << 0) | (1 << 1),
+    eShiftSuccesses           = (1 << 2) | (1 << 3) | (1 << 4),
+    eShiftFailures            = (1 << 5) | (1 << 6) | (1 << 7),
+    eReuseAcceptances         = (1 << 8) | (1 << 9) | (1 << 10),
 };
 FALCOR_ENUM_INFO(
     DebugCounterType, {
+        { (DebugCounterType)0, "None" },
+
         { DebugCounterType::eScatterRays, "Scatter rays" },
         { DebugCounterType::eOcclusionRays, "Occlusion rays" },
         { DebugCounterType::eRays, "Rays" },
@@ -48,14 +53,17 @@ FALCOR_ENUM_INFO(
         { DebugCounterType::eCausticShiftSuccesses, "Caustic shift successes" },
         { DebugCounterType::eShiftSuccesses, "Shift successes" },
 
-        { DebugCounterType::eCausticReservoirM, "Caustic reservoir M" },
-
+        { DebugCounterType::eTemporalShiftFailures, "Temporal shift failures" },
+        { DebugCounterType::eSpatialShiftFailures, "Spatial shift failures" },
         { DebugCounterType::eCausticShiftFailures, "Caustic shift failures" },
+        { DebugCounterType::eShiftFailures, "Shift failures" },
 
         { DebugCounterType::eTemporalReuseAcceptances, "Temporal reuse acceptances" },
         { DebugCounterType::eSpatialReuseAcceptances, "Spatial reuse acceptances" },
         { DebugCounterType::eCausticReuseAcceptances, "Caustic reuse acceptances" },
         { DebugCounterType::eReuseAcceptances, "Reuse acceptances" },
+
+        { DebugCounterType::eCausticReservoirM, "Caustic reservoir M" },
     }
 );
 FALCOR_ENUM_REGISTER(DebugCounterType);
@@ -78,7 +86,7 @@ struct PathGeneratorParams {
 
     float mReconnectionDistance  = 0.01f;
     float mReconnectionRoughness = 0.08f; ///< sqrt(kMinGGXAlpha)
-    float mCausticReuseRadius = 0.f; // in pixels
+    float mCausticReuseRadius = 0.f;      // in pixels
 
     uint  mSpatialReuseSamples = 4;
     float mSpatialReuseRadius  = 30.f;

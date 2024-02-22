@@ -70,8 +70,9 @@ private:
         bool        useVMOnly = false;
         bool        useResampling = true;
         bool        useTemporalReuse = true;
-        bool        validateSuffixes = false;
-        bool        useCausticReservoirs = false;
+        bool        validateSuffixes = true;
+        bool        useCausticReservoirs = true;
+        bool        useCausticMotionVectors = false;
         uint        spatialReusePasses = 1;
         uint32_t    sampleGenerator = SAMPLE_GENERATOR_TINY_UNIFORM;
         float       misPowerExponent = 2;
@@ -92,9 +93,6 @@ private:
     mutable LightBVHSampler::Options mLightBVHOptions;          ///< Current options for the light BVH sampler.
 
     bool                            mEnabled = true;            ///< Switch to enable/disable the path tracer. When disabled the pass outputs are cleared.
-    RenderPassHelpers::IOSize       mOutputSizeSelection = RenderPassHelpers::IOSize::Default;  ///< Selected output size.
-    uint2                           mFixedOutputSize = { 512, 512 };                            ///< Output size in pixels when 'Fixed' size is selected.
-
     bool                            mPauseRendering  = false;
     bool                            mRenderOnce      = false;
     bool                            mRenderOnceSceneUpdated = false;
@@ -143,6 +141,7 @@ private:
     ref<Buffer>                     mpLastReservoirs;            ///< Per-pixel reservoirs.
     ref<Buffer>                     mpCausticReservoirs;         ///< Per-pixel reservoirs.
     ref<Buffer>                     mpLastCausticReservoirs;     ///< Per-pixel reservoirs.
+    ref<Buffer>                     mpCausticMotionVectorMutex;  ///< Mutex for writing caustic motion vectors.
     ref<Buffer>                     mpPixelCounterData;
 
     ref<Texture>                    mpLastVbuffer;               ///< Copy of the vbuffer from last frame.
