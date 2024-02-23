@@ -50,7 +50,6 @@ struct LightSubpathData {
     PackedHitInfo mFirstVertex = {};
     PathId mId;
     uint mPackedBounces = 0;
-    uint mRefractMask = 0;
 
     property uint mVertexCount {
         get { return BF_GET(mPackedBounces, 0, 16); }
@@ -66,14 +65,12 @@ struct LightSubpathData {
         const PackedHitInfo firstVertex,
         const PathId id,
         const uint vertexCount,
-        const uint diffuseBounces,
-        const uint refractMask ) {
+        const uint diffuseBounces) {
         LightSubpathData d = {};
         d.mFirstVertex = firstVertex;
         d.mId = id;
         d.mVertexCount = vertexCount;
         d.mDiffuseBounces = diffuseBounces;
-        d.mRefractMask = refractMask;
         return d;
     }
 };

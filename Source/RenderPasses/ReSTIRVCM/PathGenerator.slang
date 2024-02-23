@@ -553,7 +553,6 @@ extension PathGenerator {
         uint packedBounces = 0;
         uint packedDiffuseBounces = 0;
 
-        uint refractMask = 0;
         PathId id;
         PathId lightSubpathId;
         PackedHitInfo lightSubpathVertex = {};
@@ -598,8 +597,7 @@ extension PathGenerator {
             s.lightSubpathVertex,
             s.id,
             s.bounces + 2,
-            s.diffuseBounces,
-            s.refractMask
+            s.diffuseBounces
         );
         v.mVertex = vertex.Pack();
         v.mThroughput = s.throughput;
@@ -735,6 +733,9 @@ extension PathGenerator {
         if (Occluded(Ray(l.mRayOrigin, l.mRayDirection, 0, l.mRayDistance)))
             return result;
 
+        // divide by pdf
+        integrationWeight = 1.f / samplePdf;
+
         // compute mis weight
         if (DebugDisableMIS()) {
             misWeight = 1;
@@ -747,9 +748,6 @@ extension PathGenerator {
                 misWeight = Mis(directPdfW, f.mFwdPdfW);
             }
         }
-
-        // divide by pdf
-        integrationWeight = 1.f / samplePdf;
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -779,7 +777,6 @@ extension PathGenerator {
             l.mPackedHit,
             lightPathId,
             1,
-            0,
             0
         );
 
@@ -865,21 +862,20 @@ extension PathGenerator {
             return result;
         }
 
-        // Convert pdfs to area measure
         const float invDist2 = 1 / sqr(dist);
-        const float cameraBsdfDirPdfA = f.mFwdPdfW * cosLight * invDist2;
-        const float lightBsdfDirPdfA  = r.mFwdPdfW * cosCam   * invDist2;
+
+        integrationWeight = subpathWeight * (cosLight * invDist2) / (s.pdfW * v.mSubpathPdf);
 
         // mis weight
         if (DebugDisableMIS()) {
             misWeight = 1;
         } else {
+            const float cameraBsdfDirPdfA = f.mFwdPdfW * cosLight * invDist2;
+            const float lightBsdfDirPdfA  = r.mFwdPdfW * cosCam   * invDist2;
             const float wLight = Mis(cameraBsdfDirPdfA) * (GetMisVmWeightFactor() + v.dVCM + v.dVC * Mis(r.mRevPdfW));
             const float wCamera = Mis(lightBsdfDirPdfA) * (GetMisVmWeightFactor() + s.dVCM + s.dVC * Mis(f.mRevPdfW));
             misWeight = 1 / (wLight + 1.f + wCamera);
         }
-
-        integrationWeight = subpathWeight * (cosLight * invDist2) / (s.pdfW * v.mSubpathPdf);
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -951,9 +947,12 @@ extension PathGenerator {
                 return result;
             f.mReflectance /= cosOut; // divide out dot(N, wo)
         }
+
         const float3 contrib = s.throughput * v.mThroughput * f.mReflectance;
         if (all(contrib <= 0))
             return result;
+
+        integrationWeight = subpathWeight / (s.pdfW * v.mSubpathPdf * (sqr(mergeRadius) * M_PI * mParams.mLightSubpathCount));
 
         const float wLight  = v.dVCM * GetMisVcWeightFactor() + v.dVM * Mis(f.mFwdPdfW);
         const float wCamera = s.dVCM * GetMisVcWeightFactor() + s.dVM * Mis(f.mRevPdfW);
@@ -962,9 +961,6 @@ extension PathGenerator {
             misWeight = 1;
         else
             misWeight = 1.f / (wLight + 1.f + wCamera);
-
-        integrationWeight = subpathWeight / (s.pdfW * v.mSubpathPdf * (sqr(mergeRadius) * M_PI * mParams.mLightSubpathCount));
-
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -1064,9 +1060,10 @@ extension PathGenerator {
             return result;
         }
 
+        integrationWeight = 1.f / samplePdf;
+
         const float wLight = Mis(cameraPdfA / mParams.mLightSubpathCount) * (GetMisVmWeightFactor() + s.dVCM + s.dVC * Mis(f.mRevPdfW));
         misWeight = (gLightTraceOnly || DebugDisableMIS()) ? 1.f : (1.f / (wLight + 1.f));
-        integrationWeight = 1.f / samplePdf;
 
         PathSuffix suffix = {};
         if (s.deltaRcv || bShift) {
@@ -1083,16 +1080,9 @@ extension PathGenerator {
                     s.lightSubpathVertex,
                     s.id,
                     s.bounces + 2,
-                    s.diffuseBounces + 1,
-                    s.refractMask
+                    s.diffuseBounces + 1
                 )
             );
-
-            // for caustic reservoirs, the mis weight is in the path contribution instead of the resampling/integration weights
-            /*if (gUseCausticReservoirs) {
-                contrib *= misWeight;
-                misWeight = 1;
-            }*/
         } else {
             suffix = PathSuffix::Create(
                 s.throughputAtRcv,
@@ -1105,8 +1095,7 @@ extension PathGenerator {
                     s.lightSubpathVertex,
                     s.id,
                     s.bounces + 1,
-                    s.diffuseBounces + 1,
-                    s.refractMask
+                    s.diffuseBounces + 1
                 )
             );
         }
@@ -1336,7 +1325,7 @@ extension PathGenerator {
                             const bool upperOnly = suffixVertex.HasFaceNormal() && !suffixVertex.HasLobe(LobeType::NonDeltaTransmission);
                             result = ConnectToLight(s, suffixVertex, upperOnly, w, m);
                         } else {
-                            // BPT path, formed by connecting a camera subpath to a light subpath
+                            // Bidirectional path, formed by connecting a camera subpath to a light subpath
                             if (basePath.HasFlag(PathFlags::eVertexMerging))
                                 result = MergeWithLightVertex(s, vertex, lightSubpathVertex, 1, w, m);
                             else
@@ -1752,6 +1741,8 @@ extension PathGenerator {
 
                 // if vertex is emissive, form a path ending at vertex
                 if (any(le > 0) && !DebugDisablePath(s.bounces, 0)) {
+                    const float3 contrib = s.throughput * le;
+
                     // calculate mis weight
                     float emissionPdfW = 0;
                     float directPdfW = 0;
@@ -1760,31 +1751,32 @@ extension PathGenerator {
                         GetLightSamplePdf(vertex, prevPos, prevNormal, upperOnly, emissionPdfW, directPdfW, directPdfA);
                     }
 
-                    float weight = 1;
+                    // divide by pdf
+                    float integrationWeight = 1 / s.pdfW;
+
+                    float misWeight = 1;
                     if (!DebugDisableMIS()) {
                         if (gBidirectional) {
                             const float wCamera = Mis(directPdfA) * s.dVCM + Mis(emissionPdfW) * s.dVC;
-                            weight = 1 / (1 + wCamera);
+                            misWeight = 1 / (1 + wCamera);
                         } else if (gSampleDirectLight)
-                            weight = prevReconnectable && bsdfPdfW > 0 ? Mis(bsdfPdfW, directPdfW) : 1;
+                            misWeight = prevReconnectable && bsdfPdfW > 0 ? Mis(bsdfPdfW, directPdfW) : 1;
                     }
-
-                    // divide by pdf
-                    weight /= s.pdfW;
 
                     PathSuffix suffix = {};
                     const bool hasRcv = s.rcvFound;
                     if (hasRcv) {
                         // finalize the existing rcv
                         float suffixPdf;
-                        float3 suffixContrib = le;
+                        float3 suffixContrib;
                         if (s.bounces == s.prefixBounces + 1) {
                             // rcv is the last vertex
                             suffixPdf = 1;
+                            suffixContrib = le;
                         } else {
                             suffix.mDirOut = s.rcvDirOut;
                             suffixPdf = s.pdfW / s.pdfAtRcv;
-                            suffixContrib *= SafeDivide(s.throughput, s.throughputAtRcv);
+                            suffixContrib = SafeDivide(contrib, s.throughputAtRcv);
                         }
 
                         suffix = PathSuffix::Create(
@@ -1799,7 +1791,7 @@ extension PathGenerator {
                     }
 
                     const PathSample ps = PathSample::Create(
-                        s.throughput * le,
+                        contrib,
                         s.bounces,
                         hasRcv ? s.prefixPdf         : s.pdfW,
                         hasRcv ? s.prefixBounces     : s.bounces,
@@ -1808,7 +1800,7 @@ extension PathGenerator {
                         suffix,
                         PathFlags::eNone );
 
-                    ProcessSample(r, s.sg, ps, weight);
+                    ProcessSample(r, s.sg, ps, misWeight * integrationWeight);
                 }
             }
         }
