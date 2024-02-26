@@ -76,6 +76,7 @@ struct PathGeneratorParams {
 
     uint2 mOutputDim;
 
+    uint  mCanonicalSpp = 1;
     uint  mMaxBounces = 20;
     uint  mMaxDiffuseBounces = 8;
     float mTerminationProbability = .2f;
@@ -86,7 +87,7 @@ struct PathGeneratorParams {
 
     float mReconnectionDistance  = 0.01f;
     float mReconnectionRoughness = 0.08f; ///< sqrt(kMinGGXAlpha)
-    float mCausticReuseRadius = 0.f;      // in pixels
+    float mCausticReuseRadius = 0.f;      ///< in pixels
 
     uint  mSpatialReuseSamples = 4;
     float mSpatialReuseRadius  = 30.f;

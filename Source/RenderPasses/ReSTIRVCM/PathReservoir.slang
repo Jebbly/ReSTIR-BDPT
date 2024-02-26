@@ -145,7 +145,10 @@ struct PathSample {
     bool HasFlag(const PathFlags flag) { return (mFlags & uint(flag)) != 0; };
     bool HasSuffix() { return mBounces > mPrefixBounces; }
 
-    float GetTargetPdf() { return luminance(mContribution); }
+    float GetTargetPdf() {
+        return max(max(mContribution.r, mContribution.g), mContribution.b);
+        //return luminance(mContribution);
+    }
 
     static PathSample Create(
         const float3 contrib,

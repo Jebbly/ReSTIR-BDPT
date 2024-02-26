@@ -265,7 +265,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         FALCOR_ASSERT(mpSampleCameraPathsPass);
         preparePass(pRenderContext, renderData, *mpSampleCameraPathsPass);
         mpSampleCameraPathsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
-        mCurrentSeed++;
+        mCurrentSeed += mParams.mCanonicalSpp;
     }
 
     if (mStaticParams.useResampling) {
@@ -380,6 +380,9 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             mpSampleGenerator = SampleGenerator::create(mpDevice, mStaticParams.sampleGenerator);
             dirty = true;
         }
+
+        runtimeDirty |= group.var("Samples per pixel", mParams.mCanonicalSpp, 1u);
+        group.tooltip("Maximum number of samples per pixel.");
 
         runtimeDirty |= group.var("Max bounces", mParams.mMaxBounces, 0u, PathGeneratorParams::kMaxBounces);
         group.tooltip("Maximum number of bounces.\n1 = direct only\n2 = one indirect bounce etc.");
@@ -1171,7 +1174,7 @@ bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& rend
     if (mUseFixedSeed) {
         mCurrentSeed = mFixedSeed;
     } else if (mUsePerFrameSeed) {
-        uint seedsPerFrame = 1;
+        uint seedsPerFrame = mParams.mCanonicalSpp;
         if (mStaticParams.useBPT) seedsPerFrame++; // light subpaths
         if (mStaticParams.useBPT && mStaticParams.useResampling) seedsPerFrame++; // light trace reservoir resample
         if (mStaticParams.useTemporalReuse) seedsPerFrame++; // temporal resample
