@@ -69,6 +69,7 @@ private:
         bool        lightTraceOnly = false;
         bool        useVMOnly = false;
         bool        useResampling = true;
+        bool        useMisInIntegrand = true;
         bool        useTemporalReuse = true;
         bool        validateSuffixes = true;
         bool        useCausticReservoirs = true;

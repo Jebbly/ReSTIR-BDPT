@@ -1,7 +1,7 @@
-import PathGenerator;
 import Utils.Color.ColorMap;
 import Utils.Sampling.SampleGenerator;
 import Utils.Debug.PixelDebug;
+import PathShift;
 
 [shader("compute")]
 [numthreads(8, 4, 1)]
@@ -54,7 +54,7 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
         if (gPathGenerator.gUseCausticReservoirs && c.mSample.HasFlag(PathFlags::eCausticLightPath)) {
             cr.Merge(u, c);
         } else {
-            // Shift the caustic path to the pixel center
+            // Shift the caustic path to the pixel center so that future reconnection works
             float jacobian;
             c.mSample = gPathGenerator.ShiftPath(c.mSample, primaryVertex, jacobian);
             if (jacobian > 0 && c.mSample.IsValid()) {
@@ -91,13 +91,15 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
 
     if (gPathGenerator.gUseResampling) {
         const PathReservoir r = gPathGenerator.LoadInputReservoir(id);
-        if (r.mW > 0 && r.mSample.IsValid())
-            radiance.rgb += r.mSample.mContribution * r.mW;
+        if (r.mW > 0 && r.mSample.IsValid()) {
+            radiance.rgb += r.GetRadiance();
+        }
 
         if (gPathGenerator.gUseCausticReservoirs) {
             const PathReservoir cr = gPathGenerator.LoadCausticReservoir(id);
-            if (cr.mW > 0 && cr.mSample.IsValid())
-                radiance.rgb += cr.mSample.mContribution * cr.mW;
+            if (cr.mW > 0 && cr.mSample.IsValid()) {
+                radiance.rgb += cr.GetRadiance();
+            }
         }
     } else if (gPathGenerator.gBidirectional) {
         // Add light trace contribution from atomic buffer

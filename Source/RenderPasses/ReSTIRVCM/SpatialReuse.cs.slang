@@ -1,4 +1,4 @@
-import PathGenerator;
+import PathShift;
 import Utils.Sampling.SampleGenerator;
 import Utils.Math.MathHelpers;
 import Utils.Debug.PixelDebug;

@@ -603,11 +603,11 @@ extension PathGenerator {
             s.lightSubpathVertex,
             s.id,
             s.bounces + 2,
-            s.diffuseBounces
+            s.diffuseBounces,
+            s.pdfW
         );
         v.mVertex = vertex.Pack();
         v.mThroughput = s.throughput;
-        v.mSubpathPdf = s.pdfW;
         v.dVCM = s.dVCM;
         v.dVC  = s.dVC;
         v.dVM  = s.dVM;
@@ -615,15 +615,16 @@ extension PathGenerator {
     }
 
     // Merges a canonical sample into the pixel's reservoir
-    void ProcessSample(inout PathReservoir r, inout SampleGenerator sg, const PathSample ps, const float weight) {
+    void ProcessSample(inout PathReservoir r, inout SampleGenerator sg, PathSample ps, float weight) {
         if (gUseResampling) {
+            if (!PathSample::gIntegrandMIS) weight *= ps.mMisWeight;
             r.Merge(sampleNext1D(sg), ps, weight * ps.GetTargetPdf(), 0);
         } else if (ps.IsValid() && weight > 0) {
             print("Found path. contrib:", ps.mContribution);
             print("\tLight subpath vertices:", ps.mSuffix.mLightSubpath.mVertexCount);
             print("\tMerge:", ps.HasFlag(PathFlags::eVertexMerging));
             print("\tPrefix bounces:", ps.mPrefixBounces);
-            r.mSample.mContribution += ps.mContribution * weight;
+            r.mSample.mContribution += ps.mContribution * (ps.mMisWeight * weight);
         }
     }
 
@@ -631,9 +632,8 @@ extension PathGenerator {
     // ----------------------------------------- Connection stategies ------------------------------------------
     // ---------------------------------------------------------------------------------------------------------
 
-    PathSample ConnectToLight       <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const bool upperOnly, out float integrationWeight, out float misWeight) {
+    PathSample ConnectToLight       <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const bool upperOnly, out float integrationWeight) {
         integrationWeight = 0;
-        misWeight = 0;
 
         PathSample result = {};
 
@@ -745,9 +745,8 @@ extension PathGenerator {
         integrationWeight = 1.f / samplePdf;
 
         // compute mis weight
-        if (DebugDisableMIS()) {
-            misWeight = 1;
-        } else {
+        float misWeight = 1;
+        if (!DebugDisableMIS()) {
             if (gBidirectional) {
                 const float wLight = Mis(f.mFwdPdfW / directPdfW);
                 const float wCamera = Mis(emissionPdfW * abs(cosOut) / (directPdfW * cosLight)) * (GetMisVmWeightFactor() + s.dVCM + s.dVC * Mis(f.mRevPdfW));
@@ -785,7 +784,8 @@ extension PathGenerator {
             l.mPackedHit,
             lightPathId,
             1,
-            0
+            0,
+            directPdfA
         );
 
         const PathSuffix suffix = PathSuffix::Create(
@@ -800,6 +800,7 @@ extension PathGenerator {
 
         result = PathSample::Create(
             contrib,
+            misWeight,
             s.bounces + 1,
             hasRcv ? s.prefixPdf         : s.pdfW,
             hasRcv ? s.prefixBounces     : s.bounces,
@@ -810,9 +811,8 @@ extension PathGenerator {
 
         return result;
     }
-    PathSample ConnectToLightSubpath<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const LightSubpathVertex v, const float subpathWeight, out float integrationWeight, out float misWeight) {
+    PathSample ConnectToLightSubpath<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const LightSubpathVertex v, out float integrationWeight) {
         integrationWeight = 0;
-        misWeight = 0;
 
         PathSample result = {};
 
@@ -872,12 +872,11 @@ extension PathGenerator {
 
         const float invDist2 = 1 / sqr(dist);
 
-        integrationWeight = subpathWeight * (cosLight * invDist2) / (s.pdfW * v.mSubpathPdf);
+        integrationWeight = (cosLight * invDist2) / (s.pdfW * v.mLightSubpath.mPdf);
 
         // mis weight
-        if (DebugDisableMIS()) {
-            misWeight = 1;
-        } else {
+        float misWeight = 1;
+        if (!DebugDisableMIS()) {
             const float cameraBsdfDirPdfA = f.mFwdPdfW * cosLight * invDist2;
             const float lightBsdfDirPdfA  = r.mFwdPdfW * cosCam   * invDist2;
             const float wLight = Mis(cameraBsdfDirPdfA) * (GetMisVmWeightFactor() + v.dVCM + v.dVC * Mis(r.mRevPdfW));
@@ -887,7 +886,7 @@ extension PathGenerator {
 
         float3 suffixContrib;
         float3 suffixDir;
-        float suffixPdf = v.mSubpathPdf;
+        float suffixPdf = v.mLightSubpath.mPdf;
         const bool hasRcv = gAllowEarlyReconnection && s.rcvFound;
         if (hasRcv) {
             // use rcv found earlier along the camera subpath
@@ -920,6 +919,7 @@ extension PathGenerator {
 
         result = PathSample::Create(
             contrib,
+            misWeight,
             bounces,
             hasRcv ? s.prefixPdf         : s.pdfW,
             hasRcv ? s.prefixBounces     : s.bounces,
@@ -930,9 +930,8 @@ extension PathGenerator {
 
         return result;
     }
-    PathSample MergeWithLightVertex <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const LightSubpathVertex v, const float subpathWeight, out float integrationWeight, out float misWeight) {
+    PathSample MergeWithLightVertex <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const LightSubpathVertex v, out float integrationWeight) {
         integrationWeight = 0;
-        misWeight = 0;
 
         PathSample result = {};
 
@@ -960,11 +959,11 @@ extension PathGenerator {
         if (all(contrib <= 0))
             return result;
 
-        integrationWeight = subpathWeight / (s.pdfW * v.mSubpathPdf * (sqr(mergeRadius) * M_PI * mParams.mLightSubpathCount));
+        integrationWeight = 1 / (s.pdfW * v.mLightSubpath.mPdf * (sqr(mergeRadius) * M_PI * mParams.mLightSubpathCount));
 
         const float wLight  = v.dVCM * GetMisVcWeightFactor() + v.dVM * Mis(f.mFwdPdfW);
         const float wCamera = s.dVCM * GetMisVcWeightFactor() + s.dVM * Mis(f.mRevPdfW);
-        misWeight = 1;
+        float misWeight = 1;
         if (DebugDisableMIS() || gProgressivePhotonMapping || bShift)
             misWeight = 1;
         else
@@ -972,7 +971,7 @@ extension PathGenerator {
 
         float3 suffixContrib;
         float3 suffixDir;
-        float suffixPdf = v.mSubpathPdf;
+        float suffixPdf = v.mLightSubpath.mPdf;
         const bool hasRcv = gAllowEarlyReconnection && !bShift && s.rcvFound;
         if (hasRcv) {
             // use rcv found earlier along the camera subpath
@@ -1004,6 +1003,7 @@ extension PathGenerator {
 
         result = PathSample::Create(
             contrib,
+            misWeight,
             bounces,
             hasRcv ? s.prefixPdf         : s.pdfW,
             hasRcv ? s.prefixBounces     : s.bounces,
@@ -1014,9 +1014,8 @@ extension PathGenerator {
 
         return result;
     }
-    PathSample ConnectToCamera      <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out int2 pixelCoord, out float integrationWeight, out float misWeight) {
+    PathSample ConnectToCamera      <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out int2 pixelCoord, out float integrationWeight) {
         integrationWeight = 0;
-        misWeight = 0;
         pixelCoord = -1;
         PathSample result = {};
 
@@ -1071,7 +1070,7 @@ extension PathGenerator {
         integrationWeight = 1.f / samplePdf;
 
         const float wLight = Mis(cameraPdfA / mParams.mLightSubpathCount) * (GetMisVmWeightFactor() + s.dVCM + s.dVC * Mis(f.mRevPdfW));
-        misWeight = (gLightTraceOnly || DebugDisableMIS()) ? 1.f : (1.f / (wLight + 1.f));
+        const float misWeight = (gLightTraceOnly || DebugDisableMIS()) ? 1.f : (1.f / (wLight + 1.f));
 
         PathSuffix suffix = {};
         if (s.deltaRcv || bShift) {
@@ -1088,7 +1087,8 @@ extension PathGenerator {
                     s.lightSubpathVertex,
                     s.id,
                     s.bounces + 2,
-                    s.diffuseBounces + 1
+                    s.diffuseBounces + 1,
+                    s.pdfW
                 )
             );
         } else {
@@ -1103,13 +1103,15 @@ extension PathGenerator {
                     s.lightSubpathVertex,
                     s.id,
                     s.bounces + 1,
-                    s.diffuseBounces + 1
+                    s.diffuseBounces + 1,
+                    s.pdfW
                 )
             );
         }
 
         result = PathSample::Create(
             contrib,
+            misWeight,
             s.bounces + 1,
             1,
             0,
@@ -1117,238 +1119,6 @@ extension PathGenerator {
             s.id,
             suffix,
             s.deltaRcv ? PathFlags::eCausticLightPath : PathFlags::eNone);
-
-        return result;
-    }
-
-    PathSample ConnectToSuffix(inout PathState<true> s, inout PathVertex vertex, const PathSample basePath, const LightSubpathVertex lightSubpathVertex) {
-        PathSample result = {};
-
-        const bool lightSubpathOnly = gBidirectional && basePath.mSuffix.mLightSubpath.mVertexCount > 1 && !basePath.HasFlag(PathFlags::eCausticLightPath) &&
-            basePath.mBounces == (basePath.mPrefixBounces + basePath.mSuffix.mLightSubpath.mVertexCount) - (gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging) ? 1 : 0);
-        const bool mergeSuffix = lightSubpathOnly && !gLightTraceOnly && basePath.HasFlag(PathFlags::eVertexMerging);
-
-        PathSuffix newSuffix = basePath.mSuffix;
-
-        // if the suffix is just the light subpath, we can connect to it directly to get the new suffix
-        if (gValidateSuffixes && lightSubpathOnly) {
-            float w, m;
-            if (mergeSuffix)
-                newSuffix =  MergeWithLightVertex(s, vertex, lightSubpathVertex, 1, w, m).mSuffix;
-            else
-                newSuffix = ConnectToLightSubpath(s, vertex, lightSubpathVertex, 1, w, m).mSuffix;
-        }
-
-        PathVertex suffixVertex = PathVertex(newSuffix.mVertex);
-
-        // For caustic light paths, reconnection is always impossible, but we simply copy the path if it's close enough to the base pixel.
-        if (!gUseCausticReservoirs && !gValidateSuffixes && basePath.HasFlag(PathFlags::eCausticLightPath)) {
-            const int2 offsetPixel = GetPixelCoord(vertex.GetPosition());
-            const int2 basePixel   = GetPixelCoord(suffixVertex.GetPosition());
-            if (mParams.mCausticReuseRadius > 0) {
-                const float dist = length(offsetPixel - basePixel);
-                if (dist > mParams.mCausticReuseRadius) {
-                    print("Shift failed: Caustic light path", dist);
-                    return result;
-                }
-            } else {
-                if (any(offsetPixel != basePixel)) {
-                    print("Shift failed: Caustic light path", offsetPixel != basePixel);
-                    return result;
-                }
-            }
-            return basePath;
-        }
-
-        // update suffix vertex with new ray direction and compute ray between prefix and suffix
-        Ray visibilityRay;
-        if (mergeSuffix) {
-            // Apply merge radius
-            const float3 toPhoton = suffixVertex.GetPosition() - vertex.GetPosition();
-            const float dist2 = dot(toPhoton, toPhoton);
-            if (dist2 >= sqr(GetMergeRadius(vertex.GetPosition()))) {
-                print("Shift failed: merge radius", dist2);
-                return result;
-            }
-
-            visibilityRay.dir = newSuffix.mDirOut;
-        } else {
-            if (newSuffix.mVertex.IsFinite()) {
-                // update ray direction
-                newSuffix.mVertex.mRayDirection = suffixVertex.GetPosition() - vertex.GetPosition();
-                // recompute origin and distance
-                newSuffix.mVertex.mRayOrigin = vertex.ComputeRayOrigin(newSuffix.mVertex.mRayDirection);
-                newSuffix.mVertex.mRayDirection = suffixVertex.ComputeRayOrigin(-newSuffix.mVertex.mRayDirection) - newSuffix.mVertex.mRayOrigin;
-                newSuffix.mVertex.mRayDistance = length(newSuffix.mVertex.mRayDirection);
-                newSuffix.mVertex.mRayDirection /= newSuffix.mVertex.mRayDistance;
-
-                newSuffix.mCos  = suffixVertex.GetCosN(newSuffix.mVertex.mRayDirection);
-                newSuffix.mDist = newSuffix.mVertex.mRayDistance;
-
-                if (newSuffix.mDist < mParams.mReconnectionDistance) {
-                    print("Shift failed: reconnection distance", newSuffix.mDist);
-                    return result;
-                }
-                if (abs(newSuffix.mCos) < kMinCosTheta) {
-                    print("Shift failed: reconnection cos", newSuffix.mCos);
-                    return result;
-                }
-
-                visibilityRay = Ray(newSuffix.mVertex.mRayOrigin, newSuffix.mVertex.mRayDirection, 0, newSuffix.mVertex.mRayDistance);
-            } else {
-                newSuffix.mVertex.mRayOrigin = vertex.ComputeRayOrigin(newSuffix.mVertex.mRayDirection);
-
-                visibilityRay = Ray(newSuffix.mVertex.mRayOrigin, newSuffix.mVertex.mRayDirection);
-            }
-
-            suffixVertex = PathVertex(newSuffix.mVertex);
-        }
-
-        s.prefixPdf         = s.pdfW;
-        s.prefixBounces     = s.bounces;
-        s.rcvDiffuseBounces = s.diffuseBounces;
-        s.rcv       = newSuffix.mVertex;
-        s.rcvCos    = newSuffix.mCos;
-        s.rcvDist   = newSuffix.mDist;
-        s.rcvDirOut = newSuffix.mDirOut;
-
-        // evaluate reflectance at last prefix vertex
-        {
-            let r = vertex.EvaluateReflectance(s.sg, visibilityRay.dir, false);
-            s.throughput *= r.mReflectance;
-            if (!any(s.throughput > 0)) {
-                print("Shift failed: Zero prefix vertex reflectance", s.throughput);
-                return result;
-            }
-
-            if (mergeSuffix) {
-                // for photons, divide out cosOut as it's in the light subpath PDF
-                if (vertex.HasFaceNormal()) {
-                    const float3 guideNormal = vertex.mMaterial.getProperties(vertex.mShadingData).guideNormal;
-                    const float cosOut = abs(dot(guideNormal, newSuffix.mDirOut));
-                    if (cosOut < kMinCosTheta) {
-                        print("Shift failed: prefix cosOut < kMinCosTheta", cosOut);
-                        return result;
-                    }
-                    s.throughput /= cosOut;
-                }
-            } else {
-                if (gValidateSuffixes) {
-                    s.pdfW *= r.mFwdPdfW;
-                    if (!(s.pdfW > 0)) {
-                        print("Shift failed: Zero prefix vertex pdf", s.pdfW);
-                    }
-                    // sample direction to advance sample generator
-                    vertex.SampleDirection(s.sgBsdf, false);
-
-                    // TODO: update MIS quantities
-                }
-            }
-        }
-
-        float3 prefixContrib = s.throughput;
-
-        if (!mergeSuffix) {
-            // evaluate contribution from the rest of the camera subpath
-            if (Occluded(visibilityRay)) {
-                print("Shift failed: suffix occluded", 0);
-                return result;
-            }
-            s.bounces++;
-            s.diffuseBounces++;
-
-            if (basePath.mPrefixBounces + 1 == basePath.mBounces) {
-                // suffix is just a single vertex
-                if (gValidateSuffixes) {
-                    newSuffix.mContribution = suffixVertex.GetEmission();
-                    if (!any(newSuffix.mContribution > 0)) {
-                        print("Shift failed: Zero emission", newSuffix.mContribution);
-                        return result;
-                    }
-                } else if (suffixVertex.HasFaceNormal() && dot(suffixVertex.mShadingData.faceN, -newSuffix.mVertex.mRayDirection) < kMinCosTheta) {
-                    // surface lights are one-sided
-                    print("Shift failed: backfacing light", newSuffix.mCos);
-                    return result;
-                }
-            } else {
-                // connect to suffix
-                if (!suffixVertex.IsConnectable()) {
-                    print("Shift failed: suffix unconnectable", 0);
-                    return result;
-                }
-
-                // Evaluate reflectance at suffix vertex
-                let r = suffixVertex.EvaluateReflectance(s.sg, newSuffix.mDirOut, false);
-                s.throughput *= r.mReflectance;
-                if (!any(s.throughput > 0)) {
-                    print("Shift failed: zero suffix reflectance", s.throughput);
-                    return result;
-                }
-
-                prefixContrib = s.throughput;
-
-                // Trace the rest of the camera subpath
-                if (gValidateSuffixes && !lightSubpathOnly) {
-                    s.throughputAtRcv = s.throughput;
-                    s.pdfW *= r.mFwdPdfW;
-                    s.pdfAtRcv = s.pdfW;
-
-                    // sample direction to advance sample generator
-                    suffixVertex.SampleDirection(s.sgBsdf, false);
-
-                    // TODO: update MIS quantities
-
-                    // Trace first ray in suffix
-                    suffixVertex = PathVertex( TraceRay(Ray(suffixVertex.ComputeRayOrigin(newSuffix.mDirOut), newSuffix.mDirOut)) );
-                    s.bounces++;
-                    s.diffuseBounces++;
-
-                    // trace rest of subpath
-                    const uint cameraSubpathBounces = basePath.mBounces - newSuffix.mLightSubpath.mVertexCount;
-                    while (s.bounces < cameraSubpathBounces && any(s.throughput > 0) && s.pdfW > 0 && suffixVertex.IsFinite()) {
-                        float bsdfPdfW;
-                        bool deltaLobe;
-                        SampleNextVertex(s, suffixVertex, bsdfPdfW, deltaLobe);
-                    }
-                    if (s.bounces != cameraSubpathBounces) {
-                        print("Suffix shift failed: Camera subpath length mismatch", uint2(s.bounces, cameraSubpathBounces));
-                        return result;
-                    }
-
-                    // Apply connection strategy based on number of light subpath vertices
-
-                    if (newSuffix.mLightSubpath.mVertexCount == 0) {
-                        // Pure camera path
-                        newSuffix.mContribution = SafeDivide(s.throughput, s.throughputAtRcv) * suffixVertex.GetEmission();
-                        newSuffix.mPdf = s.pdfW / s.pdfAtRcv;
-                    } else {
-                        if (!suffixVertex.IsConnectable()) {
-                            print("Suffix shift failed: Unconnectable suffix vertex", 0);
-                            return result;
-                        }
-
-                        float w, m;
-                        if (newSuffix.mLightSubpath.mVertexCount == 1) {
-                            // NEE path, formed by connecting a camera subpath to a light directly
-                            const bool upperOnly = suffixVertex.HasFaceNormal() && !suffixVertex.HasLobe(LobeType::NonDeltaTransmission);
-                            result = ConnectToLight(s, suffixVertex, upperOnly, w, m);
-                        } else {
-                            // Bidirectional path, formed by connecting a camera subpath to a light subpath
-                            if (basePath.HasFlag(PathFlags::eVertexMerging))
-                                result = MergeWithLightVertex(s, vertex, lightSubpathVertex, 1, w, m);
-                            else
-                                result = ConnectToLightSubpath(s, vertex, lightSubpathVertex, 1, w, m);
-                        }
-                        return result;
-                    }
-                }
-            }
-        }
-
-        result = basePath;
-        result.mContribution = prefixContrib * newSuffix.mContribution;
-        result.mPrefixPdf = s.prefixPdf;
-        result.mSuffix = newSuffix;
 
         return result;
     }
@@ -1602,11 +1372,67 @@ extension PathGenerator {
         }
     }
 
-    PathState<true> ShiftLightSubpath(const PathSample basePath, out PathVertex vertex) {
-        PathState<true> s = InitializeLightPath<true>(basePath.mSuffix.mLightSubpath.mId, vertex, basePath.mSuffix.mLightSubpath.mFirstVertex);
+    // ---------------------------------------------------------------------------------------------------------
+    // ----------------------------------------------- Top-level -----------------------------------------------
+    // ---------------------------------------------------------------------------------------------------------
 
-        while (any(s.throughput > 0) && s.pdfW > 0 && s.bounces + 2 < basePath.mSuffix.mLightSubpath.mVertexCount && vertex.IsFinite()) {
+    // Sample a light subpath. Updates the LVC/photon map. Connects connectable vertices to the camera directly.
+    void SampleLightPath(const PathId id) {
+        if (mParams.mMaxBounces == 0 || mParams.mMaxDiffuseBounces == 0)
+            return;
+
+        PathVertex vertex;
+        PathState<false> s = InitializeLightPath<false>(id, vertex);
+
+        while (any(s.throughput > 0) && s.pdfW > 0 && vertex.IsFinite() && s.bounces + 1 <= mParams.mMaxBounces && s.diffuseBounces + 1 <= mParams.mMaxDiffuseBounces) {
             const bool connectable = vertex.IsConnectable();
+            if (connectable) {
+                // store vertex for connection and merging
+                if (!gLightTraceOnly) {
+                    const LightSubpathVertex v = PackLightSubpathVertex(s, vertex);
+
+                    if (gVertexMerging || s.bounces + 2 <= mParams.mMaxBounces) {
+                        const uint i = mLightVertexCache.Insert(v);
+
+                        if (gVertexMerging) {
+                            const float3 pos = vertex.GetPosition();
+                            mPhotonMap.addPhoton(i, pos, GetMergeRadius(pos, true), mParams.mPhotonCellCount, sampleNext1D(s.sg));
+                        }
+                    }
+                }
+
+                // form a full path by connecting the vertex to the camera
+                if (!gProgressivePhotonMapping) {
+                    float weight = 0;
+                    int2 pixelCoord;
+                    const PathSample ps = ConnectToCamera(s, vertex, pixelCoord, weight);
+                    if (ps.IsValid() && weight > 0 && all(pixelCoord >= 0) && all(pixelCoord < mParams.mOutputDim)) {
+                        DebugSetPixel(pixelCoord);
+                        if (!gUseResampling) {
+                            print("Found path. contrib:", ps.mContribution);
+                            print("\tLight subpath vertices:", ps.mSuffix.mLightSubpath.mVertexCount);
+                            print("\tMerge:", ps.HasFlag(PathFlags::eVertexMerging));
+                            print("\tPrefix bounces:", ps.mPrefixBounces);
+                        }
+                        DebugSetPixel(-1);
+
+                        const uint flatId = pixelCoord.y * mParams.mOutputDim.x + pixelCoord.x;
+                        if (gUseResampling) {
+                            // store path reservoirs for each pixel in a hash map
+                            // these reservoirs are merged into each pixel's reservoir in a later pass
+                            mLightTraceReservoirs.Insert(flatId, PathReservoir(ps, weight, 1));
+                        } else {
+                            // splat radiance onto output directly, instead of using reservoirs
+                            mAtomicRadiance.InterlockedAddF32(flatId * sizeof(float3)                  , ps.mContribution.r * (weight * ps.mMisWeight));
+                            mAtomicRadiance.InterlockedAddF32(flatId * sizeof(float3) + sizeof(float)  , ps.mContribution.g * (weight * ps.mMisWeight));
+                            mAtomicRadiance.InterlockedAddF32(flatId * sizeof(float3) + sizeof(float)*2, ps.mContribution.b * (weight * ps.mMisWeight));
+                        }
+                    }
+                }
+            }
+
+            if (s.bounces + 1 == mParams.mMaxBounces)
+                break;
 
             // for light paths: rcv is always the 2nd to last vertex
             s.rcv = vertex.Pack();
@@ -1626,15 +1452,9 @@ extension PathGenerator {
             s.rcvDist = vertex.mVertex.mRayDistance;
             s.deltaRcv = !connectable || deltaLobe;
         }
-
-        return s;
     }
 
-    // ---------------------------------------------------------------------------------------------------------
-    // ----------------------------------------------- Top-level -----------------------------------------------
-    // ---------------------------------------------------------------------------------------------------------
-
-    // Samples a canonical camera by connecting to lights, light subpath vertices, and merging with photons.
+    // Samples a canonical camera path by connecting to lights, light subpath vertices, and merging with photons.
     PathReservoir SampleCameraPath(const PathId id) {
         PathVertex vertex = PathVertex(LoadPrimaryVertex(id.mId));
 
@@ -1692,9 +1512,8 @@ extension PathGenerator {
 
                     if (doDI) {
                         float weight = 0;
-                        float misWeight = 0;
-                        const PathSample ps = ConnectToLight(s, vertex, upperOnly, weight, misWeight);
-                        ProcessSample(r, s.sg, ps, (weight * misWeight) * techniqueW);
+                        const PathSample ps = ConnectToLight(s, vertex, upperOnly, weight);
+                        ProcessSample(r, s.sg, ps, weight * techniqueW);
                     }
 
                     if (gBidirectional) {
@@ -1705,9 +1524,8 @@ extension PathGenerator {
                                 const LightSubpathVertex v = mLightVertexCache[min(uint(sampleNext1D(s.sg) * count), count - 1)];
 
                                 float weight = 0;
-                                float misWeight = 0;
-                                PathSample ps = ConnectToLightSubpath(s, vertex, v, count / (float)mParams.mLightSubpathCount, weight, misWeight);
-                                ProcessSample(r, s.sg, ps, (weight * misWeight) * techniqueW);
+                                PathSample ps = ConnectToLightSubpath(s, vertex, v, weight);
+                                ProcessSample(r, s.sg, ps, weight * (count / (float)mParams.mLightSubpathCount) * techniqueW);
                             }
                         }
 
@@ -1717,9 +1535,8 @@ extension PathGenerator {
                             const LightSubpathVertex v = FindPhoton(s.sg, vertex, cellW);
                             if (cellW > 0) {
                                 float weight = 0;
-                                float misWeight = 0;
-                                const PathSample ps = MergeWithLightVertex(s, vertex, v, cellW, weight, misWeight);
-                                ProcessSample(r, s.sg, ps, (weight * misWeight) * techniqueW);
+                                const PathSample ps = MergeWithLightVertex(s, vertex, v, weight);
+                                ProcessSample(r, s.sg, ps, weight * cellW * techniqueW);
                             }
 
                             if (gProgressivePhotonMapping)
@@ -1807,6 +1624,7 @@ extension PathGenerator {
 
                         const PathSample ps = PathSample::Create(
                             contrib,
+                            misWeight,
                             s.bounces,
                             hasRcv ? s.prefixPdf         : s.pdfW,
                             hasRcv ? s.prefixBounces     : s.bounces,
@@ -1815,7 +1633,7 @@ extension PathGenerator {
                             suffix,
                             PathFlags::eNone );
 
-                        ProcessSample(r, s.sg, ps, misWeight * integrationWeight);
+                        ProcessSample(r, s.sg, ps, integrationWeight);
                     }
                 }
             }
@@ -1830,221 +1648,4 @@ extension PathGenerator {
         r.FinalizeMerge();
         return r;
     }
-
-    // Sample a light subpath. Updates the LVC/photon map. Connects connectable vertices to the camera directly.
-    void SampleLightPath(const PathId id) {
-        if (mParams.mMaxBounces == 0 || mParams.mMaxDiffuseBounces == 0)
-            return;
-
-        PathVertex vertex;
-        PathState<false> s = InitializeLightPath<false>(id, vertex);
-
-        while (any(s.throughput > 0) && s.pdfW > 0 && vertex.IsFinite() && s.bounces + 1 <= mParams.mMaxBounces && s.diffuseBounces + 1 <= mParams.mMaxDiffuseBounces) {
-            const bool connectable = vertex.IsConnectable();
-            if (connectable) {
-                // store vertex for connection and merging
-                if (!gLightTraceOnly) {
-                    const LightSubpathVertex v = PackLightSubpathVertex(s, vertex);
-
-                    if (gVertexMerging || s.bounces + 2 <= mParams.mMaxBounces) {
-                        const uint i = mLightVertexCache.Insert(v);
-
-                        if (gVertexMerging) {
-                            const float3 pos = vertex.GetPosition();
-                            mPhotonMap.addPhoton(i, pos, GetMergeRadius(pos, true), mParams.mPhotonCellCount, sampleNext1D(s.sg));
-                        }
-                    }
-                }
-
-                // form a full path by connecting the vertex to the camera
-                if (!gProgressivePhotonMapping) {
-                    float weight = 0;
-                    float misWeight = 0;
-                    int2 pixelCoord;
-                    const PathSample ps = ConnectToCamera(s, vertex, pixelCoord, weight, misWeight);
-                    if (weight > 0 && misWeight > 0 && any(ps.mContribution > 0) && all(pixelCoord >= 0) && all(pixelCoord < mParams.mOutputDim)) {
-                        DebugSetPixel(pixelCoord);
-                        if (!gUseResampling && ps.IsValid() && weight > 0) {
-                            print("Found path. contrib:", ps.mContribution);
-                            print("\tLight subpath vertices:", ps.mSuffix.mLightSubpath.mVertexCount);
-                            print("\tMerge:", ps.HasFlag(PathFlags::eVertexMerging));
-                            print("\tPrefix bounces:", ps.mPrefixBounces);
-                        }
-                        DebugSetPixel(-1);
-
-                        const uint flatId = pixelCoord.y * mParams.mOutputDim.x + pixelCoord.x;
-                        if (gUseResampling) {
-                            // store path reservoirs for each pixel in a hash map
-                            // these reservoirs are merged into each pixel's reservoir in a later pass
-                            mLightTraceReservoirs.Insert(flatId, PathReservoir(ps, (weight * misWeight), 1));
-                        } else {
-                            // splat radiance onto output directly, instead of using reservoirs
-                            mAtomicRadiance.InterlockedAddF32(flatId * sizeof(float3)                  , ps.mContribution.r * (weight * misWeight));
-                            mAtomicRadiance.InterlockedAddF32(flatId * sizeof(float3) + sizeof(float)  , ps.mContribution.g * (weight * misWeight));
-                            mAtomicRadiance.InterlockedAddF32(flatId * sizeof(float3) + sizeof(float)*2, ps.mContribution.b * (weight * misWeight));
-                        }
-                    }
-                }
-            }
-
-            if (s.bounces + 1 == mParams.mMaxBounces)
-                break;
-
-            // for light paths: rcv is always the 2nd to last vertex
-            s.rcv = vertex.Pack();
-            s.rcvDirOut = vertex.GetDirIn();
-            s.throughputAtRcv = s.throughput;
-            s.prefixPdf = s.pdfW;
-            s.prefixBounces = 0;
-            s.rcvDiffuseBounces = 0;
-
-            const float3 prevN = vertex.GetFaceNormal();
-
-            float bsdfPdfW;
-            bool deltaLobe;
-            SampleNextVertex(s, vertex, bsdfPdfW, deltaLobe);
-
-            s.rcvCos = abs(dot(prevN, vertex.mVertex.mRayDirection));
-            s.rcvDist = vertex.mVertex.mRayDistance;
-            s.deltaRcv = !connectable || deltaLobe;
-        }
-    }
-
-    // Shift a path to a new primary vertex
-    PathSample ShiftPath(const PathSample basePath, const PackedPathVertex newPrimaryHit, out float jacobian) {
-        jacobian = 0;
-        PathSample result = {};
-
-        if (DebugDisablePath(basePath.mBounces, basePath.mSuffix.mLightSubpath.mVertexCount, basePath.HasFlag(PathFlags::eVertexMerging)))
-            return result;
-
-        // retrace the light subpath
-        LightSubpathVertex newLightSubpathVertex = {};
-        if (gValidateSuffixes && gBidirectional && basePath.mSuffix.mLightSubpath.mVertexCount > 1) {
-            PathVertex vertex;
-            PathState<true> s = ShiftLightSubpath(basePath, vertex);
-            if (!any(s.throughput > 0) || !(s.pdfW > 0) || s.bounces + 2 != basePath.mSuffix.mLightSubpath.mVertexCount || !vertex.IsFinite()) {
-                print("Shift failed: Light subpath shift failed", s.throughput);
-                return result;
-            }
-
-            // store light subpath vertex for reconnection
-            newLightSubpathVertex = PackLightSubpathVertex(s, vertex);
-
-            // Connect caustic paths to the camera directly
-            if (!gUseCausticReservoirs && basePath.HasFlag(PathFlags::eCausticLightPath)) {
-                int2 offsetPixel;
-                float w, m;
-                result = ConnectToCamera(s, vertex, offsetPixel, w, m);
-                if (!result.IsValid()) {
-                    result = {};
-                    return result;
-                }
-
-                // reject path if it's not in the same pixel (or close)
-                const float2 d = GetPixelCoord(PathVertex(newPrimaryHit).GetPosition()) - offsetPixel;
-                const float d2 = dot(d, d);
-                const float r = gPathGenerator.mParams.mCausticReuseRadius;
-                if ((r == 0 && any(d != 0.f)) || (r > 0 && d2 > r * r)) {
-                    print("Shift failed: Caustic path not in pixel", offsetPixel);
-                    result = {};
-                    return result;
-                }
-
-                jacobian = basePath.mSuffix.mPdf / result.mSuffix.mPdf;
-                return result;
-            }
-        }
-
-        // retrace the prefix from the new primary hit
-        {
-            PathVertex vertex = PathVertex(newPrimaryHit);
-
-            // initialize path state
-            PathState<true> s = InitializeCameraPath<true>(basePath.mId, vertex);
-            s.lightSubpathVertex = basePath.mSuffix.mLightSubpath.mFirstVertex;
-            s.lightSubpathId     = basePath.mSuffix.mLightSubpath.mId;
-
-            // trace the new prefix
-            while (s.bounces < basePath.mPrefixBounces && any(s.throughput > 0)) {
-                float bsdfPdfW;
-                bool deltaLobe;
-                SampleNextVertex(s, vertex, bsdfPdfW, deltaLobe);
-            }
-            if (s.bounces != basePath.mPrefixBounces || s.diffuseBounces != basePath.mPrefixDiffuseBounces || !any(s.throughput > 0)) {
-                print("Shift failed: Prefix length mismatch:", uint2(s.bounces, basePath.mPrefixBounces));
-                return result;
-            }
-
-            if (basePath.HasSuffix()) {
-                if (!vertex.IsConnectable()) {
-                    print("Shift failed: Non reconnectable prefix", 0);
-                    return result;
-                }
-
-                // reconnect to suffix
-                result = ConnectToSuffix(s, vertex, basePath, newLightSubpathVertex);
-            } else {
-                // pure random replay path, no suffix
-                const float3 le = vertex.GetEmission();
-                if (!any(le > 0)) {
-                    print("Shift failed: Zero le:", le);
-                    return result;
-                }
-                result = basePath;
-                result.mContribution = s.throughput * le;
-                result.mPrefixPdf = s.pdfW;
-            }
-        }
-
-        if (!result.IsValid() || !(result.mPrefixPdf > 0)) {
-            print("Shift failed: Invalid result", 0);
-            return {};
-        }
-
-        // random replay jacobian
-        jacobian = basePath.mPrefixPdf / result.mPrefixPdf;
-
-        if (basePath.HasSuffix() && basePath.mSuffix.mVertex.IsFinite()) {
-            // reconnection jacobian
-            if (!gUseCausticReservoirs || !basePath.HasFlag(PathFlags::eCausticLightPath))
-                jacobian *= (result.mSuffix.mCos / basePath.mSuffix.mCos) * sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
-
-            // suffix jacobian
-            if (gValidateSuffixes) jacobian *= basePath.mSuffix.mPdf / result.mSuffix.mPdf;
-        }
-
-        return result;
-    }
-
-    // Shift a pure light path
-    PathSample ShiftCausticPath(const PathSample basePath, out float jacobian, out int2 pixelCoord) {
-        jacobian = 0;
-        pixelCoord = -1;
-
-        PathVertex vertex;
-        PathState<true> s = ShiftLightSubpath(basePath, vertex);
-        if (!any(s.throughput > 0) || !(s.pdfW > 0) || s.bounces + 2 != basePath.mSuffix.mLightSubpath.mVertexCount || !vertex.IsFinite()) {
-            print("Caustic shift failed: Path length mismatch", uint2(s.bounces + 2, basePath.mSuffix.mLightSubpath.mVertexCount));
-            return {};
-        }
-
-        float integrationWeight, misWeight;
-        PathSample result = ConnectToCamera(s, vertex, pixelCoord, integrationWeight, misWeight);
-
-        if (!result.IsValid()) {
-            print("Caustic shift failed: invalid result", 0);
-            return {};
-        }
-
-        if (!result.HasFlag(PathFlags::eCausticLightPath)) {
-            print("Caustic shift failed: Result not caustic", 0);
-            return {};
-        }
-
-        // random replay jacobian
-        jacobian = basePath.mSuffix.mPdf / result.mSuffix.mPdf;
-
-        return result;
-    }
-};
+}

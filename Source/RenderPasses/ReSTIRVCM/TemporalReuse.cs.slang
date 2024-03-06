@@ -1,6 +1,39 @@
-import PathGenerator;
+import PathShift;
 import Utils.Debug.PixelDebug;
 import Utils.Sampling.SampleGenerator;
+
+extension PathGenerator {
+    // Shift a pure light path
+    PathSample ShiftCausticPath(const PathSample basePath, out float jacobian, out int2 pixelCoord) {
+        jacobian = 0;
+        pixelCoord = -1;
+
+        PathVertex vertex;
+        PathState<true> s = ShiftLightSubpath(basePath, vertex);
+        if (!any(s.throughput > 0) || !(s.pdfW > 0) || s.bounces + 2 != basePath.mSuffix.mLightSubpath.mVertexCount || !vertex.IsFinite()) {
+            print("Caustic shift failed: Path length mismatch", uint2(s.bounces + 2, basePath.mSuffix.mLightSubpath.mVertexCount));
+            return {};
+        }
+
+        float integrationWeight;
+        PathSample result = ConnectToCamera(s, vertex, pixelCoord, integrationWeight);
+
+        if (!result.IsValid()) {
+            print("Caustic shift failed: invalid result", 0);
+            return {};
+        }
+
+        if (!result.HasFlag(PathFlags::eCausticLightPath)) {
+            print("Caustic shift failed: Result not caustic", 0);
+            return {};
+        }
+
+        // random replay jacobian
+        jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
+
+        return result;
+    }
+};
 
 void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir r) {
     const PackedPathVertex primaryHit = gPathGenerator.LoadPrimaryVertex(id);

@@ -26,11 +26,11 @@ struct LightSubpathVertex {
     LightSubpathData mLightSubpath = {};
     PackedPathVertex mVertex = {};
     float3 mThroughput = 0;
-    float mSubpathPdf = 0;
+    uint pad0;
     float dVCM;
     float dVC;
     float dVM;
-    float pad1;
+    uint pad1;
 
     property uint mBounces {
         get { return mLightSubpath.mVertexCount - 2; }

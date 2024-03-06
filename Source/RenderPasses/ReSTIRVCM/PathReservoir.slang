@@ -50,6 +50,7 @@ struct LightSubpathData {
     PackedHitInfo mFirstVertex = {};
     PathId mId;
     uint mPackedBounces = 0;
+    float mPdf;
 
     property uint mVertexCount {
         get { return BF_GET(mPackedBounces, 0, 16); }
@@ -65,12 +66,14 @@ struct LightSubpathData {
         const PackedHitInfo firstVertex,
         const PathId id,
         const uint vertexCount,
-        const uint diffuseBounces) {
+        const uint diffuseBounces,
+        const float pdf) {
         LightSubpathData d = {};
         d.mFirstVertex = firstVertex;
         d.mId = id;
         d.mVertexCount = vertexCount;
         d.mDiffuseBounces = diffuseBounces;
+        d.mPdf = pdf;
         return d;
     }
 };
@@ -78,8 +81,8 @@ struct LightSubpathData {
 struct PathSuffix {
     PackedPathVertex mVertex = {};       ///< First vertex in the suffix.
     LightSubpathData mLightSubpath = {}; ///< Light subpath id
-    float3 mContribution = 0;            ///< Contribution from reflectance at vertices after the reconnection vertex and emission.
-    float mPdf = 0;                      ///< Product of solid-angle sampling PDFs after the reconnection vertex.
+    float3 mContribution = 0;            ///< Contributions after the reconnection vertex.
+    float mCameraFwdPdf = 0;             ///< solid-angle sampling PDFs after the reconnection vertex.
     float3 mDirOut;                      ///< Outgoing direction from the reconnection vertex.
     float mDist = 0;                     ///< Geometry term between the prefix and the suffix.
     float mCos = 0;                      ///< Geometry term between the prefix and the suffix.
@@ -94,7 +97,7 @@ struct PathSuffix {
         const LightSubpathData lightSubpath ) {
         PathSuffix s = {};
         s.mContribution = contribution;
-        s.mPdf = pdf;
+        s.mCameraFwdPdf = pdf;
         s.mDirOut = reconnectionDirOut;
         s.mDist   = reconnectionDistance;
         s.mCos    = reconnectionCos;
@@ -113,6 +116,8 @@ enum PathFlags : uint {
 
 // Represents an unweighted path sample, which can be shifted between domains.
 struct PathSample {
+    static const bool gIntegrandMIS = MIS_IN_INTEGRAND;
+
     PathId mId;
     uint mPackedBounces = 0;
     uint mFlags = 0;
@@ -121,6 +126,8 @@ struct PathSample {
     float  mPrefixPdf = 0;    ///< Product of solid-angle sampling PDFs before the reconnection vertex (excluding the bounce which ends on the reconnection vertex).
 
     PathSuffix mSuffix = {};
+
+    float mMisWeight = 0;
 
     // Number of bounces in the full path.
     property uint mBounces {
@@ -146,12 +153,14 @@ struct PathSample {
     bool HasSuffix() { return mBounces > mPrefixBounces; }
 
     float GetTargetPdf() {
-        return max(max(mContribution.r, mContribution.g), mContribution.b);
-        //return luminance(mContribution);
+        //float p = max(max(mContribution.r, mContribution.g), mContribution.b);
+        float p = luminance(mContribution);
+        return gIntegrandMIS ? p * mMisWeight : p;
     }
 
     static PathSample Create(
         const float3 contrib,
+        const float misWeight,
         const uint bounces,
         const float prefixPdf,
         const uint prefixBounces,
@@ -161,6 +170,7 @@ struct PathSample {
         const PathFlags flags ) {
         PathSample ps = {};
         ps.mContribution = contrib;
+        ps.mMisWeight = misWeight;
         ps.mPrefixPdf = prefixPdf;
         ps.mBounces = bounces;
         ps.mPrefixBounces = prefixBounces;
@@ -182,6 +192,12 @@ struct PathReservoir {
         mSample = s;
         mW = W;
         mM = M;
+    }
+
+    float3 GetRadiance() {
+        return PathSample::gIntegrandMIS ?
+        mSample.mContribution * (mW * mSample.mMisWeight) :
+        mSample.mContribution * mW;
     }
 
     [mutating]

@@ -483,6 +483,9 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useResampling)
         {
+            dirty |= group.checkbox("Unbiased MIS", mStaticParams.useMisInIntegrand);
+            group.tooltip("Multiply the technique MIS weights into\nthe integrand, instead of using them\nas resampling MIS weights.", true);
+
             if (mStaticParams.useBPT) {
                 dirty |= group.checkbox("Caustic reservoirs", mStaticParams.useCausticReservoirs);
                 group.tooltip("Use separate reservoirs for caustic light paths.", true);
@@ -1268,6 +1271,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
     defines.add("CAUSTIC_RESERVOIRS", useResampling && useBPT && useCausticReservoirs ? "1" : "0");
     defines.add("CAUSTIC_MOTION_VECTORS", useResampling && useBPT && !useCausticReservoirs && useCausticMotionVectors ? "1" : "0");
+    defines.add("MIS_IN_INTEGRAND", useResampling && useMisInIntegrand ? "1" : "0");
     defines.add("SPATIAL_RMIS_TYPE", std::to_string(uint(spatialRMIS)));
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("DEBUG_HEATMAP", debugHeatmap ? "1" : "0");
