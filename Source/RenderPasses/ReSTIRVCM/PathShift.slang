@@ -57,6 +57,65 @@ extension PathGenerator {
         return misWeight;
     }
 
+    void UpdateSuffixVertex(const PathVertex vertex, const bool mergeSuffix, inout PathSuffix newSuffix, inout PathVertex suffixVertex, out Ray visibilityRay) {
+        // update suffix vertex with new ray direction and compute ray between prefix and suffix
+        if (mergeSuffix) {
+            visibilityRay.dir = newSuffix.mDirOut;
+        } else {
+            if (newSuffix.mVertex.IsFinite()) {
+                // update ray direction
+                newSuffix.mVertex.mRayDirection = suffixVertex.GetPosition() - vertex.GetPosition();
+                // recompute origin and distance
+                newSuffix.mVertex.mRayOrigin = vertex.ComputeRayOrigin(newSuffix.mVertex.mRayDirection);
+                newSuffix.mVertex.mRayDirection = suffixVertex.ComputeRayOrigin(-newSuffix.mVertex.mRayDirection) - newSuffix.mVertex.mRayOrigin;
+                newSuffix.mVertex.mRayDistance = length(newSuffix.mVertex.mRayDirection);
+                newSuffix.mVertex.mRayDirection /= newSuffix.mVertex.mRayDistance;
+
+                newSuffix.mCos = suffixVertex.GetCosN(newSuffix.mVertex.mRayDirection);
+                newSuffix.mDist = newSuffix.mVertex.mRayDistance;
+
+                visibilityRay = Ray(newSuffix.mVertex.mRayOrigin, newSuffix.mVertex.mRayDirection, 0, newSuffix.mVertex.mRayDistance);
+            } else {
+                newSuffix.mVertex.mRayOrigin = vertex.ComputeRayOrigin(newSuffix.mVertex.mRayDirection);
+
+                visibilityRay = Ray(newSuffix.mVertex.mRayOrigin, newSuffix.mVertex.mRayDirection);
+            }
+
+            suffixVertex = PathVertex(newSuffix.mVertex);
+        }
+    }
+
+    void ConnectToSuffixVertex(inout PathState<true> s, const PathVertex vertex, const bool mergeSuffix, const Ray visibilityRay) {
+        let r = vertex.EvaluateReflectance(s.sg, visibilityRay.dir, false);
+        s.throughput *= r.mReflectance;
+        if (!any(s.throughput > 0)) return;
+
+        if (mergeSuffix) {
+            // for photons, divide out cosOut as it's in the light subpath PDF
+            if (vertex.HasFaceNormal()) {
+                const float3 guideNormal = vertex.mMaterial.getProperties(vertex.mShadingData).guideNormal;
+                const float cosOut = abs(dot(guideNormal, visibilityRay.dir));
+                if (cosOut < kMinCosTheta) {
+                    print("Shift failed: prefix cosOut < kMinCosTheta", cosOut);
+                    s.Terminate();
+                    return;
+                }
+                s.throughput /= cosOut;
+            }
+        } else if (gValidateSuffixes) {
+            s.pdfW *= r.mFwdPdfW;
+            // sample direction to advance sample generator
+            vertex.SampleDirection(s.sgBsdf, false);
+
+            // update mis quantities
+            DirectionSampleData r1;
+            r1.mFwdPdfW = r.mFwdPdfW;
+            r1.mRevPdfW = r.mRevPdfW;
+            r1.mDeltaLobe = false;
+            s.mis.ProcessDirection(r1, vertex.GetCosN(visibilityRay.dir), true);
+        }
+    }
+
     PathSample ConnectToSuffix(inout PathState<true> s, inout PathVertex vertex, const PathSample basePath, const LightSubpathVertex lightSubpathVertex) {
         PathSample result = {};
 
@@ -98,46 +157,24 @@ extension PathGenerator {
 
         // update suffix vertex with new ray direction and compute ray between prefix and suffix
         Ray visibilityRay;
+        UpdateSuffixVertex(vertex, mergeSuffix, newSuffix, suffixVertex, visibilityRay);
+
         if (mergeSuffix) {
-            // Apply merge radius
             const float3 toPhoton = suffixVertex.GetPosition() - vertex.GetPosition();
             const float dist2 = dot(toPhoton, toPhoton);
             if (dist2 >= sqr(GetMergeRadius(vertex.GetPosition()))) {
                 print("Shift failed: merge radius", dist2);
                 return result;
             }
-
-            visibilityRay.dir = newSuffix.mDirOut;
         } else {
-            if (newSuffix.mVertex.IsFinite()) {
-                // update ray direction
-                newSuffix.mVertex.mRayDirection = suffixVertex.GetPosition() - vertex.GetPosition();
-                // recompute origin and distance
-                newSuffix.mVertex.mRayOrigin = vertex.ComputeRayOrigin(newSuffix.mVertex.mRayDirection);
-                newSuffix.mVertex.mRayDirection = suffixVertex.ComputeRayOrigin(-newSuffix.mVertex.mRayDirection) - newSuffix.mVertex.mRayOrigin;
-                newSuffix.mVertex.mRayDistance = length(newSuffix.mVertex.mRayDirection);
-                newSuffix.mVertex.mRayDirection /= newSuffix.mVertex.mRayDistance;
-
-                newSuffix.mCos  = suffixVertex.GetCosN(newSuffix.mVertex.mRayDirection);
-                newSuffix.mDist = newSuffix.mVertex.mRayDistance;
-
-                if (newSuffix.mDist < mParams.mReconnectionDistance) {
-                    print("Shift failed: reconnection distance", newSuffix.mDist);
-                    return result;
-                }
-                if (abs(newSuffix.mCos) < kMinCosTheta) {
-                    print("Shift failed: reconnection cos", newSuffix.mCos);
-                    return result;
-                }
-
-                visibilityRay = Ray(newSuffix.mVertex.mRayOrigin, newSuffix.mVertex.mRayDirection, 0, newSuffix.mVertex.mRayDistance);
-            } else {
-                newSuffix.mVertex.mRayOrigin = vertex.ComputeRayOrigin(newSuffix.mVertex.mRayDirection);
-
-                visibilityRay = Ray(newSuffix.mVertex.mRayOrigin, newSuffix.mVertex.mRayDirection);
+            if (newSuffix.mDist < mParams.mReconnectionDistance) {
+                print("Shift failed: reconnection distance", newSuffix.mDist);
+                return result;
             }
-
-            suffixVertex = PathVertex(newSuffix.mVertex);
+            if (abs(newSuffix.mCos) < kMinCosTheta) {
+                print("Shift failed: reconnection cos", newSuffix.mCos);
+                return result;
+            }
         }
 
         s.prefixPdf         = s.pdfW;
@@ -149,44 +186,15 @@ extension PathGenerator {
         s.rcvDirOut = newSuffix.mDirOut;
 
         // evaluate reflectance at last prefix vertex
-        {
-            let r = vertex.EvaluateReflectance(s.sg, visibilityRay.dir, false);
-            s.throughput *= r.mReflectance;
-            if (!any(s.throughput > 0)) {
-                print("Shift failed: Zero prefix vertex reflectance", s.throughput);
-                return result;
-            }
+        ConnectToSuffixVertex(s, vertex, mergeSuffix, visibilityRay);
 
-            if (mergeSuffix) {
-                // for photons, divide out cosOut as it's in the light subpath PDF
-                if (vertex.HasFaceNormal()) {
-                    const float3 guideNormal = vertex.mMaterial.getProperties(vertex.mShadingData).guideNormal;
-                    const float cosOut = abs(dot(guideNormal, visibilityRay.dir));
-                    if (cosOut < kMinCosTheta) {
-                        print("Shift failed: prefix cosOut < kMinCosTheta", cosOut);
-                        return result;
-                    }
-                    s.throughput /= cosOut;
-                }
-            } else {
-                if (gValidateSuffixes) {
-                    s.pdfW *= r.mFwdPdfW;
-                    if (!(s.pdfW > 0)) {
-                        print("Shift failed: Zero prefix vertex pdf", s.pdfW);
-                    }
-                    // sample direction to advance sample generator
-                    vertex.SampleDirection(s.sgBsdf, false);
-
-                    // update mis quantities
-                    if (gBidirectional) {
-                        const float cosOut = vertex.GetCosN(visibilityRay.dir);
-                        const float invPdf = 1.f / r.mFwdPdfW;
-                        s.dVC = Mis(cosOut * invPdf) * (s.dVC * Mis(r.mRevPdfW) + s.dVCM + GetMisVmWeightFactor());
-                        s.dVM = Mis(cosOut * invPdf) * (s.dVM * Mis(r.mRevPdfW) + s.dVCM * GetMisVcWeightFactor() + 1);
-                        s.dVCM = Mis(invPdf);
-                    }
-                }
-            }
+        if (!any(s.throughput > 0)) {
+            print("Shift failed: Zero prefix vertex reflectance", s.throughput);
+            return result;
+        }
+        if (gValidateSuffixes && !mergeSuffix && !(s.pdfW > 0)) {
+            print("Shift failed: Zero prefix vertex pdf", s.pdfW);
+            return result;
         }
 
         float3 prefixContrib = s.throughput;
@@ -200,13 +208,7 @@ extension PathGenerator {
             s.bounces++;
             s.diffuseBounces++;
 
-            // update mis quantities
-            if (gBidirectional && suffixVertex.IsFinite()) {
-                const float cosIn = suffixVertex.GetCosN(visibilityRay.dir);
-                s.dVCM *= Mis(sqr(suffixVertex.mVertex.mRayDistance) / cosIn);
-                s.dVC /= Mis(cosIn);
-                s.dVM /= Mis(cosIn);
-            }
+            s.mis.ProcessRay(suffixVertex.mVertex, suffixVertex.GetCosN(visibilityRay.dir));
 
             if (basePath.mPrefixBounces + 1 == basePath.mBounces) {
                 // suffix is just a single vertex
@@ -248,13 +250,11 @@ extension PathGenerator {
                     suffixVertex.SampleDirection(s.sgBsdf, false);
 
                     // update mis quantities
-                    if (gBidirectional) {
-                        const float cosOut = suffixVertex.GetCosN(newSuffix.mDirOut);
-                        const float invPdf = 1.f / r.mFwdPdfW;
-                        s.dVC = Mis(cosOut * invPdf) * (s.dVC * Mis(r.mRevPdfW) + s.dVCM + GetMisVmWeightFactor());
-                        s.dVM = Mis(cosOut * invPdf) * (s.dVM * Mis(r.mRevPdfW) + s.dVCM * GetMisVcWeightFactor() + 1);
-                        s.dVCM = Mis(invPdf);
-                    }
+                    DirectionSampleData r1;
+                    r1.mFwdPdfW = r.mFwdPdfW;
+                    r1.mRevPdfW = r.mRevPdfW;
+                    r1.mDeltaLobe = false;
+                    s.mis.ProcessDirection(r1, suffixVertex.GetCosN(newSuffix.mDirOut), true);
 
                     // Trace first ray in suffix
                     suffixVertex = PathVertex( TraceRay(Ray(suffixVertex.ComputeRayOrigin(newSuffix.mDirOut), newSuffix.mDirOut)) );
@@ -262,12 +262,7 @@ extension PathGenerator {
                     s.diffuseBounces++;
 
                     // update mis quantities
-                    if (gBidirectional && suffixVertex.IsFinite()) {
-                        const float cosIn = suffixVertex.GetCosN(suffixVertex.GetDirIn());
-                        s.dVCM *= Mis(sqr(suffixVertex.mVertex.mRayDistance) / cosIn);
-                        s.dVC /= Mis(cosIn);
-                        s.dVM /= Mis(cosIn);
-                    }
+                    s.mis.ProcessRay(suffixVertex.mVertex, suffixVertex.GetCosN(suffixVertex.GetDirIn()));
 
                     // trace rest of subpath
                     const uint cameraSubpathBounces = basePath.mBounces - newSuffix.mLightSubpath.mVertexCount;

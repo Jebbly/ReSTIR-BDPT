@@ -532,8 +532,129 @@ extension PathGenerator {
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////// MIS weight helpers ////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////////////////
+
+extension RecursiveMisState {
+    __init(const PathVertex vertex) {
+        if (gPathGenerator.gBidirectional) {
+            float cosAtCamera;
+            const float cameraPdfW = gPathGenerator.GetImageToSolidAngleFactor(-vertex.GetDirIn(), cosAtCamera);
+            dVCM = gPathGenerator.Mis(gPathGenerator.mParams.mLightSubpathCount / cameraPdfW);
+            dVC = 0;
+            dVM = 0;
+
+            const float cosIn = vertex.GetCosN(vertex.GetDirIn());
+            const float3 d = gScene.camera.getPosition() - vertex.GetPosition();
+            dVCM *= gPathGenerator.Mis(dot(d,d) / cosIn);
+        }
+    }
+
+    __init(const bool finiteEmitter, const float directPdfA, const float emissionPdfW, const float cosLight) {
+        dVCM = gPathGenerator.Mis(directPdfA / emissionPdfW);
+        dVC = finiteEmitter ? gPathGenerator.Mis(cosLight / emissionPdfW) : 0;
+        dVM = dVC * gPathGenerator.GetMisVcWeightFactor();
+    }
+
+    [mutating]
+    void ProcessDirection(const DirectionSampleData r, const float cosOut, const bool connectable) {
+        // update mis quantities
+        if (gPathGenerator.gBidirectional) {
+            if (connectable && !r.mDeltaLobe) {
+                // SmallVCM tech. rep. (34)-(36)
+                const float invPdf = 1.f / r.mFwdPdfW;
+                dVC = gPathGenerator.Mis(cosOut * invPdf) * (dVC * gPathGenerator.Mis(r.mRevPdfW) + dVCM + gPathGenerator.GetMisVmWeightFactor());
+                dVM = gPathGenerator.Mis(cosOut * invPdf) * (dVM * gPathGenerator.Mis(r.mRevPdfW) + dVCM * gPathGenerator.GetMisVcWeightFactor() + 1);
+                dVCM = gPathGenerator.Mis(invPdf);
+            } else {
+                // SmallVCM tech. rep. (53)-(55)
+                dVC *= gPathGenerator.Mis(cosOut);
+                dVM *= gPathGenerator.Mis(cosOut);
+                dVCM = 0.f;
+            }
+        }
+    }
+
+    [mutating]
+    void ProcessRay(const PackedPathVertex newVertex, const float cosIn, const bool finiteEmitter = true) {
+        // update mis quantities
+        if (gPathGenerator.gBidirectional && newVertex.IsFinite()) {
+            if (finiteEmitter)
+                dVCM *= gPathGenerator.Mis(sqr(newVertex.mRayDistance));
+            const float invCosIn = 1 / gPathGenerator.Mis(cosIn);
+            dVCM *= invCosIn;
+            dVC  *= invCosIn;
+            dVM  *= invCosIn;
+        }
+    }
+
+
+    float EvalDirectLightMIS(const float directPdfW, const float emissionPdfW, const ReflectanceEvalData f, const float cosOut, const float cosLight) {
+        float misWeight = 1;
+        if (gPathGenerator.DebugDisableMIS()) return misWeight;
+
+        if (gPathGenerator.gBidirectional) {
+            const float wLight  = gPathGenerator.Mis(f.mFwdPdfW / directPdfW);
+            const float wCamera = gPathGenerator.Mis(emissionPdfW * abs(cosOut) / (directPdfW * cosLight)) * (gPathGenerator.GetMisVmWeightFactor() + dVCM + dVC * gPathGenerator.Mis(f.mRevPdfW));
+            misWeight = 1 / (wLight + 1 + wCamera);
+        } else {
+            misWeight = gPathGenerator.Mis(directPdfW, f.mFwdPdfW);
+        }
+        return misWeight;
+    }
+
+    float EvalVertexConnectionMIS(const RecursiveMisState v, const ReflectanceEvalData r, const ReflectanceEvalData f, const float cosCam, const float cosLight, const float invDist2) {
+        float misWeight = 1;
+        if (gPathGenerator.DebugDisableMIS()) return misWeight;
+
+        const float cameraBsdfDirPdfA = f.mFwdPdfW * cosLight * invDist2;
+        const float lightBsdfDirPdfA = r.mFwdPdfW * cosCam * invDist2;
+        const float wLight  = gPathGenerator.Mis(cameraBsdfDirPdfA) * (gPathGenerator.GetMisVmWeightFactor() + v.dVCM + v.dVC * gPathGenerator.Mis(r.mRevPdfW));
+        const float wCamera = gPathGenerator.Mis(lightBsdfDirPdfA)  * (gPathGenerator.GetMisVmWeightFactor() + dVCM + dVC * gPathGenerator.Mis(f.mRevPdfW));
+        misWeight = 1 / (wLight + 1 + wCamera);
+        return misWeight;
+    }
+
+    float EvalVertexMergingMIS(const RecursiveMisState v, const ReflectanceEvalData f) {
+        float misWeight = 1;
+        if (gPathGenerator.DebugDisableMIS() || gPathGenerator.gProgressivePhotonMapping) return misWeight;
+
+        const float wLight  = v.dVCM * gPathGenerator.GetMisVcWeightFactor() + v.dVM * gPathGenerator.Mis(f.mFwdPdfW);
+        const float wCamera = dVCM * gPathGenerator.GetMisVcWeightFactor() + dVM * gPathGenerator.Mis(f.mRevPdfW);
+        misWeight = 1 / (wLight + 1 + wCamera);
+
+        return misWeight;
+    }
+
+    float EvalLightTraceMIS(const ReflectanceEvalData f, const float cameraPdfA) {
+        float misWeight = 1;
+        if (gPathGenerator.DebugDisableMIS() || gPathGenerator.gLightTraceOnly) return misWeight;
+
+        const float wLight = gPathGenerator.Mis(cameraPdfA / gPathGenerator.mParams.mLightSubpathCount) * (gPathGenerator.GetMisVmWeightFactor() + dVCM + dVC * gPathGenerator.Mis(f.mRevPdfW));
+        misWeight = 1 / (wLight + 1);
+
+        return misWeight;
+    }
+
+    float EvalCameraTraceMIS(const float bsdfPdfW, const float directPdfA, const float directPdfW, const float emissionPdfW) {
+        float misWeight = 1;
+        if (gPathGenerator.DebugDisableMIS()) return misWeight;
+
+        if (gPathGenerator.gBidirectional) {
+            const float wCamera = gPathGenerator.Mis(directPdfA) * dVCM + gPathGenerator.Mis(emissionPdfW) * dVC;
+            misWeight = 1 / (1 + wCamera);
+        } else if (gPathGenerator.gSampleDirectLight)
+            misWeight = bsdfPdfW > 0 ? gPathGenerator.Mis(bsdfPdfW, directPdfW) : 1;
+
+        return misWeight;
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////// Path tracing implementation ///////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
+
+SampleGenerator MakeSampleGenerator(const uint2 id, const uint seed) { return SampleGenerator(id, seed); }
 
 extension PathGenerator {
     struct PathState<let bShift : bool> {
@@ -552,9 +673,7 @@ extension PathGenerator {
         float rcvCos = 0;
         float rcvDist = 0;
 
-        float dVCM = 0;
-        float dVC = 0;
-        float dVM = 0;
+        RecursiveMisState mis = {};
 
         uint packedBounces = 0;
         uint packedDiffuseBounces = 0;
@@ -608,9 +727,7 @@ extension PathGenerator {
         );
         v.mVertex = vertex.Pack();
         v.mThroughput = s.throughput;
-        v.dVCM = s.dVCM;
-        v.dVC  = s.dVC;
-        v.dVM  = s.dVM;
+        v.mis = s.mis;
         return v;
     }
 
@@ -628,6 +745,7 @@ extension PathGenerator {
         }
     }
 
+
     // ---------------------------------------------------------------------------------------------------------
     // ----------------------------------------- Connection stategies ------------------------------------------
     // ---------------------------------------------------------------------------------------------------------
@@ -643,7 +761,7 @@ extension PathGenerator {
         // Sample emissive path vertex
 
         const PathId lightPathId = bShift ? s.lightSubpathId : PathId(s.sg.next(), uint2(s.sg.next(), s.sg.next()));
-        SampleGenerator sg = SampleGenerator(lightPathId.mId, lightPathId.mSeed);
+        SampleGenerator sg = MakeSampleGenerator(lightPathId.mId, lightPathId.mSeed);
 
         float directPdfA = 0;
         float directPdfW = 0;
@@ -745,16 +863,7 @@ extension PathGenerator {
         integrationWeight = 1.f / samplePdf;
 
         // compute mis weight
-        float misWeight = 1;
-        if (!DebugDisableMIS()) {
-            if (gBidirectional) {
-                const float wLight = Mis(f.mFwdPdfW / directPdfW);
-                const float wCamera = Mis(emissionPdfW * abs(cosOut) / (directPdfW * cosLight)) * (GetMisVmWeightFactor() + s.dVCM + s.dVC * Mis(f.mRevPdfW));
-                misWeight = 1 / (wLight + 1 + wCamera);
-            } else {
-                misWeight = Mis(directPdfW, f.mFwdPdfW);
-            }
-        }
+        const float misWeight = s.mis.EvalDirectLightMIS(directPdfW, emissionPdfW, f, cosOut, cosLight);
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -874,15 +983,7 @@ extension PathGenerator {
 
         integrationWeight = (cosLight * invDist2) / (s.pdfW * v.mLightSubpath.mPdf);
 
-        // mis weight
-        float misWeight = 1;
-        if (!DebugDisableMIS()) {
-            const float cameraBsdfDirPdfA = f.mFwdPdfW * cosLight * invDist2;
-            const float lightBsdfDirPdfA  = r.mFwdPdfW * cosCam   * invDist2;
-            const float wLight = Mis(cameraBsdfDirPdfA) * (GetMisVmWeightFactor() + v.dVCM + v.dVC * Mis(r.mRevPdfW));
-            const float wCamera = Mis(lightBsdfDirPdfA) * (GetMisVmWeightFactor() + s.dVCM + s.dVC * Mis(f.mRevPdfW));
-            misWeight = 1 / (wLight + 1.f + wCamera);
-        }
+        const float misWeight = s.mis.EvalVertexConnectionMIS(v.mis, r, f, cosCam, cosLight, invDist2);
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -961,13 +1062,7 @@ extension PathGenerator {
 
         integrationWeight = 1 / (s.pdfW * v.mLightSubpath.mPdf * (sqr(mergeRadius) * M_PI * mParams.mLightSubpathCount));
 
-        const float wLight  = v.dVCM * GetMisVcWeightFactor() + v.dVM * Mis(f.mFwdPdfW);
-        const float wCamera = s.dVCM * GetMisVcWeightFactor() + s.dVM * Mis(f.mRevPdfW);
-        float misWeight = 1;
-        if (DebugDisableMIS() || gProgressivePhotonMapping || bShift)
-            misWeight = 1;
-        else
-            misWeight = 1.f / (wLight + 1.f + wCamera);
+        const float misWeight = s.mis.EvalVertexMergingMIS(v.mis, f);
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -1069,8 +1164,7 @@ extension PathGenerator {
 
         integrationWeight = 1.f / samplePdf;
 
-        const float wLight = Mis(cameraPdfA / mParams.mLightSubpathCount) * (GetMisVmWeightFactor() + s.dVCM + s.dVC * Mis(f.mRevPdfW));
-        const float misWeight = (gLightTraceOnly || DebugDisableMIS()) ? 1.f : (1.f / (wLight + 1.f));
+        const float misWeight = s.mis.EvalLightTraceMIS(f, cameraPdfA);
 
         PathSuffix suffix = {};
         if (s.deltaRcv || bShift) {
@@ -1132,8 +1226,8 @@ extension PathGenerator {
         s.id = id;
         s.isLightPath = false;
 
-        s.sg     = SampleGenerator(s.id.mId, s.id.mSeed);
-        s.sgBsdf = SampleGenerator(s.id.mId, -s.id.mSeed);
+        s.sg     = MakeSampleGenerator(s.id.mId, s.id.mSeed);
+        s.sgBsdf = MakeSampleGenerator(s.id.mId, -s.id.mSeed);
 
         s.bounces = 0;
         s.diffuseBounces = 0;
@@ -1144,17 +1238,7 @@ extension PathGenerator {
         s.prefixPdf = 0;
         s.rcvDirOut = 0;
         s.pdfW = 1;
-        if (gBidirectional) {
-            float cosAtCamera;
-            const float cameraPdfW = GetImageToSolidAngleFactor(-vertex.GetDirIn(), cosAtCamera);
-            s.dVCM = Mis(mParams.mLightSubpathCount / cameraPdfW);
-            s.dVC = 0;
-            s.dVM = 0;
-
-            const float cosIn = vertex.GetCosN(vertex.GetDirIn());
-            const float3 d = gScene.camera.getPosition() - vertex.GetPosition();
-            s.dVCM *= Mis(dot(d,d) / cosIn);
-        }
+        s.mis = RecursiveMisState(vertex);
         return s;
     }
     PathState<bShift> InitializeLightPath<let bShift : bool>(const PathId id, out PathVertex vertex, PackedHitInfo firstVertex = {}) {
@@ -1167,8 +1251,8 @@ extension PathGenerator {
         s.throughputAtRcv = 0;
         s.rcvDirOut = 0;
 
-        s.sg     = SampleGenerator(s.id.mId, s.id.mSeed);
-        s.sgBsdf = SampleGenerator(s.id.mId, -s.id.mSeed);
+        s.sg     = MakeSampleGenerator(s.id.mId, s.id.mSeed);
+        s.sgBsdf = MakeSampleGenerator(s.id.mId, -s.id.mSeed);
 
         vertex.mVertex = {};
 
@@ -1263,9 +1347,8 @@ extension PathGenerator {
         s.diffuseBounces = 0;
         s.prefixBounces = 0;
         s.rcvDiffuseBounces = 0;
-        s.dVCM = Mis(directPdfA / emissionPdfW);
-        s.dVC = finiteEmitter ? Mis(cosLight / emissionPdfW) : 0;
-        s.dVM = s.dVC * GetMisVcWeightFactor();
+
+        s.mis = RecursiveMisState(finiteEmitter, directPdfA, emissionPdfW, cosLight);
 
         // set initial vertex as rcv
         s.rcv = l;
@@ -1281,11 +1364,7 @@ extension PathGenerator {
                 return s;
             }
 
-            if (finiteEmitter)
-                s.dVCM *= Mis(sqr(vertex.mVertex.mRayDistance));
-            s.dVCM /= Mis(cosIn);
-            s.dVC  /= Mis(cosIn);
-            s.dVM  /= Mis(cosIn);
+            s.mis.ProcessRay(vertex.mVertex, cosIn, finiteEmitter);
 
             s.rcvDist = vertex.mVertex.mRayDistance;
         } else
@@ -1336,20 +1415,7 @@ extension PathGenerator {
         }
 
         // update mis quantities
-        if (gBidirectional) {
-            if (connectable && !r.mDeltaLobe) {
-                // SmallVCM tech. rep. (34)-(36)
-                const float invPdf = 1.f / r.mFwdPdfW;
-                s.dVC = Mis(cosOut * invPdf) * (s.dVC * Mis(r.mRevPdfW) + s.dVCM + GetMisVmWeightFactor());
-                s.dVM = Mis(cosOut * invPdf) * (s.dVM * Mis(r.mRevPdfW) + s.dVCM * GetMisVcWeightFactor() + 1);
-                s.dVCM = Mis(invPdf);
-            } else {
-                // SmallVCM tech. rep. (53)-(55)
-                s.dVC *= Mis(cosOut);
-                s.dVM *= Mis(cosOut);
-                s.dVCM = 0.f;
-            }
-        }
+        s.mis.ProcessDirection(r, cosOut, connectable);
 
         // trace ray to find next vertex
         vertex = PathVertex(TraceRay(Ray(vertex.ComputeRayOrigin(r.mDirection), r.mDirection)));
@@ -1364,12 +1430,7 @@ extension PathGenerator {
             return;
         }
 
-        // update mis quantities
-        if (gBidirectional && vertex.IsFinite()) {
-            s.dVCM *= Mis(sqr(vertex.mVertex.mRayDistance) / cosIn);
-            s.dVC  /= Mis(cosIn);
-            s.dVM  /= Mis(cosIn);
-        }
+        s.mis.ProcessRay(vertex.mVertex, cosIn);
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -1549,6 +1610,7 @@ extension PathGenerator {
                     float bsdfPdfW = 0;
                     bool deltaLobe = false;
                     SampleNextVertex(s, vertex, bsdfPdfW, deltaLobe);
+                    if (!prevReconnectable) bsdfPdfW = 0;
 
                     const float3 le = vertex.GetEmission();
 
@@ -1586,14 +1648,7 @@ extension PathGenerator {
                         // divide by pdf
                         float integrationWeight = 1 / s.pdfW;
 
-                        float misWeight = 1;
-                        if (!DebugDisableMIS()) {
-                            if (gBidirectional) {
-                                const float wCamera = Mis(directPdfA) * s.dVCM + Mis(emissionPdfW) * s.dVC;
-                                misWeight = 1 / (1 + wCamera);
-                            } else if (gSampleDirectLight)
-                                misWeight = prevReconnectable && bsdfPdfW > 0 ? Mis(bsdfPdfW, directPdfW) : 1;
-                        }
+                        float misWeight = s.mis.EvalCameraTraceMIS(bsdfPdfW, directPdfA, directPdfW, emissionPdfW);
 
                         PathSuffix suffix = {};
                         const bool hasRcv = s.rcvFound;

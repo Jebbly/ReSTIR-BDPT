@@ -2,6 +2,32 @@
 import Scene.HitInfo;
 import PathReservoir; // for PackedPathVertex
 
+struct RecursiveMisState {
+    float dVCM = 0;
+    float dVC = 0;
+    float dVM = 0;
+    uint pad;
+};
+
+struct LightSubpathVertex {
+    LightSubpathData mLightSubpath = {};
+    PackedPathVertex mVertex = {};
+    float3 mThroughput = 0;
+    uint pad;
+    RecursiveMisState mis = {};
+
+    property uint mBounces {
+        get { return mLightSubpath.mVertexCount - 2; }
+    }
+    property uint mDiffuseBounces {
+        get { return mLightSubpath.mDiffuseBounces; }
+        set { mLightSubpath.mDiffuseBounces = newValue; }
+    }
+
+    float3 GetDirIn() { return -mVertex.mRayDirection; }
+};
+static const uint LightSubpathVertexSize = sizeof(LightSubpathVertex);
+
 
 // xxhash https://github.com/Cyan4973/xxHash
 // implementation from https://www.shadertoy.com/view/Xt3cDn
@@ -21,28 +47,6 @@ uint pcg(uint v) {
     uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
     return (word >> 22u) ^ word;
 }
-
-struct LightSubpathVertex {
-    LightSubpathData mLightSubpath = {};
-    PackedPathVertex mVertex = {};
-    float3 mThroughput = 0;
-    uint pad0;
-    float dVCM;
-    float dVC;
-    float dVM;
-    uint pad1;
-
-    property uint mBounces {
-        get { return mLightSubpath.mVertexCount - 2; }
-    }
-    property uint mDiffuseBounces {
-        get { return mLightSubpath.mDiffuseBounces; }
-        set { mLightSubpath.mDiffuseBounces = newValue; }
-    }
-
-    float3 GetDirIn() { return -mVertex.mRayDirection; }
-};
-static const uint LightSubpathVertexSize = sizeof(LightSubpathVertex);
 
 struct LightVertexCache {
     RWStructuredBuffer<LightSubpathVertex> lightVertices; ///< Diffuse light sub-path vertices.
