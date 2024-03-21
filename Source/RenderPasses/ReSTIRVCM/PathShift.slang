@@ -163,6 +163,26 @@ extension PathGenerator {
         return s;
     }
 
+    // Returns the path state at the end of the prefix
+    PathState<true> ShiftPrefix(const PathSample basePath, inout PathVertex vertex) {
+        // initialize path state
+        PathState<true> s = InitializeCameraPath<true>(basePath.mId, vertex);
+        s.lightSubpathVertex = basePath.mSuffix.mLightSubpath.mFirstVertex;
+        s.lightSubpathId     = basePath.mSuffix.mLightSubpath.mId;
+
+        // trace the new prefix
+        while (s.bounces < basePath.mPrefixBounces && any(s.throughput > 0)) {
+            SampleNextVertex(s, vertex);
+        }
+        if (s.bounces != basePath.mPrefixBounces || s.diffuseBounces != basePath.mPrefixDiffuseBounces || !any(s.throughput > 0)) {
+            print("Shift failed: Prefix length mismatch:", uint2(s.bounces, basePath.mPrefixBounces));
+            s.Terminate();
+            return s;
+        }
+
+        return s;
+    }
+
     // Recomputes the suffix vertex's incoming ray based on vertex. Does not update the suffix's contribution.
     PathSuffix GetShiftedSuffixVertex(const PathVertex vertex, const PathSuffix baseSuffix, const bool lightPath = false) {
         const PathVertex suffixVertex = PathVertex(baseSuffix.mVertex);
@@ -186,26 +206,6 @@ extension PathGenerator {
         return result;
     }
 
-    // Returns the path state at the end of the prefix
-    PathState<true> ShiftPrefix(const PathSample basePath, inout PathVertex vertex) {
-        // initialize path state
-        PathState<true> s = InitializeCameraPath<true>(basePath.mId, vertex);
-        s.lightSubpathVertex = basePath.mSuffix.mLightSubpath.mFirstVertex;
-        s.lightSubpathId     = basePath.mSuffix.mLightSubpath.mId;
-
-        // trace the new prefix
-        while (s.bounces < basePath.mPrefixBounces && any(s.throughput > 0)) {
-            SampleNextVertex(s, vertex);
-        }
-        if (s.bounces != basePath.mPrefixBounces || s.diffuseBounces != basePath.mPrefixDiffuseBounces || !any(s.throughput > 0)) {
-            print("Shift failed: Prefix length mismatch:", uint2(s.bounces, basePath.mPrefixBounces));
-            s.Terminate();
-            return s;
-        }
-
-        return s;
-    }
-
     // connect to suffix without shifting it. Assumes the path state is already at the end of the prefix
     PathSample ConnectToSuffix(inout PathState<true> s, inout PathVertex vertex, const PathSample basePath) {
         const uint  suffixBounces = basePath.mBounces - basePath.mPrefixBounces;
@@ -216,8 +216,11 @@ extension PathGenerator {
 
         PathSuffix newSuffix = GetShiftedSuffixVertex(vertex, basePath.mSuffix);
 
-        if (basePath.HasFlag(PathFlags::eCausticLightPath) && !gUseCausticReservoirs) {
-            // reject caustic path if it's not in the same pixel (or close)
+        if (newSuffix.mCos < kMinCosTheta)
+            return result;
+
+        if (!gDisableCameraConnection && basePath.HasFlag(PathFlags::eCausticLightPath) && !gUseCausticReservoirs) {
+            // copy caustic paths if they are in the same pixel (or close)
             const float2 basePixel = GetPixelCoord(PathVertex(newSuffix.mVertex).GetPosition());
             const float2 d = GetPixelCoord(vertex.GetPosition()) - basePixel;
             const float d2 = dot(d, d);
@@ -229,7 +232,7 @@ extension PathGenerator {
             return basePath;
         }
 
-        if (newSuffix.mVertex.IsFinite() && s.bounces < cameraBounces && (newSuffix.mDist < mParams.mReconnectionDistance || newSuffix.mCos < kMinCosTheta))
+        if (s.bounces < cameraBounces && newSuffix.mVertex.IsFinite() && newSuffix.mDist < mParams.mReconnectionDistance)
             return result;
 
         ReflectanceEvalData f = {};
@@ -259,7 +262,7 @@ extension PathGenerator {
             s.throughput *= r.mReflectance;
         }
 
-        float misWeight = basePath.mMisWeight; // copy the MIS weight from the pixel that sampled the path
+        float misWeight = basePath.mMisWeight;
 
         // compute MIS weight for the shifted path
         if (PathSample::gIntegrandMIS && !DebugDisableMIS()) {
@@ -336,7 +339,9 @@ extension PathGenerator {
         if (s.bounces < cameraBounces) {
             // advance to the 1st suffix vertex (the reconnection vertex)
             const PathSuffix newSuffix = GetShiftedSuffixVertex(vertex, basePath.mSuffix);
-            if (newSuffix.mVertex.IsFinite() && s.bounces < cameraBounces && (newSuffix.mDist < mParams.mReconnectionDistance || newSuffix.mCos < kMinCosTheta))
+            if (newSuffix.mCos < kMinCosTheta)
+                return result;
+            if (s.bounces < cameraBounces && newSuffix.mVertex.IsFinite() && newSuffix.mDist < mParams.mReconnectionDistance)
                 return result;
             const PathVertex rcv = PathVertex(newSuffix.mVertex);
             if (Occluded(Ray(rcv.mVertex.mRayOrigin, rcv.mVertex.mRayDirection, 0, rcv.mVertex.mRayDistance)))
@@ -398,15 +403,15 @@ extension PathGenerator {
 
         const bool hasLightSubpath = gBidirectional && (
                 (basePath.HasSuffix() && basePath.mSuffix.mLightSubpath.mVertexCount > 1)
-                || basePath.HasFlag(PathFlags::eNonCausticLightPath)
-                || (basePath.HasFlag(PathFlags::eCausticLightPath) && !gUseCausticReservoirs) );
+                || (!gDisableCameraConnection && basePath.HasFlag(PathFlags::eNonCausticLightPath))
+                || (!gDisableCameraConnection && basePath.HasFlag(PathFlags::eCausticLightPath) && !gUseCausticReservoirs) );
 
         LightSubpathVertex shiftedLightVertex = {};
         if (gShiftSuffixes && hasLightSubpath) {
             // trace light subpath, so that vertex is the end of the light subpath
             PathVertex vertex;
             PathState<true> s;
-            if (basePath.HasFlag(PathFlags::eNonCausticLightPath) && basePath.mBounces == 1)
+            if (!gDisableCameraConnection && basePath.HasFlag(PathFlags::eNonCausticLightPath) && basePath.mBounces == 1)
                 s = ShiftLightSubpath(basePath.mSuffix.mLightSubpath, newPrimaryHit, vertex);
             else {
                 s = ShiftLightSubpath(basePath.mSuffix.mLightSubpath, vertex);
@@ -418,82 +423,84 @@ extension PathGenerator {
                 return result;
             }
 
-            if (basePath.HasFlag(PathFlags::eCausticLightPath) && !gUseCausticReservoirs) {
-                // Connect caustic paths to the camera directly
-                int2 offsetPixel;
-                float w;
-                result = ConnectToCamera(s, vertex, offsetPixel, w);
-                if (!result.IsValid()) {
-                    result = {};
-                    return result;
-                }
-
-                // reject path if it's not in the same pixel (or close)
-                const float2 d = GetPixelCoord(PathVertex(newPrimaryHit).GetPosition()) - offsetPixel;
-                const float d2 = dot(d, d);
-                const float r = mParams.mCausticReuseRadius;
-                if ((r == 0 && any(d != 0.f)) || (r > 0 && d2 > r * r)) {
-                    print("Shift failed: Caustic path not in pixel", offsetPixel);
-                    result = {};
-                    return result;
-                }
-
-                jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
-                return result;
-            } else if (basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
-                // connect non-caustic pure light paths to the new primary hit
-
-                if (basePath.mBounces > 1) {
-                    PathVertex v = PathVertex(newPrimaryHit);
-                    float3 to_v = v.GetPosition() - vertex.GetPosition();
-                    const float dist = length(to_v);
-                    to_v /= dist;
-
-                    if (!vertex.IsConnectable() || !v.IsConnectable() || dist < mParams.mReconnectionDistance) {
-                        print("Shift failed: Unconnectable light subpath", dist);
+            if (!gDisableCameraConnection) {
+                if (basePath.HasFlag(PathFlags::eCausticLightPath) && !gUseCausticReservoirs) {
+                    // Connect caustic paths to the camera directly
+                    int2 offsetPixel;
+                    float w;
+                    result = ConnectToCamera(s, vertex, offsetPixel, w);
+                    if (!result.IsValid()) {
+                        result = {};
                         return result;
                     }
 
-                    // advance to primary hit
-                    {
-                        const float3 rayOrigin = vertex.ComputeRayOrigin(to_v);
-                        Ray visibilityRay = Ray(rayOrigin, v.ComputeRayOrigin(-to_v) - rayOrigin);
-                        visibilityRay.tMax = length(visibilityRay.dir);
-                        visibilityRay.dir /= visibilityRay.tMax;
-                        if (Occluded(visibilityRay)) {
-                            print("Shift failed: Light subpath occluded", 0);
+                    // reject path if it's not in the same pixel (or close)
+                    const float2 d = GetPixelCoord(PathVertex(newPrimaryHit).GetPosition()) - offsetPixel;
+                    const float d2 = dot(d, d);
+                    const float r = mParams.mCausticReuseRadius;
+                    if ((r == 0 && any(d != 0.f)) || (r > 0 && d2 > r * r)) {
+                        print("Shift failed: Caustic path not in pixel", offsetPixel);
+                        result = {};
+                        return result;
+                    }
+
+                    jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
+                    return result;
+                } else if (basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
+                    // connect non-caustic pure light paths to the new primary hit
+
+                    if (basePath.mBounces > 1) {
+                        PathVertex v = PathVertex(newPrimaryHit);
+                        float3 to_v = v.GetPosition() - vertex.GetPosition();
+                        const float dist = length(to_v);
+                        to_v /= dist;
+
+                        if (!vertex.IsConnectable() || !v.IsConnectable()) {
+                            print("Shift failed: Unconnectable light subpath", dist);
                             return result;
                         }
 
-                        // for light paths: rcv is always the 2nd to last vertex
-                        s.rcv = vertex.Pack();
-                        s.rcvDirOut = vertex.GetDirIn();
-                        s.throughputAtRcv = s.throughput;
-                        s.pdfAtRcv = s.pdfW;
-                        s.prefixPdf = s.pdfW;
-                        s.prefixBounces = 0;
-                        s.rcvDiffuseBounces = 0;
+                        // advance to primary hit
+                        {
+                            const float3 rayOrigin = vertex.ComputeRayOrigin(to_v);
+                            Ray visibilityRay = Ray(rayOrigin, v.ComputeRayOrigin(-to_v) - rayOrigin);
+                            visibilityRay.tMax = length(visibilityRay.dir);
+                            visibilityRay.dir /= visibilityRay.tMax;
+                            if (Occluded(visibilityRay)) {
+                                print("Shift failed: Light subpath occluded", 0);
+                                return result;
+                            }
 
-                        SetNextVertex(s, vertex, PathVertex(PackedPathVertex(Ray(rayOrigin, to_v), HitInfo(newPrimaryHit.mPackedHit), dist)), true);
+                            // for light paths: rcv is always the 2nd to last vertex
+                            s.rcv = vertex.Pack();
+                            s.rcvDirOut = vertex.GetDirIn();
+                            s.throughputAtRcv = s.throughput;
+                            s.pdfAtRcv = s.pdfW;
+                            s.prefixPdf = s.pdfW;
+                            s.prefixBounces = 0;
+                            s.rcvDiffuseBounces = 0;
 
-                        s.rcvCos = abs(dot(s.lastVertex.normal, vertex.mVertex.mRayDirection));
-                        s.rcvDist = vertex.mVertex.mRayDistance;
-                        s.deltaRcv = false;
+                            SetNextVertex(s, vertex, PathVertex(PackedPathVertex(Ray(rayOrigin, to_v), HitInfo(newPrimaryHit.mPackedHit), dist)), true);
+
+                            s.rcvCos = abs(dot(s.lastVertex.normal, vertex.mVertex.mRayDirection));
+                            s.rcvDist = vertex.mVertex.mRayDistance;
+                            s.deltaRcv = false;
+                        }
                     }
-                }
 
-                int2 offsetPixel;
-                float w;
-                result = ConnectToCamera(s, vertex, offsetPixel, w, false);
-                if (!result.IsValid()) {
-                    print("Shift failed: ConnectToCamera failed", 0);
-                    result = {};
+                    int2 offsetPixel;
+                    float w;
+                    result = ConnectToCamera(s, vertex, offsetPixel, w, false);
+                    if (!result.IsValid()) {
+                        print("Shift failed: ConnectToCamera failed", 0);
+                        result = {};
+                        return result;
+                    }
+
+                    jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
+                    jacobian *= (result.mSuffix.mCos / basePath.mSuffix.mCos) * sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
                     return result;
                 }
-
-                jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
-                jacobian *= (result.mSuffix.mCos / basePath.mSuffix.mCos) * sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
-                return result;
             }
 
             // store light subpath vertex for reconnection
@@ -543,11 +550,9 @@ extension PathGenerator {
                 jacobian *= (result.mSuffix.mCos / basePath.mSuffix.mCos) * sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
 
                 // suffix jacobian
-                //if (gShiftSuffixes) {
-                //    jacobian *= basePath.mSuffix.mCameraFwdPdf / result.mSuffix.mCameraFwdPdf;
-                //    if (basePath.mSuffix.mLightSubpath.mVertexCount > 1)
-                //        jacobian *= basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
-                //}
+                jacobian *= basePath.mSuffix.mCameraFwdPdf / result.mSuffix.mCameraFwdPdf;
+                if (hasLightSubpath)
+                    jacobian *= basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
             }
         }
 

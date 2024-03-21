@@ -139,6 +139,9 @@ void ReSTIRVCM::validateOptions()
         mStaticParams.spatialReusePasses = 0;
     }
 
+    if (mStaticParams.disableCameraConnection)
+        mStaticParams.useCausticReservoirs = false;
+
     if (mStaticParams.useCausticReservoirs)
         mStaticParams.useCausticMotionVectors = false;
 }
@@ -414,6 +417,9 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                 dirty |= group.checkbox("Vertex merging (VM)", mStaticParams.useVM);
                 group.tooltip("Enable vertex merging.");
 
+                dirty |= group.checkbox("Disable camera connection", mStaticParams.disableCameraConnection);
+                group.tooltip("Don't connect light subpaths to the camera.");
+
                 if (mStaticParams.useVM)
                 {
                     dirty |= group.checkbox("Vertex merging only", mStaticParams.useVMOnly);
@@ -482,7 +488,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             dirty |= group.checkbox("Unbiased MIS", mStaticParams.useMisInIntegrand);
             group.tooltip("Multiply the technique MIS weights into\nthe integrand, instead of using them\nas resampling MIS weights.", true);
 
-            if (mStaticParams.useBPT) {
+            if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection) {
                 dirty |= group.checkbox("Shift light paths to pixel centers", mStaticParams.shiftLightPathsToPixelCenters);
                 group.tooltip("Shift non-caustic light subpaths\nto vbuffer vertices during canonical sampling.\nThis can improve temporal reuse");
                 dirty |= group.checkbox("Caustic reservoirs", mStaticParams.useCausticReservoirs);
@@ -1264,6 +1270,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_NEE", (useNEE || useBPT) ? "1" : "0");
     defines.add("USE_BIDIRECTIONAL", useBPT ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");
+    defines.add("DISABLE_CAMERA_CONNECTION", (useBPT && disableCameraConnection) ? "1" : "0");
     defines.add("USE_VERTEX_MERGING", (useBPT && useVM && !lightTraceOnly) ? "1" : "0");
     defines.add("USE_PPM_ONLY", (useBPT && useVM && useVMOnly && !lightTraceOnly) ? "1" : "0");
     defines.add("DYNAMIC_MERGE_RADIUS", (useBPT && useVM && !lightTraceOnly && dynamicMergeRadius) ? "1" : "0");

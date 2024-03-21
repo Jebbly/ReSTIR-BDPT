@@ -70,6 +70,7 @@ private:
         bool        dynamicMergeRadius = false;
         bool        lightTraceOnly = false;
         bool        useVMOnly = false;
+        bool        disableCameraConnection = false;
         bool        debugBPT = false;
         bool        debugHeatmap = false;
         bool        useResampling = true;

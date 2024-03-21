@@ -19,6 +19,29 @@ cbuffer CB {
     uint gSwapReservoirs;
 };
 
+// Static parameters
+extension PathGenerator {
+    static const bool  gUseEnvLight                   = USE_ENV_LIGHT;
+    static const bool  gUseEmissiveLights             = USE_EMISSIVE_LIGHTS;
+    static const bool  gUseViewDir                    = USE_VIEW_DIR;
+    static const bool  gSampleDirectLight             = USE_NEE;
+    static const bool  gBidirectional                 = USE_BIDIRECTIONAL;
+    static const bool  gShiftLightPathsToPixelCenters = SHIFT_LIGHT_PATHS_TO_CENTER;
+    static const bool  gVertexMerging                 = USE_VERTEX_MERGING;
+    static const bool  gDynamicMergeRadius            = DYNAMIC_MERGE_RADIUS;
+    static const bool  gProgressivePhotonMapping      = USE_PPM_ONLY;
+    static const bool  gLightTraceOnly                = LIGHT_TRACE_ONLY;
+    static const bool  gUseResampling                 = USE_RESAMPLING;
+    static const bool  gUseCausticReservoirs          = CAUSTIC_RESERVOIRS;
+    static const bool  gUseCausticMotionVectors       = CAUSTIC_MOTION_VECTORS;
+    static const bool  gShiftSuffixes                 = SHIFT_SUFFIXES;
+    static const bool  gUseBsdfImportanceSampling     = USE_BSDF_IMPORTANCE_SAMPLING;
+    static const bool  gDebugBPT                      = DEBUG_BPT;
+    static const bool  gDebugHeatmap                  = DEBUG_HEATMAP;
+    static const float gMISPowerExponent              = MIS_POWER_EXPONENT;
+    static const bool  gDisableCameraConnection       = DISABLE_CAMERA_CONNECTION;
+}
+
 struct PathGenerator {
     PathGeneratorParams mParams;
 
@@ -47,28 +70,6 @@ struct PathGenerator {
     RWStructuredBuffer<PathReservoir> mLastCausticReservoirs;
     Texture2D<float3> mLastViewDir;
     Texture2D<PackedHitInfo> mLastVbuffer;
-}
-
-// Static parameters
-extension PathGenerator {
-    static const bool  gUseEnvLight                   = USE_ENV_LIGHT;
-    static const bool  gUseEmissiveLights             = USE_EMISSIVE_LIGHTS;
-    static const bool  gUseViewDir                    = USE_VIEW_DIR;
-    static const bool  gSampleDirectLight             = USE_NEE;
-    static const bool  gBidirectional                 = USE_BIDIRECTIONAL;
-    static const bool  gShiftLightPathsToPixelCenters = SHIFT_LIGHT_PATHS_TO_CENTER;
-    static const bool  gVertexMerging                 = USE_VERTEX_MERGING;
-    static const bool  gDynamicMergeRadius            = DYNAMIC_MERGE_RADIUS;
-    static const bool  gProgressivePhotonMapping      = USE_PPM_ONLY;
-    static const bool  gLightTraceOnly                = LIGHT_TRACE_ONLY;
-    static const bool  gUseResampling                 = USE_RESAMPLING;
-    static const bool  gUseCausticReservoirs          = CAUSTIC_RESERVOIRS;
-    static const bool  gUseCausticMotionVectors       = CAUSTIC_MOTION_VECTORS;
-    static const bool  gShiftSuffixes                 = SHIFT_SUFFIXES;
-    static const bool  gUseBsdfImportanceSampling     = USE_BSDF_IMPORTANCE_SAMPLING;
-    static const bool  gDebugBPT                      = DEBUG_BPT;
-    static const bool  gDebugHeatmap                  = DEBUG_HEATMAP;
-    static const float gMISPowerExponent              = MIS_POWER_EXPONENT;
 }
 ParameterBlock<PathGenerator> gPathGenerator;
 
@@ -867,7 +868,14 @@ extension PathGenerator {
         if (cosOut < kMinCosTheta)
             return result;
 
-        let f = vertex.EvaluateReflectance(s.sg, l.mRayDirection, false);
+        ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, l.mRayDirection, false);
+
+        if (gBidirectional && gDisableCameraConnection && !s.isLightPath) {
+            if (s.bounces == 0)
+                emissionPdfW = 0;
+            else if (s.bounces == 1)
+                f.mRevPdfW = 0;
+        }
 
         const float3 contrib = s.throughput * f.mReflectance * le;
         const float samplePdf = s.pdfW * directPdfW;
@@ -971,6 +979,9 @@ extension PathGenerator {
             } else {
                 r = lightVertex.EvaluateReflectance(s.sg, -toLight, true);
                 r.mReflectance /= cosLight;
+
+                if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 0)
+                    r.mFwdPdfW = 0;
             }
 
             const float3 rayOrigin = vertex.ComputeRayOrigin(toLight);
@@ -988,11 +999,14 @@ extension PathGenerator {
         if (cosCam < kMinCosTheta)
             return result;
 
-        let f = vertex.EvaluateReflectance(s.sg, toLight, false);
+        ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, toLight, false);
         if (!any(f.mReflectance > 0)) {
             if (bShift) print("Subpath reconnection failed: !any(f.mReflectance > 0)", f.mReflectance);
             return result;
         }
+
+        if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 1)
+            f.mRevPdfW = 0;
 
         const float3 contrib = (s.throughput * v.mThroughput) * (f.mReflectance * r.mReflectance);
 
@@ -1083,6 +1097,9 @@ extension PathGenerator {
                 return result;
             f.mReflectance /= cosOut; // divide out dot(N, wo)
         }
+
+        if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 1)
+            f.mRevPdfW = 0;
 
         const float3 contrib = s.throughput * v.mThroughput * f.mReflectance;
         if (all(contrib <= 0))
@@ -1238,6 +1255,73 @@ extension PathGenerator {
             s.deltaRcv ? PathFlags::eCausticLightPath : PathFlags::eNonCausticLightPath);
 
         return result;
+    }
+
+
+    PathSample EvalLightContribution<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out float integrationWeight) {
+        integrationWeight = 0;
+        PathSample result = {};
+
+        if (DebugDisablePath(s.bounces, 0))
+            return result;
+
+        const float3 le = vertex.GetEmission();
+        const float3 contrib = s.throughput * le;
+        if (!any(contrib > 0))
+            return result;
+
+        // calculate mis weight
+        float emissionPdfW = 0;
+        float directPdfW = 0;
+        float directPdfA = 0;
+        if (gBidirectional || gSampleDirectLight)
+            GetLightSamplePdf(vertex, s.lastVertex.position, s.lastVertex.normal, s.lastVertex.upperHemisphereOnly, emissionPdfW, directPdfW, directPdfA);
+
+        // divide by pdf
+        integrationWeight = 1 / s.pdfW;
+
+        float misWeight = s.mis.EvalCameraTraceMIS(s.lastVertex.scatterFwdPdfW, directPdfA, directPdfW, emissionPdfW);
+
+        PathSuffix suffix = {};
+        const bool hasRcv = s.rcvFound;
+        if (hasRcv) {
+            // finalize the existing rcv
+            float suffixPdf;
+            float3 suffixContrib;
+            if (s.bounces == s.prefixBounces + 1) {
+                // rcv is the last vertex
+                suffixPdf = 1;
+                suffixContrib = le;
+            } else {
+                suffix.mDirOut = s.rcvDirOut;
+                suffixPdf = s.pdfW / s.pdfAtRcv;
+                suffixContrib = SafeDivide(contrib, s.throughputAtRcv);
+            }
+
+            suffix = PathSuffix::Create(
+                            suffixContrib,
+                            suffixPdf,
+                            s.rcv,
+                            s.rcvDirOut,
+                            s.rcvDist,
+                            s.rcvCos,
+                            s.mis,
+                            {}
+                        );
+        }
+
+        result = PathSample::Create(
+            contrib,
+            misWeight,
+            s.bounces,
+            hasRcv ? s.prefixPdf : s.pdfW,
+            hasRcv ? s.prefixBounces : s.bounces,
+            hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
+            s.id,
+            suffix,
+            PathFlags::eNone );
+        return result;
+
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -1418,73 +1502,6 @@ extension PathGenerator {
             s.pdfAtRcv = s.pdfW;
         }
     }
-
-    PathSample EvalLightContribution<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out float integrationWeight) {
-        integrationWeight = 0;
-        PathSample result = {};
-
-        if (DebugDisablePath(s.bounces, 0))
-            return result;
-
-        const float3 le = vertex.GetEmission();
-        const float3 contrib = s.throughput * le;
-        if (!any(contrib > 0))
-            return result;
-
-        // calculate mis weight
-        float emissionPdfW = 0;
-        float directPdfW = 0;
-        float directPdfA = 0;
-        if (gBidirectional || gSampleDirectLight)
-            GetLightSamplePdf(vertex, s.lastVertex.position, s.lastVertex.normal, s.lastVertex.upperHemisphereOnly, emissionPdfW, directPdfW, directPdfA);
-
-        // divide by pdf
-        integrationWeight = 1 / s.pdfW;
-
-        float misWeight = s.mis.EvalCameraTraceMIS(s.lastVertex.scatterFwdPdfW, directPdfA, directPdfW, emissionPdfW);
-
-        PathSuffix suffix = {};
-        const bool hasRcv = s.rcvFound;
-        if (hasRcv) {
-            // finalize the existing rcv
-            float suffixPdf;
-            float3 suffixContrib;
-            if (s.bounces == s.prefixBounces + 1) {
-                // rcv is the last vertex
-                suffixPdf = 1;
-                suffixContrib = le;
-            } else {
-                suffix.mDirOut = s.rcvDirOut;
-                suffixPdf = s.pdfW / s.pdfAtRcv;
-                suffixContrib = SafeDivide(contrib, s.throughputAtRcv);
-            }
-
-            suffix = PathSuffix::Create(
-                            suffixContrib,
-                            suffixPdf,
-                            s.rcv,
-                            s.rcvDirOut,
-                            s.rcvDist,
-                            s.rcvCos,
-                            s.mis,
-                            {}
-                        );
-        }
-
-        result = PathSample::Create(
-            contrib,
-            misWeight,
-            s.bounces,
-            hasRcv ? s.prefixPdf : s.pdfW,
-            hasRcv ? s.prefixBounces : s.bounces,
-            hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
-            s.id,
-            suffix,
-            PathFlags::eNone );
-        return result;
-
-    }
-
     // Sample the BSDF and trace a ray to find the next vertex. Returns a valid sample if the next vertex is emissive.
     // Updates throughput, pdfW, bounces, MIS quantities, and reconnection data
     // returns sampled LobeType
@@ -1498,7 +1515,10 @@ extension PathGenerator {
         }
 
         // sample direction
-        let r = vertex.SampleDirection(s.sgBsdf, s.isLightPath);
+        DirectionSampleData r = vertex.SampleDirection(s.sgBsdf, s.isLightPath);
+
+        if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 1)
+            r.mRevPdfW = 0;
 
         // cache this vertex
         s.lastVertex.position            = vertex.GetPosition();
@@ -1521,7 +1541,7 @@ extension PathGenerator {
             return 0;
         }
 
-        const bool connectable = vertex.IsConnectable() && s.lastVertex.scatterFwdPdfW > 0;
+        const bool connectable = vertex.IsConnectable() && !r.IsLobe(LobeType::Delta);
 
         // diffuse bounce limit
         if (connectable && s.diffuseBounces == mParams.mMaxDiffuseBounces) {
@@ -1579,6 +1599,8 @@ extension PathGenerator {
         r = vertex.EvaluateReflectance(s.sg, dir, s.isLightPath);
         if (evalReversed) r.mReflectance *= vertex.GetCosN(vertex.GetDirIn()) / cosOut;
 
+        if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 1)
+            r.mRevPdfW = 0;
 
         // cache this vertex
         s.lastVertex.position = vertex.GetPosition();
@@ -1668,7 +1690,7 @@ extension PathGenerator {
                 }
 
                 // form a full path by connecting the vertex to the camera
-                if (!gProgressivePhotonMapping) {
+                if (!gProgressivePhotonMapping && !gDisableCameraConnection) {
                     float weight = 0;
                     int2 pixelCoord;
                     const PathSample ps = ConnectToCamera(s, vertex, pixelCoord, weight);

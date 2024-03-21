@@ -98,13 +98,13 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
             radiance.rgb += r.GetRadiance();
         }
 
-        if (gPathGenerator.gUseCausticReservoirs) {
+        if (gPathGenerator.gUseCausticReservoirs && ! gPathGenerator.gDisableCameraConnection) {
             const PathReservoir cr = gPathGenerator.LoadCausticReservoir(id);
             if (cr.mW > 0 && cr.mSample.IsValid()) {
                 radiance.rgb += cr.GetRadiance();
             }
         }
-    } else if (gPathGenerator.gBidirectional) {
+    } else if (gPathGenerator.gBidirectional && ! gPathGenerator.gDisableCameraConnection) {
         // Add light trace contribution from atomic buffer
         radiance.rgb += gPathGenerator.mAtomicRadiance.Load<float3>(flatId * sizeof(float3));
     }
