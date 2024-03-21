@@ -99,8 +99,8 @@ struct DirectionSampleData {
 };
 
 struct PathVertex {
-    PackedPathVertex mVertex;
-    ShadingData mShadingData;
+    PackedPathVertex  mVertex;
+    ShadingData       mShadingData;
     IMaterialInstance mMaterial;
 
     __init(const PackedPathVertex v) {
@@ -696,7 +696,7 @@ extension PathGenerator {
         float  rcvCos = 0;
         float  rcvDist = 0;
 
-        PathId lightSubpathId;
+        PathId        lightSubpathId;
         PackedHitInfo lightSubpathVertex = {};
 
         property uint bounces {
@@ -1163,16 +1163,9 @@ extension PathGenerator {
         if (cosOut < kMinCosTheta)
             return result;
 
-        ReflectanceEvalData f;
-        if (bShift) {
-            f = vertex.Reversed(toCamera).EvaluateReflectance(s.sg, vertex.GetDirIn(), false);
-            const float tmp = f.mFwdPdfW;
-            f.mFwdPdfW = f.mRevPdfW;
-            f.mRevPdfW = tmp;
-        } else {
-            f = vertex.EvaluateReflectance(s.sg, toCamera, true);
-            f.mReflectance /= cosOut;
-        }
+        ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, toCamera, true);
+        f.mReflectance /= cosOut;
+        if (bShift) f.mReflectance *= vertex.GetCosN(vertex.GetDirIn());
 
         // Compute pdf conversion factor from image plane area to surface area
         const float cameraPdfA = imageToSolidAngleFactor * cosOut / sqr(dist);
@@ -1575,14 +1568,17 @@ extension PathGenerator {
         vertex.SampleDirection(s.sgBsdf, s.isLightPath);
 
         const float3 dir = normalize(nextVertex.GetPosition() - vertex.GetPosition());
+
+        const float cosOut = vertex.GetCosN(dir);
+        if (cosOut < kMinCosTheta) {
+            s.Terminate();
+            return;
+        }
+
         ReflectanceEvalData r;
-        if (evalReversed) {
-            r = vertex.Reversed(dir).EvaluateReflectance(s.sg, vertex.GetDirIn(), !s.isLightPath);
-            const float tmp = r.mFwdPdfW;
-            r.mFwdPdfW = r.mRevPdfW;
-            r.mRevPdfW = tmp;
-        } else
-            r = vertex.EvaluateReflectance(s.sg, dir, s.isLightPath);
+        r = vertex.EvaluateReflectance(s.sg, dir, s.isLightPath);
+        if (evalReversed) r.mReflectance *= vertex.GetCosN(vertex.GetDirIn()) / cosOut;
+
 
         // cache this vertex
         s.lastVertex.position = vertex.GetPosition();
@@ -1598,9 +1594,7 @@ extension PathGenerator {
         if (r.mFwdPdfW > 0)
             s.pdfW *= r.mFwdPdfW;
 
-        const float cosOut = vertex.GetCosN(dir);
-
-        if (cosOut < kMinCosTheta || all(s.throughput <= 0) || any(s.throughput != s.throughput)) {
+        if (all(s.throughput <= 0) || any(s.throughput != s.throughput)) {
             s.Terminate();
             return;
         }
@@ -1636,8 +1630,10 @@ extension PathGenerator {
 
         s.mis.ProcessRay(vertex.mVertex, cosIn);
 
-        const bool canReconnect = connectable && vertex.mVertex.mRayDistance >= mParams.mReconnectionDistance && (vertex.IsConnectable() || any(vertex.GetEmission() > 0));
-        UpdateReconnectionData(s, vertex, canReconnect, lastPdfW);
+        if (!s.isLightPath) {
+            const bool canReconnect = connectable && vertex.mVertex.mRayDistance >= mParams.mReconnectionDistance && (vertex.IsConnectable() || any(vertex.GetEmission() > 0));
+            UpdateReconnectionData(s, vertex, canReconnect, lastPdfW);
+        }
     }
 }
 

@@ -115,7 +115,7 @@ extension PathGenerator {
         // set initial vertex as rcv
         s.rcv = l;
         s.rcv.mRayDirection = -s.rcv.mRayDirection;
-        s.throughputAtRcv = s.throughput / cosLight;
+        s.throughputAtRcv = s.throughput;
         s.pdfAtRcv = directPdfA;
         s.rcvCos = cosLight;
 
@@ -168,6 +168,7 @@ extension PathGenerator {
         const PathVertex suffixVertex = PathVertex(baseSuffix.mVertex);
 
         PathSuffix result = baseSuffix;
+
         if (suffixVertex.IsFinite()) {
             // update ray direction
             result.mVertex.mRayDirection = suffixVertex.GetPosition() - vertex.GetPosition();
@@ -402,6 +403,7 @@ extension PathGenerator {
 
         LightSubpathVertex shiftedLightVertex = {};
         if (gShiftSuffixes && hasLightSubpath) {
+            // trace light subpath, so that vertex is the end of the light subpath
             PathVertex vertex;
             PathState<true> s;
             if (basePath.HasFlag(PathFlags::eNonCausticLightPath) && basePath.mBounces == 1)
@@ -440,6 +442,7 @@ extension PathGenerator {
                 return result;
             } else if (basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
                 // connect non-caustic pure light paths to the new primary hit
+
                 if (basePath.mBounces > 1) {
                     PathVertex v = PathVertex(newPrimaryHit);
                     float3 to_v = v.GetPosition() - vertex.GetPosition();
@@ -471,7 +474,7 @@ extension PathGenerator {
                         s.prefixBounces = 0;
                         s.rcvDiffuseBounces = 0;
 
-                        SetNextVertex( s, vertex, PathVertex(PackedPathVertex(Ray(rayOrigin, to_v), HitInfo(newPrimaryHit.mPackedHit), dist)) , true);
+                        SetNextVertex(s, vertex, PathVertex(PackedPathVertex(Ray(rayOrigin, to_v), HitInfo(newPrimaryHit.mPackedHit), dist)), true);
 
                         s.rcvCos = abs(dot(s.lastVertex.normal, vertex.mVertex.mRayDirection));
                         s.rcvDist = vertex.mVertex.mRayDistance;
@@ -487,8 +490,6 @@ extension PathGenerator {
                     result = {};
                     return result;
                 }
-
-                result.mMisWeight = basePath.mMisWeight;
 
                 jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
                 jacobian *= (result.mSuffix.mCos / basePath.mSuffix.mCos) * sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
