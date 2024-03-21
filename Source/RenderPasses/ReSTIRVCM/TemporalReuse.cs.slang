@@ -1,4 +1,5 @@
 import PathShift;
+import Utils.Color.ColorHelpers;
 import Utils.Debug.PixelDebug;
 import Utils.Sampling.SampleGenerator;
 
@@ -9,14 +10,14 @@ extension PathGenerator {
         pixelCoord = -1;
 
         PathVertex vertex;
-        PathState<true> s = ShiftLightSubpath(basePath, vertex);
+        PathState<true> s = ShiftLightSubpath(basePath.mSuffix.mLightSubpath, vertex);
         if (!any(s.throughput > 0) || !(s.pdfW > 0) || s.bounces + 2 != basePath.mSuffix.mLightSubpath.mVertexCount || !vertex.IsFinite()) {
-            print("Caustic shift failed: Path length mismatch", uint2(s.bounces + 2, basePath.mSuffix.mLightSubpath.mVertexCount));
+            print("Caustic shift failed: Light subpath shift failed", uint2(s.bounces + 2, basePath.mSuffix.mLightSubpath.mVertexCount));
             return {};
         }
 
-        float integrationWeight;
-        PathSample result = ConnectToCamera(s, vertex, pixelCoord, integrationWeight);
+        float w;
+        PathSample result = ConnectToCamera(s, vertex, pixelCoord, w);
 
         if (!result.IsValid()) {
             print("Caustic shift failed: invalid result", 0);
@@ -137,7 +138,7 @@ void TemporalCausticReuse(const uint2 id, inout SampleGenerator sg) {
     const uint flatId = id.y * gPathGenerator.mParams.mOutputDim.x + id.x;
     const uint2 range = gPathGenerator.mCausticReservoirMap.GetCellDataRange(flatId);
 
-    float Msum = 1;
+    float Msum = center.mM;
     for (uint i = range.x; i < range.y; i++)
         Msum += gPathGenerator.mCausticReservoirMap[i].mM;
 
@@ -160,12 +161,14 @@ void TemporalCausticReuse(const uint2 id, inout SampleGenerator sg) {
 
             if (shiftedTargetPdf > 0 && all(prevId >= 0) && all(prevId < gPathGenerator.mParams.mOutputDim)) {
                 previousM = max(1, gPathGenerator.LoadPrevCausticReservoir(prevId).mM);
+                Msum += previousM - 1;
             }
         }
 
         center.PrepareMerge(1.0 / (1.0 + previousM));
-        */
+        /*/
         center.PrepareMerge(1 / Msum);
+        //*/
     }
 
     // Merge shifted samples from previous frame
@@ -199,7 +202,7 @@ void main(uint3 index: SV_DispatchThreadID) {
     if (any(id >= gPathGenerator.mParams.mOutputDim)) return;
     gPathGenerator.DebugSetPixel(id);
 
-    SampleGenerator sg = SampleGenerator(id, gRandomSeed);
+    SampleGenerator sg = MakeSampleGenerator(id, gRandomSeed);
 
     if (gPathGenerator.gUseCausticReservoirs)
         TemporalCausticReuse(id, sg);

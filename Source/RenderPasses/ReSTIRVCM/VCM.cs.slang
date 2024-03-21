@@ -19,7 +19,7 @@ void SampleCameraPaths(uint3 index : SV_DispatchThreadID) {
     if (any(id >= gPathGenerator.mParams.mOutputDim)) return;
     gPathGenerator.DebugSetPixel(id);
 
-    const PathReservoir r = gPathGenerator.SampleCameraPath(PathId(gRandomSeed, id));
+    const PathReservoir r = gPathGenerator.SampleCanonicalPaths(PathId(gRandomSeed, id));
 
     gPathGenerator.StoreReservoir(id, r);
 }
@@ -30,7 +30,7 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
     const uint2 id = index.xy;
     if (any(id >= gPathGenerator.mParams.mOutputDim)) return;
     gPathGenerator.DebugSetPixel(id);
-    SampleGenerator sg = SampleGenerator(id, gRandomSeed);
+    SampleGenerator sg = MakeSampleGenerator(id, gRandomSeed);
 
     PathReservoir r = {};
     if (gPathGenerator.gLightTraceOnly) {
@@ -54,13 +54,16 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
         if (gPathGenerator.gUseCausticReservoirs && c.mSample.HasFlag(PathFlags::eCausticLightPath)) {
             cr.Merge(u, c);
         } else {
-            // Shift the caustic path to the pixel center so that future reconnection works
-            float jacobian;
-            c.mSample = gPathGenerator.ShiftPath(c.mSample, primaryVertex, jacobian);
-            if (jacobian > 0 && c.mSample.IsValid()) {
-                c.mW *= jacobian;
+            if (gPathGenerator.gShiftLightPathsToPixelCenters && c.mSample.HasFlag(PathFlags::eNonCausticLightPath)) {
+                // Shift the light path to the pixel center so that future reconnection works
+                float jacobian;
+                c.mSample = gPathGenerator.ShiftPath(c.mSample, primaryVertex, jacobian);
+                if (jacobian > 0 && c.mSample.IsValid()) {
+                    c.mW *= jacobian;
+                    r.Merge(u, c);
+                }
+            } else
                 r.Merge(u, c);
-            }
         }
     }
 

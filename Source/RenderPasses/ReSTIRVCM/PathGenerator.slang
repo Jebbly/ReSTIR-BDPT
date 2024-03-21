@@ -47,28 +47,28 @@ struct PathGenerator {
     RWStructuredBuffer<PathReservoir> mLastCausticReservoirs;
     Texture2D<float3> mLastViewDir;
     Texture2D<PackedHitInfo> mLastVbuffer;
+}
 
-    // Static parameters
-
-    static const bool  gUseEnvLight                 = USE_ENV_LIGHT;
-    static const bool  gUseEmissiveLights           = USE_EMISSIVE_LIGHTS;
-    static const bool  gUseViewDir                  = USE_VIEW_DIR;
-    static const bool  gSampleDirectLight           = USE_NEE;
-    static const bool  gBidirectional               = USE_BIDIRECTIONAL;
-    static const bool  gVertexMerging               = USE_VERTEX_MERGING;
-    static const bool  gDynamicMergeRadius          = DYNAMIC_MERGE_RADIUS;
-    static const bool  gProgressivePhotonMapping    = USE_PPM_ONLY;
-    static const bool  gAllowEarlyReconnection      = false;
-    static const bool  gLightTraceOnly              = LIGHT_TRACE_ONLY;
-    static const bool  gUseResampling               = USE_RESAMPLING;
-    static const bool  gUseCausticReservoirs        = CAUSTIC_RESERVOIRS;
-    static const bool  gUseCausticMotionVectors     = CAUSTIC_MOTION_VECTORS;
-    static const bool  gValidateSuffixes            = VALIDATE_SUFFIXES;
-    static const bool  gUseBsdfImportanceSampling   = USE_BSDF_IMPORTANCE_SAMPLING;
-    static const bool  gWavefrontTechniqueSelection = WAVEFRONT_TECHNIQUE_SELECTION;
-    static const bool  gDebugBPT                    = DEBUG_BPT;
-    static const bool  gDebugHeatmap                = DEBUG_HEATMAP;
-    static const float gMISPowerExponent            = MIS_POWER_EXPONENT;
+// Static parameters
+extension PathGenerator {
+    static const bool  gUseEnvLight                   = USE_ENV_LIGHT;
+    static const bool  gUseEmissiveLights             = USE_EMISSIVE_LIGHTS;
+    static const bool  gUseViewDir                    = USE_VIEW_DIR;
+    static const bool  gSampleDirectLight             = USE_NEE;
+    static const bool  gBidirectional                 = USE_BIDIRECTIONAL;
+    static const bool  gShiftLightPathsToPixelCenters = SHIFT_LIGHT_PATHS_TO_CENTER;
+    static const bool  gVertexMerging                 = USE_VERTEX_MERGING;
+    static const bool  gDynamicMergeRadius            = DYNAMIC_MERGE_RADIUS;
+    static const bool  gProgressivePhotonMapping      = USE_PPM_ONLY;
+    static const bool  gLightTraceOnly                = LIGHT_TRACE_ONLY;
+    static const bool  gUseResampling                 = USE_RESAMPLING;
+    static const bool  gUseCausticReservoirs          = CAUSTIC_RESERVOIRS;
+    static const bool  gUseCausticMotionVectors       = CAUSTIC_MOTION_VECTORS;
+    static const bool  gShiftSuffixes                 = SHIFT_SUFFIXES;
+    static const bool  gUseBsdfImportanceSampling     = USE_BSDF_IMPORTANCE_SAMPLING;
+    static const bool  gDebugBPT                      = DEBUG_BPT;
+    static const bool  gDebugHeatmap                  = DEBUG_HEATMAP;
+    static const float gMISPowerExponent              = MIS_POWER_EXPONENT;
 }
 ParameterBlock<PathGenerator> gPathGenerator;
 
@@ -84,9 +84,11 @@ struct ReflectanceEvalData {
 struct DirectionSampleData {
     float3 mDirection = 0;
     float3 mReflectance = 0;
-    float mFwdPdfW = 0;
-    float mRevPdfW = 0;
-    bool mDeltaLobe = false;
+    float  mFwdPdfW = 0;
+    float  mRevPdfW = 0;
+    uint   mLobeType = 0;
+
+    bool IsLobe(const LobeType lobe) { return (mLobeType & uint(lobe)) != 0; }
 
     [mutating]
     void SetReflectance(const ReflectanceEvalData r) {
@@ -150,6 +152,7 @@ struct PathVertex {
     bool IsFinite() { return mVertex.IsFinite(); }
 
     float3 GetPosition() { return mShadingData.posW; }
+    // points away from vertex
     float3 GetDirIn() { return mShadingData.V; }
 
     bool HasFaceNormal() { return IsFinite(); }
@@ -162,6 +165,8 @@ struct PathVertex {
     }
 
     bool HasLobe(const LobeType l) { return (mMaterial.getLobeTypes(mShadingData) & uint(l)) != 0; }
+
+    bool UpperHemisphereOnly() { return HasFaceNormal() && !HasLobe(LobeType::NonDeltaTransmission); }
 
     float3 GetEmission() {
         if (IsFinite()) {
@@ -253,7 +258,7 @@ struct PathVertex {
 
         r.mDirection = s.wo;
         r.mReflectance = s.weight;
-        r.mDeltaLobe = s.isLobe(LobeType::Delta);
+        r.mLobeType = s.lobeType;
         if (adjoint) r.mReflectance *= GetAdjointCorrection(r.mDirection, s.isLobe(LobeType::DeltaTransmission) || s.isLobe(LobeType::SpecularTransmission));
 
         // cancel divide by pdf performed by material sampling.
@@ -263,7 +268,7 @@ struct PathVertex {
 
         r.mFwdPdfW = s.pdf;
 
-        if (r.mDeltaLobe) {
+        if (r.IsLobe(LobeType::Delta)) {
             // Reverse pdf cannot be evaluated, use forward pdf instead, as they should be the same.
             r.mRevPdfW = r.mFwdPdfW;
         } else {
@@ -560,7 +565,7 @@ extension RecursiveMisState {
     void ProcessDirection(const DirectionSampleData r, const float cosOut, const bool connectable) {
         // update mis quantities
         if (gPathGenerator.gBidirectional) {
-            if (connectable && !r.mDeltaLobe) {
+            if (connectable && !r.IsLobe(LobeType::Delta)) {
                 // SmallVCM tech. rep. (34)-(36)
                 const float invPdf = 1.f / r.mFwdPdfW;
                 dVC = gPathGenerator.Mis(cosOut * invPdf) * (dVC * gPathGenerator.Mis(r.mRevPdfW) + dVCM + gPathGenerator.GetMisVmWeightFactor());
@@ -576,10 +581,10 @@ extension RecursiveMisState {
     }
 
     [mutating]
-    void ProcessRay(const PackedPathVertex newVertex, const float cosIn, const bool finiteEmitter = true) {
+    void ProcessRay(const PackedPathVertex newVertex, const float cosIn, const bool prevFinite = true) {
         // update mis quantities
         if (gPathGenerator.gBidirectional && newVertex.IsFinite()) {
-            if (finiteEmitter)
+            if (prevFinite)
                 dVCM *= gPathGenerator.Mis(sqr(newVertex.mRayDistance));
             const float invCosIn = 1 / gPathGenerator.Mis(cosIn);
             dVCM *= invCosIn;
@@ -608,9 +613,9 @@ extension RecursiveMisState {
         if (gPathGenerator.DebugDisableMIS()) return misWeight;
 
         const float cameraBsdfDirPdfA = f.mFwdPdfW * cosLight * invDist2;
-        const float lightBsdfDirPdfA = r.mFwdPdfW * cosCam * invDist2;
+        const float lightBsdfDirPdfA  = r.mFwdPdfW * cosCam   * invDist2;
         const float wLight  = gPathGenerator.Mis(cameraBsdfDirPdfA) * (gPathGenerator.GetMisVmWeightFactor() + v.dVCM + v.dVC * gPathGenerator.Mis(r.mRevPdfW));
-        const float wCamera = gPathGenerator.Mis(lightBsdfDirPdfA)  * (gPathGenerator.GetMisVmWeightFactor() + dVCM + dVC * gPathGenerator.Mis(f.mRevPdfW));
+        const float wCamera = gPathGenerator.Mis(lightBsdfDirPdfA)  * (gPathGenerator.GetMisVmWeightFactor() +   dVCM +   dVC * gPathGenerator.Mis(f.mRevPdfW));
         misWeight = 1 / (wLight + 1 + wCamera);
         return misWeight;
     }
@@ -620,23 +625,23 @@ extension RecursiveMisState {
         if (gPathGenerator.DebugDisableMIS() || gPathGenerator.gProgressivePhotonMapping) return misWeight;
 
         const float wLight  = v.dVCM * gPathGenerator.GetMisVcWeightFactor() + v.dVM * gPathGenerator.Mis(f.mFwdPdfW);
-        const float wCamera = dVCM * gPathGenerator.GetMisVcWeightFactor() + dVM * gPathGenerator.Mis(f.mRevPdfW);
+        const float wCamera =   dVCM * gPathGenerator.GetMisVcWeightFactor() +   dVM * gPathGenerator.Mis(f.mRevPdfW);
         misWeight = 1 / (wLight + 1 + wCamera);
 
         return misWeight;
     }
 
-    float EvalLightTraceMIS(const ReflectanceEvalData f, const float cameraPdfA) {
+    float EvalLightTraceMIS(const float scatterRevPdfW, const float cameraPdfA) {
         float misWeight = 1;
         if (gPathGenerator.DebugDisableMIS() || gPathGenerator.gLightTraceOnly) return misWeight;
 
-        const float wLight = gPathGenerator.Mis(cameraPdfA / gPathGenerator.mParams.mLightSubpathCount) * (gPathGenerator.GetMisVmWeightFactor() + dVCM + dVC * gPathGenerator.Mis(f.mRevPdfW));
+        const float wLight = gPathGenerator.Mis(cameraPdfA / gPathGenerator.mParams.mLightSubpathCount) * (gPathGenerator.GetMisVmWeightFactor() + dVCM + dVC * gPathGenerator.Mis(scatterRevPdfW));
         misWeight = 1 / (wLight + 1);
 
         return misWeight;
     }
 
-    float EvalCameraTraceMIS(const float bsdfPdfW, const float directPdfA, const float directPdfW, const float emissionPdfW) {
+    float EvalCameraTraceMIS(const float scatterFwdPdfW, const float directPdfA, const float directPdfW, const float emissionPdfW) {
         float misWeight = 1;
         if (gPathGenerator.DebugDisableMIS()) return misWeight;
 
@@ -644,7 +649,7 @@ extension RecursiveMisState {
             const float wCamera = gPathGenerator.Mis(directPdfA) * dVCM + gPathGenerator.Mis(emissionPdfW) * dVC;
             misWeight = 1 / (1 + wCamera);
         } else if (gPathGenerator.gSampleDirectLight)
-            misWeight = bsdfPdfW > 0 ? gPathGenerator.Mis(bsdfPdfW, directPdfW) : 1;
+            misWeight = scatterFwdPdfW > 0 ? gPathGenerator.Mis(scatterFwdPdfW, directPdfW) : 1;
 
         return misWeight;
     }
@@ -657,28 +662,40 @@ extension RecursiveMisState {
 SampleGenerator MakeSampleGenerator(const uint2 id, const uint seed) { return SampleGenerator(id, seed); }
 
 extension PathGenerator {
-    struct PathState<let bShift : bool> {
-        float3 throughput = 0;
-        float pdfW = 0;
+    struct CachedVertexData {
+        float3            position       = 0;
+        float             scatterFwdPdfW = 0;
+        float3            normal         = 0;
+        float             scatterRevPdfW = 0;
+        RecursiveMisState mis = {};
+        bool              upperHemisphereOnly = true;
 
+        bool HasNormal() { return all(normal != 0); }
+    };
+
+    struct PathState<let bShift : bool> {
         SampleGenerator sg;     // sample generator for everything but BSDF sampling
         SampleGenerator sgBsdf; // sample generator for BSDF sampling
 
-        PackedPathVertex rcv = {};
-        float3 throughputAtRcv = 0;
-        float pdfAtRcv = 0;
-        float3 rcvDirOut;
-        float prefixPdf = 0;
+        float3 throughput = 0;
+        float  pdfW = 0;
 
-        float rcvCos = 0;
-        float rcvDist = 0;
-
-        RecursiveMisState mis = {};
-
+        PathId id;
         uint packedBounces = 0;
         uint packedDiffuseBounces = 0;
 
-        PathId id;
+        CachedVertexData lastVertex = {};
+
+        RecursiveMisState mis = {};
+
+        PackedPathVertex rcv = {};
+        float3 throughputAtRcv = 0;
+        float  pdfAtRcv = 0;
+        float3 rcvDirOut;
+        float  prefixPdf = 0;
+        float  rcvCos = 0;
+        float  rcvDist = 0;
+
         PathId lightSubpathId;
         PackedHitInfo lightSubpathVertex = {};
 
@@ -750,7 +767,7 @@ extension PathGenerator {
     // ----------------------------------------- Connection stategies ------------------------------------------
     // ---------------------------------------------------------------------------------------------------------
 
-    PathSample ConnectToLight       <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const bool upperOnly, out float integrationWeight) {
+    PathSample ConnectToLight       <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out float integrationWeight) {
         integrationWeight = 0;
 
         PathSample result = {};
@@ -790,6 +807,7 @@ extension PathGenerator {
                 directPdfW = envSample.pdf;
                 emissionPdfW = directPdfW * gConcentricDiscPdfA / sqr(mParams.mSceneSphere.w);
             } else if (gUseEmissiveLights && !(gUseEnvLight && useEnvMap)) {
+                const bool upperOnly = vertex.UpperHemisphereOnly();
                 const float3 vertexNormal = upperOnly ? vertex.GetFaceNormal() : 0;
                 float selectionPdf;
                 uint triangleIndex;
@@ -868,7 +886,7 @@ extension PathGenerator {
         float3 suffixContrib;
         float3 suffixDir;
         float suffixPdf;
-        const bool hasRcv = gAllowEarlyReconnection && s.rcvFound;
+        const bool hasRcv = s.rcvFound;
         if (hasRcv) {
             // use rcv found earlier along the camera subpath
             if (s.bounces == s.prefixBounces + 1) {
@@ -904,6 +922,7 @@ extension PathGenerator {
             suffixDir,
             hasRcv ? s.rcvDist : l.mRayDistance,
             hasRcv ? s.rcvCos : cosLight,
+            s.mis,
             lightSubpath
         );
 
@@ -944,7 +963,15 @@ extension PathGenerator {
             if (cosLight < kMinCosTheta)
                 return result;
 
-            r = lightVertex.EvaluateReflectance(s.sg, -toLight, true);
+            if (bShift) {
+                r = lightVertex.Reversed(-toLight).EvaluateReflectance(s.sg, lightVertex.GetDirIn(), false);
+                const float tmp = r.mFwdPdfW;
+                r.mFwdPdfW = r.mRevPdfW;
+                r.mRevPdfW = tmp;
+            } else {
+                r = lightVertex.EvaluateReflectance(s.sg, -toLight, true);
+                r.mReflectance /= cosLight;
+            }
 
             const float3 rayOrigin = vertex.ComputeRayOrigin(toLight);
             visibilityRay = Ray(rayOrigin, lightVertex.ComputeRayOrigin(-toLight) - rayOrigin, 0, 0);
@@ -967,7 +994,7 @@ extension PathGenerator {
             return result;
         }
 
-        const float3 contrib = (s.throughput * v.mThroughput) * (f.mReflectance * r.mReflectance) / cosLight;
+        const float3 contrib = (s.throughput * v.mThroughput) * (f.mReflectance * r.mReflectance);
 
         if (!any(contrib > 0) || any(contrib < 0)) {
             if (bShift) print("Subpath reconnection failed: any(contrib > 0) || any(contrib < 0)", contrib);
@@ -988,12 +1015,12 @@ extension PathGenerator {
         float3 suffixContrib;
         float3 suffixDir;
         float suffixPdf = v.mLightSubpath.mPdf;
-        const bool hasRcv = gAllowEarlyReconnection && s.rcvFound;
+        const bool hasRcv = s.rcvFound;
         if (hasRcv) {
             // use rcv found earlier along the camera subpath
             if (s.bounces == s.prefixBounces + 1) {
                 // the light vertex is the 2nd vertex in the suffix
-                suffixContrib = v.mThroughput * (r.mReflectance / cosLight);
+                suffixContrib = v.mThroughput * r.mReflectance;
                 suffixDir = toLight;
                 suffixPdf *= sqr(dist) / cosLight;
             } else {
@@ -1015,6 +1042,7 @@ extension PathGenerator {
             suffixDir,
             hasRcv ? s.rcvDist : dist,
             hasRcv ? s.rcvCos  : cosLight,
+            s.mis,
             v.mLightSubpath
         );
 
@@ -1067,7 +1095,7 @@ extension PathGenerator {
         float3 suffixContrib;
         float3 suffixDir;
         float suffixPdf = v.mLightSubpath.mPdf;
-        const bool hasRcv = gAllowEarlyReconnection && !bShift && s.rcvFound;
+        const bool hasRcv = !bShift && s.rcvFound;
         if (hasRcv) {
             // use rcv found earlier along the camera subpath
             if (s.bounces == s.prefixBounces + 1) {
@@ -1093,6 +1121,7 @@ extension PathGenerator {
             suffixDir,
             hasRcv ? s.rcvDist : 0,
             hasRcv ? s.rcvCos  : 0,
+            s.mis,
             v.mLightSubpath
         );
 
@@ -1109,7 +1138,7 @@ extension PathGenerator {
 
         return result;
     }
-    PathSample ConnectToCamera      <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out int2 pixelCoord, out float integrationWeight) {
+    PathSample ConnectToCamera      <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out int2 pixelCoord, out float integrationWeight, const bool checkVisibility = true) {
         integrationWeight = 0;
         pixelCoord = -1;
         PathSample result = {};
@@ -1127,56 +1156,56 @@ extension PathGenerator {
         const float imageToSolidAngleFactor = GetImageToSolidAngleFactor(-toCamera, cosAtCamera);
 
         pixelCoord = GetPixelCoord(vertex.GetPosition());
-        if (any(pixelCoord < 0) || any(pixelCoord >= mParams.mOutputDim) || cosAtCamera <= 0) {
-            if (bShift) print("Caustic shift failed: offscreen", pixelCoord);
+        if (any(pixelCoord < 0) || any(pixelCoord >= mParams.mOutputDim) || cosAtCamera <= 0)
             return result;
-        }
 
         const float cosOut = vertex.GetCosN(toCamera);
-        if (cosOut < kMinCosTheta) {
-            if (bShift) print("Caustic shift failed: cosOut < kMinCosTheta", cosOut);
+        if (cosOut < kMinCosTheta)
             return result;
-        }
 
-        let f = vertex.EvaluateReflectance(s.sg, toCamera, true);
+        ReflectanceEvalData f;
+        if (bShift) {
+            f = vertex.Reversed(toCamera).EvaluateReflectance(s.sg, vertex.GetDirIn(), false);
+            const float tmp = f.mFwdPdfW;
+            f.mFwdPdfW = f.mRevPdfW;
+            f.mRevPdfW = tmp;
+        } else {
+            f = vertex.EvaluateReflectance(s.sg, toCamera, true);
+            f.mReflectance /= cosOut;
+        }
 
         // Compute pdf conversion factor from image plane area to surface area
         const float cameraPdfA = imageToSolidAngleFactor * cosOut / sqr(dist);
 
         const float cosIn = vertex.GetCosN(vertex.GetDirIn());
 
-        const float3 bsdf = vertex.Reversed(toCamera).EvaluateReflectance(s.sg, vertex.GetDirIn(), false).mReflectance / cosIn;
-        float3 contrib = s.throughput * bsdf;
-        if (!any(contrib > 0)) {
-            if (bShift) print("Caustic shift failed: zero contrib", 0);
+        const float3 contrib = s.throughput * f.mReflectance;
+        if (!any(contrib > 0))
             return result;
-        }
 
         const float samplePdf = s.pdfW * (1 / cameraPdfA) * mParams.mLightSubpathCount;
-        if (!(samplePdf > 0)) {
-            if (bShift) print("Caustic shift failed: Invalid samplePdf", samplePdf);
+        if (!(samplePdf > 0))
             return result;
-        }
-        if (Occluded(Ray(rayOrigin, toCamera, 0, dist))) {
-            if (bShift) print("Caustic shift failed: Occluded", samplePdf);
-            return result;
+        if (checkVisibility) {
+            if (Occluded(Ray(rayOrigin, toCamera, 0, dist)))
+                return result;
         }
 
         integrationWeight = 1.f / samplePdf;
 
-        const float misWeight = s.mis.EvalLightTraceMIS(f, cameraPdfA);
+        const float misWeight = s.mis.EvalLightTraceMIS(f.mRevPdfW, cameraPdfA);
 
         PathSuffix suffix = {};
-        if (s.deltaRcv || bShift) {
+        if (s.deltaRcv) {
             // if the rcv is unconnectable, this is a caustic light path and we store the primary vertex as the rcv instead.
-
             suffix = PathSuffix::Create(
                 s.throughput,
-                s.pdfW,
+                1,
                 vertex.Pack(),
                 vertex.GetDirIn(),
                 dist,
                 cosIn,
+                s.mis,
                 LightSubpathData::Create(
                     s.lightSubpathVertex,
                     s.id,
@@ -1188,17 +1217,18 @@ extension PathGenerator {
         } else {
             suffix = PathSuffix::Create(
                 s.throughputAtRcv,
-                s.prefixPdf,
+                1,
                 s.rcv,
                 s.rcvDirOut,
                 s.rcvDist,
                 s.rcvCos,
+                s.lastVertex.mis,
                 LightSubpathData::Create(
                     s.lightSubpathVertex,
                     s.id,
                     s.bounces + 1,
                     s.diffuseBounces + 1,
-                    s.pdfW
+                    s.pdfAtRcv
                 )
             );
         }
@@ -1212,7 +1242,7 @@ extension PathGenerator {
             0,
             s.id,
             suffix,
-            s.deltaRcv ? PathFlags::eCausticLightPath : PathFlags::eNone);
+            s.deltaRcv ? PathFlags::eCausticLightPath : PathFlags::eNonCausticLightPath);
 
         return result;
     }
@@ -1349,11 +1379,13 @@ extension PathGenerator {
         s.rcvDiffuseBounces = 0;
 
         s.mis = RecursiveMisState(finiteEmitter, directPdfA, emissionPdfW, cosLight);
+        s.lastVertex.mis = s.mis;
 
         // set initial vertex as rcv
         s.rcv = l;
         s.rcv.mRayDirection = -s.rcv.mRayDirection;
-        s.throughputAtRcv = s.throughput;
+        s.throughputAtRcv = s.throughput / cosLight;
+        s.pdfAtRcv = directPdfA;
         s.rcvCos = cosLight;
 
         vertex = PathVertex(TraceRay(ray));
@@ -1373,45 +1405,135 @@ extension PathGenerator {
         return s;
     }
 
-    // Sample the BSDF and trace a ray to find the next vertex. Updates path throughput, pdfW, bounces, and MIS quantities
-    void SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout PathVertex vertex, out float bsdfPdfW, out bool deltaLobe) {
-        bsdfPdfW = 0;
-        deltaLobe = false;
+    void UpdateReconnectionData<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const bool connectable, const float lastPdfW) {
+        // set vertex as rcv if one hasn't been found yet.
+        if (!s.rcvFound && connectable) {
+            s.rcv = vertex.Pack();
+            if (!vertex.IsFinite()) s.rcv.mRayDistance = FLT_MAX;
+            s.rcvCos = vertex.HasFaceNormal() ? abs(dot(vertex.GetDirIn(), vertex.GetFaceNormal())) : 1;
+            s.rcvDist = s.rcv.mRayDistance;
+            s.prefixBounces = s.bounces - 1;
+            s.rcvDiffuseBounces = s.diffuseBounces - 1;
+            s.prefixPdf = lastPdfW;
+            // throughputAtRcv and rcvDirOut are assigned next iteration after a direction is sampled
+        }
 
-        bool connectable = vertex.IsConnectable();
+        // update rcvDirOut and throughputAtRcv if this vertex was selected as the rcv last iteration
+        if (s.rcvFound && s.bounces == s.prefixBounces + 2) {
+            s.rcvDirOut = vertex.mVertex.mRayDirection;
+            s.throughputAtRcv = s.throughput;
+            s.pdfAtRcv = s.pdfW;
+        }
+    }
 
+    PathSample EvalLightContribution<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out float integrationWeight) {
+        integrationWeight = 0;
+        PathSample result = {};
+
+        if (DebugDisablePath(s.bounces, 0))
+            return result;
+
+        const float3 le = vertex.GetEmission();
+        const float3 contrib = s.throughput * le;
+        if (!any(contrib > 0))
+            return result;
+
+        // calculate mis weight
+        float emissionPdfW = 0;
+        float directPdfW = 0;
+        float directPdfA = 0;
+        if (gBidirectional || gSampleDirectLight)
+            GetLightSamplePdf(vertex, s.lastVertex.position, s.lastVertex.normal, s.lastVertex.upperHemisphereOnly, emissionPdfW, directPdfW, directPdfA);
+
+        // divide by pdf
+        integrationWeight = 1 / s.pdfW;
+
+        float misWeight = s.mis.EvalCameraTraceMIS(s.lastVertex.scatterFwdPdfW, directPdfA, directPdfW, emissionPdfW);
+
+        PathSuffix suffix = {};
+        const bool hasRcv = s.rcvFound;
+        if (hasRcv) {
+            // finalize the existing rcv
+            float suffixPdf;
+            float3 suffixContrib;
+            if (s.bounces == s.prefixBounces + 1) {
+                // rcv is the last vertex
+                suffixPdf = 1;
+                suffixContrib = le;
+            } else {
+                suffix.mDirOut = s.rcvDirOut;
+                suffixPdf = s.pdfW / s.pdfAtRcv;
+                suffixContrib = SafeDivide(contrib, s.throughputAtRcv);
+            }
+
+            suffix = PathSuffix::Create(
+                            suffixContrib,
+                            suffixPdf,
+                            s.rcv,
+                            s.rcvDirOut,
+                            s.rcvDist,
+                            s.rcvCos,
+                            s.mis,
+                            {}
+                        );
+        }
+
+        result = PathSample::Create(
+            contrib,
+            misWeight,
+            s.bounces,
+            hasRcv ? s.prefixPdf : s.pdfW,
+            hasRcv ? s.prefixBounces : s.bounces,
+            hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
+            s.id,
+            suffix,
+            PathFlags::eNone );
+        return result;
+
+    }
+
+    // Sample the BSDF and trace a ray to find the next vertex. Returns a valid sample if the next vertex is emissive.
+    // Updates throughput, pdfW, bounces, MIS quantities, and reconnection data
+    // returns sampled LobeType
+    uint SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout PathVertex vertex) {
         // russian roulette
         const float contProb = vertex.GetContinuationProbability();
         const float rrU = sampleNext1D(s.sg);
         if (!bShift && contProb < 1 && rrU > contProb) {
             s.Terminate();
-            return;
+            return 0;
         }
 
         // sample direction
-
-        //SampleGenerator tmp = SampleGenerator(s.id, s.sgBsdf.next());
         let r = vertex.SampleDirection(s.sgBsdf, s.isLightPath);
-        const float cosOut = vertex.GetCosN(r.mDirection);
-        bsdfPdfW  = r.mFwdPdfW;
-        deltaLobe = r.mDeltaLobe;
+
+        // cache this vertex
+        s.lastVertex.position            = vertex.GetPosition();
+        s.lastVertex.normal              = vertex.HasFaceNormal() ? vertex.GetFaceNormal() : 0;
+        s.lastVertex.upperHemisphereOnly = vertex.UpperHemisphereOnly();
+        s.lastVertex.scatterFwdPdfW      = r.IsLobe(LobeType::Delta) ? 0 : r.mFwdPdfW;
+        s.lastVertex.scatterRevPdfW      = r.mRevPdfW;
+        s.lastVertex.mis = s.mis;
+        const float lastPdfW = s.pdfW;
 
         // modify throughput and pdfW
         s.throughput *= r.mReflectance;
         if (r.mFwdPdfW > 0)
             s.pdfW *= r.mFwdPdfW;
-        else
-            connectable = false;
+
+        const float cosOut = vertex.GetCosN(r.mDirection);
 
         if (cosOut < kMinCosTheta || all(s.throughput <= 0) || any(s.throughput != s.throughput)) {
             s.Terminate();
-            return;
+            return 0;
         }
+
+        const bool connectable = vertex.IsConnectable() && s.lastVertex.scatterFwdPdfW > 0;
 
         // diffuse bounce limit
         if (connectable && s.diffuseBounces == mParams.mMaxDiffuseBounces) {
             s.Terminate();
-            return;
+            return 0;
         }
 
         // update mis quantities
@@ -1427,16 +1549,103 @@ extension PathGenerator {
 
         if (cosIn < kMinCosTheta) {
             s.Terminate();
+            return 0;
+        }
+
+        s.mis.ProcessRay(vertex.mVertex, cosIn);
+
+        if (!s.isLightPath) {
+            const bool canReconnect = connectable && vertex.mVertex.mRayDistance >= mParams.mReconnectionDistance && (vertex.IsConnectable() || any(vertex.GetEmission() > 0));
+            UpdateReconnectionData(s, vertex, canReconnect, lastPdfW);
+        }
+
+        return r.mLobeType;
+    }
+
+    void SetNextVertex<let bShift : bool>(inout PathState<bShift> s, inout PathVertex vertex, const PathVertex nextVertex, const bool evalReversed = false) {
+        // russian roulette
+        const float contProb = vertex.GetContinuationProbability();
+        const float rrU = sampleNext1D(s.sg);
+        if (!bShift && contProb < 1 && rrU > contProb) {
+            s.Terminate();
+            return;
+        }
+
+        // sample direction to advance sample generator
+        vertex.SampleDirection(s.sgBsdf, s.isLightPath);
+
+        const float3 dir = normalize(nextVertex.GetPosition() - vertex.GetPosition());
+        ReflectanceEvalData r;
+        if (evalReversed) {
+            r = vertex.Reversed(dir).EvaluateReflectance(s.sg, vertex.GetDirIn(), !s.isLightPath);
+            const float tmp = r.mFwdPdfW;
+            r.mFwdPdfW = r.mRevPdfW;
+            r.mRevPdfW = tmp;
+        } else
+            r = vertex.EvaluateReflectance(s.sg, dir, s.isLightPath);
+
+        // cache this vertex
+        s.lastVertex.position = vertex.GetPosition();
+        s.lastVertex.normal = vertex.HasFaceNormal() ? vertex.GetFaceNormal() : 0;
+        s.lastVertex.upperHemisphereOnly = vertex.UpperHemisphereOnly();
+        s.lastVertex.scatterFwdPdfW = r.mFwdPdfW;
+        s.lastVertex.scatterRevPdfW = r.mRevPdfW;
+        s.lastVertex.mis = s.mis;
+        const float lastPdfW = s.pdfW;
+
+        // modify throughput and pdfW
+        s.throughput *= r.mReflectance;
+        if (r.mFwdPdfW > 0)
+            s.pdfW *= r.mFwdPdfW;
+
+        const float cosOut = vertex.GetCosN(dir);
+
+        if (cosOut < kMinCosTheta || all(s.throughput <= 0) || any(s.throughput != s.throughput)) {
+            s.Terminate();
+            return;
+        }
+
+        const bool connectable = vertex.IsConnectable() && s.lastVertex.scatterFwdPdfW > 0;
+
+        // diffuse bounce limit
+        if (connectable && s.diffuseBounces == mParams.mMaxDiffuseBounces) {
+            s.Terminate();
+            return;
+        }
+
+        // update mis quantities
+        {
+            DirectionSampleData r_ = {};
+            r_.mDirection = dir;
+            r_.SetReflectance(r);
+            s.mis.ProcessDirection(r_, cosOut, connectable);
+        }
+
+        // trace ray to find next vertex
+        vertex = nextVertex;
+        s.bounces++;
+        if (connectable)
+            s.diffuseBounces++;
+
+        const float cosIn = vertex.GetCosN(vertex.GetDirIn());
+
+        if (cosIn < kMinCosTheta) {
+            s.Terminate();
             return;
         }
 
         s.mis.ProcessRay(vertex.mVertex, cosIn);
+
+        const bool canReconnect = connectable && vertex.mVertex.mRayDistance >= mParams.mReconnectionDistance && (vertex.IsConnectable() || any(vertex.GetEmission() > 0));
+        UpdateReconnectionData(s, vertex, canReconnect, lastPdfW);
     }
+}
 
-    // ---------------------------------------------------------------------------------------------------------
-    // ----------------------------------------------- Top-level -----------------------------------------------
-    // ---------------------------------------------------------------------------------------------------------
+// ---------------------------------------------------------------------------------------------------------
+// ----------------------------------------------- Top-level -----------------------------------------------
+// ---------------------------------------------------------------------------------------------------------
 
+extension PathGenerator {
     // Sample a light subpath. Updates the LVC/photon map. Connects connectable vertices to the camera directly.
     void SampleLightPath(const PathId id) {
         if (mParams.mMaxBounces == 0 || mParams.mMaxDiffuseBounces == 0)
@@ -1499,24 +1708,21 @@ extension PathGenerator {
             s.rcv = vertex.Pack();
             s.rcvDirOut = vertex.GetDirIn();
             s.throughputAtRcv = s.throughput;
+            s.pdfAtRcv = s.pdfW;
             s.prefixPdf = s.pdfW;
             s.prefixBounces = 0;
             s.rcvDiffuseBounces = 0;
 
-            const float3 prevN = vertex.GetFaceNormal();
+            uint lobe = SampleNextVertex(s, vertex);
 
-            float bsdfPdfW;
-            bool deltaLobe;
-            SampleNextVertex(s, vertex, bsdfPdfW, deltaLobe);
-
-            s.rcvCos = abs(dot(prevN, vertex.mVertex.mRayDirection));
+            s.rcvCos = abs(dot(s.lastVertex.normal, vertex.mVertex.mRayDirection));
             s.rcvDist = vertex.mVertex.mRayDistance;
-            s.deltaRcv = !connectable || deltaLobe;
+            s.deltaRcv = !connectable || ((lobe & uint(LobeType::Delta)) != 0);
         }
     }
 
     // Samples a canonical camera path by connecting to lights, light subpath vertices, and merging with photons.
-    PathReservoir SampleCameraPath(const PathId id) {
+    PathReservoir SampleCanonicalPaths(const PathId id) {
         PathVertex vertex = PathVertex(LoadPrimaryVertex(id.mId));
 
         // directly output primary radiance
@@ -1533,52 +1739,17 @@ extension PathGenerator {
 
             PathState<false> s = InitializeCameraPath<false>(PathId(id.mSeed + i, id.mId), vertex);
 
-            while (s.bounces + 1 <= mParams.mMaxBounces && any(s.throughput > 0) && vertex.IsFinite()) {
-                const float3 prevThroughput = s.throughput;
-                const float prevPdf = s.pdfW;
-                const float3 prevPos = vertex.GetPosition();
-                const float3 prevNormal = vertex.HasFaceNormal() ? vertex.GetFaceNormal() : 0;
-                bool prevReconnectable = vertex.IsConnectable();
-                const bool upperOnly = vertex.HasFaceNormal() && !vertex.HasLobe(LobeType::NonDeltaTransmission);
-
-                if (prevReconnectable && s.diffuseBounces < mParams.mMaxDiffuseBounces) {
-                    bool doDI = (gBidirectional || gSampleDirectLight) && !gProgressivePhotonMapping;
-                    bool doVC = gBidirectional && !gProgressivePhotonMapping;
-                    bool doVM = gBidirectional && gVertexMerging;
-                    float techniqueW = 1;
-
-                    // Select a random connection technique to evaluate
-                    if (gBidirectional && gWavefrontTechniqueSelection && !gProgressivePhotonMapping) {
-                        bool doDI = false;
-                        bool doVC = false;
-                        bool doVM = false;
-
-                        float vcRnd = sampleNext1D(s.sg);
-
-                        // Force all threads in a warp to select the same technique
-                        vcRnd = WaveReadLaneFirst(vcRnd);
-
-                        // pick between direct light, vertex connection, and vertex merging.
-                        if (vcRnd < mParams.mDirectLightProb) {
-                            doDI = true;
-                            techniqueW = 1 / mParams.mDirectLightProb;
-                        } else if (gVertexMerging && vcRnd < (mParams.mDirectLightProb + mParams.mMergeProb)) {
-                            doVM = true;
-                            techniqueW = 1 / mParams.mMergeProb;
-                        } else {
-                            doVC = true;
-                            techniqueW = 1 / (1 - (mParams.mDirectLightProb + (gVertexMerging ? mParams.mMergeProb : 0)));
-                        }
-                    }
-
-                    if (doDI) {
+            while (s.bounces < mParams.mMaxBounces && any(s.throughput > 0) && s.pdfW > 0 && vertex.IsFinite()) {
+                if (vertex.IsConnectable() && s.diffuseBounces < mParams.mMaxDiffuseBounces) {
+                    if ((gBidirectional || gSampleDirectLight) && !gProgressivePhotonMapping) {
+                        // connect to a random light
                         float weight = 0;
-                        const PathSample ps = ConnectToLight(s, vertex, upperOnly, weight);
-                        ProcessSample(r, s.sg, ps, weight * techniqueW);
+                        const PathSample ps = ConnectToLight(s, vertex, weight);
+                        ProcessSample(r, s.sg, ps, weight);
                     }
 
                     if (gBidirectional) {
-                        if (doVC) {
+                        if (!gProgressivePhotonMapping) {
                             // connect to a random light subpath vertex in the LVC
                             const uint count = mLightVertexCache.size();
                             if (count > 0) {
@@ -1586,18 +1757,18 @@ extension PathGenerator {
 
                                 float weight = 0;
                                 PathSample ps = ConnectToLightSubpath(s, vertex, v, weight);
-                                ProcessSample(r, s.sg, ps, weight * (count / (float)mParams.mLightSubpathCount) * techniqueW);
+                                ProcessSample(r, s.sg, ps, weight * (count / (float)mParams.mLightSubpathCount));
                             }
                         }
 
-                        if (gVertexMerging && doVM) {
+                        if (gVertexMerging) {
                             // merge with the photon in the selected cell
                             float cellW = 0.f;
                             const LightSubpathVertex v = FindPhoton(s.sg, vertex, cellW);
                             if (cellW > 0) {
                                 float weight = 0;
                                 const PathSample ps = MergeWithLightVertex(s, vertex, v, weight);
-                                ProcessSample(r, s.sg, ps, weight * cellW * techniqueW);
+                                ProcessSample(r, s.sg, ps, weight * cellW);
                             }
 
                             if (gProgressivePhotonMapping)
@@ -1606,90 +1777,15 @@ extension PathGenerator {
                     }
                 }
 
+                // sample direction and trace ray
+                SampleNextVertex(s, vertex);
+
+                // add emission from new vertex
                 {
-                    float bsdfPdfW = 0;
-                    bool deltaLobe = false;
-                    SampleNextVertex(s, vertex, bsdfPdfW, deltaLobe);
-                    if (!prevReconnectable) bsdfPdfW = 0;
-
-                    const float3 le = vertex.GetEmission();
-
-                    // set vertex as rcv if one hasn't been found yet.
-                    if (!s.rcvFound && prevReconnectable && !deltaLobe && vertex.mVertex.mRayDistance >= mParams.mReconnectionDistance && (any(le > 0) || vertex.IsConnectable())) {
-                        s.rcv = vertex.Pack();
-                        if (!vertex.IsFinite()) s.rcv.mRayDistance = FLT_MAX;
-                        s.rcvCos = vertex.HasFaceNormal() ? abs(dot(vertex.GetDirIn(), vertex.GetFaceNormal())) : 1;
-                        s.rcvDist = s.rcv.mRayDistance;
-                        s.prefixBounces     = s.bounces - 1;
-                        s.rcvDiffuseBounces = s.diffuseBounces - 1;
-                        s.prefixPdf = prevPdf;
-                        // throughputAtRcv and rcvDirOut are assigned next iteration after a direction is sampled
-                    }
-
-                    // update rcvDirOut and throughputAtRcv if this vertex was selected as the rcv last iteration
-                    if (s.rcvFound && s.bounces == s.prefixBounces + 2) {
-                        s.rcvDirOut = vertex.mVertex.mRayDirection;
-                        s.throughputAtRcv = s.throughput;
-                        s.pdfAtRcv = s.pdfW;
-                    }
-
-                    // if vertex is emissive, form a path ending at vertex
-                    if (any(le > 0) && !DebugDisablePath(s.bounces, 0)) {
-                        const float3 contrib = s.throughput * le;
-
-                        // calculate mis weight
-                        float emissionPdfW = 0;
-                        float directPdfW = 0;
-                        float directPdfA = 0;
-                        if (gBidirectional || gSampleDirectLight) {
-                            GetLightSamplePdf(vertex, prevPos, prevNormal, upperOnly, emissionPdfW, directPdfW, directPdfA);
-                        }
-
-                        // divide by pdf
-                        float integrationWeight = 1 / s.pdfW;
-
-                        float misWeight = s.mis.EvalCameraTraceMIS(bsdfPdfW, directPdfA, directPdfW, emissionPdfW);
-
-                        PathSuffix suffix = {};
-                        const bool hasRcv = s.rcvFound;
-                        if (hasRcv) {
-                            // finalize the existing rcv
-                            float suffixPdf;
-                            float3 suffixContrib;
-                            if (s.bounces == s.prefixBounces + 1) {
-                                // rcv is the last vertex
-                                suffixPdf = 1;
-                                suffixContrib = le;
-                            } else {
-                                suffix.mDirOut = s.rcvDirOut;
-                                suffixPdf = s.pdfW / s.pdfAtRcv;
-                                suffixContrib = SafeDivide(contrib, s.throughputAtRcv);
-                            }
-
-                            suffix = PathSuffix::Create(
-                                suffixContrib,
-                                suffixPdf,
-                                s.rcv,
-                                s.rcvDirOut,
-                                s.rcvDist,
-                                s.rcvCos,
-                                {}
-                            );
-                        }
-
-                        const PathSample ps = PathSample::Create(
-                            contrib,
-                            misWeight,
-                            s.bounces,
-                            hasRcv ? s.prefixPdf         : s.pdfW,
-                            hasRcv ? s.prefixBounces     : s.bounces,
-                            hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
-                            s.id,
-                            suffix,
-                            PathFlags::eNone );
-
-                        ProcessSample(r, s.sg, ps, integrationWeight);
-                    }
+                    float weight = 0;
+                    const PathSample ps = EvalLightContribution(s, vertex, weight);
+                    if (ps.IsValid())
+                        ProcessSample(r, s.sg, ps, weight);
                 }
             }
         }

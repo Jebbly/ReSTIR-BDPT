@@ -78,39 +78,49 @@ struct LightSubpathData {
     }
 };
 
+struct RecursiveMisState {
+    float dVCM = 0;
+    float dVC = 0;
+    float dVM = 0;
+};
+
 struct PathSuffix {
-    PackedPathVertex mVertex = {};       ///< First vertex in the suffix.
-    LightSubpathData mLightSubpath = {}; ///< Light subpath id
-    float3 mContribution = 0;            ///< Contributions after the reconnection vertex.
-    float mCameraFwdPdf = 0;             ///< solid-angle sampling PDFs after the reconnection vertex.
-    float3 mDirOut;                      ///< Outgoing direction from the reconnection vertex.
-    float mDist = 0;                     ///< Geometry term between the prefix and the suffix.
-    float mCos = 0;                      ///< Geometry term between the prefix and the suffix.
+    PackedPathVertex  mVertex = {};       ///< First vertex in the suffix.
+    LightSubpathData  mLightSubpath = {}; ///< Light subpath id
+    float3            mContribution = 0;  ///< Contributions after the reconnection vertex.
+    float             mCameraFwdPdf = 0;  ///< solid-angle sampling PDFs after the reconnection vertex.
+    float3            mDirOut;            ///< Outgoing direction from the reconnection vertex.
+    float             mDist = 0;          ///< Geometry term between the prefix and the suffix.
+    RecursiveMisState mCachedMis    = {}; ///< MIS state at the end of the camera subpath.
+    float             mCos = 0;           ///< Geometry term between the prefix and the suffix.
 
     static PathSuffix Create(
-        const float3 contribution,
-        const float pdf,
-        const PackedPathVertex reconnectionVertex,
-        const float3 reconnectionDirOut,
-        const float reconnectionDistance,
-        const float reconnectionCos,
-        const LightSubpathData lightSubpath ) {
+        const float3            contribution,
+        const float             pdf,
+        const PackedPathVertex  reconnectionVertex,
+        const float3            reconnectionDirOut,
+        const float             reconnectionDistance,
+        const float             reconnectionCos,
+        const RecursiveMisState mis,
+        const LightSubpathData  lightSubpath ) {
         PathSuffix s = {};
+        s.mVertex       = reconnectionVertex;
+        s.mLightSubpath = lightSubpath;
         s.mContribution = contribution;
         s.mCameraFwdPdf = pdf;
-        s.mDirOut = reconnectionDirOut;
-        s.mDist   = reconnectionDistance;
-        s.mCos    = reconnectionCos;
-        s.mVertex = reconnectionVertex;
-        s.mLightSubpath = lightSubpath;
+        s.mDirOut       = reconnectionDirOut;
+        s.mDist         = reconnectionDistance;
+        s.mCachedMis    = mis;
+        s.mCos          = reconnectionCos;
         return s;
     }
 };
 
 enum PathFlags : uint {
-    eNone             = 0,
-    eCausticLightPath = 1,
-    eVertexMerging    = 2,
+    eNone                = 0,
+    eVertexMerging       = 1,
+    eCausticLightPath    = 2,
+    eNonCausticLightPath = 4,
 };
 
 
@@ -196,8 +206,8 @@ struct PathReservoir {
 
     float3 GetRadiance() {
         return PathSample::gIntegrandMIS ?
-        mSample.mContribution * (mW * mSample.mMisWeight) :
-        mSample.mContribution * mW;
+            mSample.mContribution * (mW * mSample.mMisWeight) :
+            mSample.mContribution * mW;
     }
 
     [mutating]

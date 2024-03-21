@@ -61,26 +61,27 @@ private:
     struct StaticParams
     {
         // Sampling parameters
+        uint32_t    sampleGenerator = SAMPLE_GENERATOR_TINY_UNIFORM;
+        float       misPowerExponent = 2;
+        bool        useBsdfImportanceSampling = true;
         bool        useNEE = true;                    ///< Use next-event estimation (NEE). This enables shadow ray(s) from each path vertex.
         bool        useBPT = true;                    ///< Use bidirectional path tracing. Automatically enables NEE.
         bool        useVM  = false;                   ///< Use vertex merging when using BPT.
-        bool        useBsdfImportanceSampling = true;
         bool        dynamicMergeRadius = false;
         bool        lightTraceOnly = false;
         bool        useVMOnly = false;
-        bool        useResampling = true;
-        bool        useMisInIntegrand = true;
-        bool        useTemporalReuse = true;
-        bool        validateSuffixes = true;
-        bool        useCausticReservoirs = true;
-        bool        useCausticMotionVectors = false;
-        uint        spatialReusePasses = 1;
-        uint32_t    sampleGenerator = SAMPLE_GENERATOR_TINY_UNIFORM;
-        float       misPowerExponent = 2;
         bool        debugBPT = false;
         bool        debugHeatmap = false;
+        bool        useResampling = true;
+        bool        useMisInIntegrand = true;
+        bool        shiftLightPathsToPixelCenters = true;
+        bool        useCausticReservoirs = true;
+        bool        useCausticMotionVectors = false;
+        bool        useTemporalReuse = true;
+        bool        shiftSuffixes = true;
+        bool        shiftSuffixesSpatial = false;
+        uint        spatialReusePasses = 1;
 
-        bool useWavefrontTechniqueSelection = false;
         RMISType spatialRMIS = RMISType::ePairwise;
 
         EmissiveLightSamplerType emissiveSampler = EmissiveLightSamplerType::Power;

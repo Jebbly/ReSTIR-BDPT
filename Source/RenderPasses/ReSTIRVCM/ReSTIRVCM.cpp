@@ -313,7 +313,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                         mpCausticReservoirMap->sort(pRenderContext);
                 }
 
-                mpTemporalReusePass->addDefine("VALIDATE_SUFFIXES", mStaticParams.validateSuffixes ? "1" : "0");
+                mpTemporalReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
                 mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
             }
             mCurrentSeed++;
@@ -324,9 +324,11 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         if (mStaticParams.spatialReusePasses > 0)
         {
             FALCOR_PROFILE(pRenderContext, "Spatial reuse");
+            FALCOR_ASSERT(mpSpatialReusePass);
+
+            mpSpatialReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixesSpatial ? "1" : "0");
 
             // Spatial reservoir reuse.
-            FALCOR_ASSERT(mpSpatialReusePass);
             for (uint i = 0; i < mStaticParams.spatialReusePasses; i++)
             {
                 preparePass(pRenderContext, renderData, *mpSpatialReusePass);
@@ -401,7 +403,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useBPT)
         {
-            runtimeDirty |= group.var("Light sub-path count", mParams.mLightSubpathCount, 1u, 16000000u);
+            runtimeDirty |= group.var("Light sub-path count", mParams.mLightSubpathCount, 1u, 128000000u);
             group.tooltip("Number of light sub-paths to trace when BPT is enabled.");
 
             dirty |= group.checkbox("Light trace only", mStaticParams.lightTraceOnly);
@@ -415,9 +417,9 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                 if (mStaticParams.useVM)
                 {
                     dirty |= group.checkbox("Vertex merging only", mStaticParams.useVMOnly);
-                    group.tooltip("Only use vertex merging.\nThis is the same as progressive photon mapping.");
+                    group.tooltip("Only use vertex merging.\nThis is the same as Progressive Photon Mapping.");
 
-                    runtimeDirty |= group.var("Photon hash grid cells", mParams.mPhotonCellCount, 1000u, 1000000000u);
+                    runtimeDirty |= group.var("Photon hash grid cells", mParams.mPhotonCellCount, 1000u, 32000000u);
                     group.tooltip("Number of cells in the photon hash grid.");
 
                     runtimeDirty |= group.var("Photon radius factor", mVMRadiusFactor, 1e-10f, 1.0f);
@@ -435,12 +437,6 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                         runtimeDirty |= group.var("Photon pixel radius", mParams.mDynamicMergeRadius, 1e-9f, 1000.0f);
                         group.tooltip("Photon radius in pixels.\nNote the above'Photon radius factor' is still used for\ncalculating MIS, and the mismatch causes bias.");
                     }
-                }
-
-                if (!mStaticParams.useVMOnly)
-                {
-                    dirty |= group.checkbox("Stochastic technique selection", mStaticParams.useWavefrontTechniqueSelection);
-                    group.tooltip("Only evaluate a single random connection technique.\nThis is faster than evaluating every technique, but may be noisier.");
                 }
             }
         }
@@ -487,6 +483,8 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             group.tooltip("Multiply the technique MIS weights into\nthe integrand, instead of using them\nas resampling MIS weights.", true);
 
             if (mStaticParams.useBPT) {
+                dirty |= group.checkbox("Shift light paths to pixel centers", mStaticParams.shiftLightPathsToPixelCenters);
+                group.tooltip("Shift non-caustic light subpaths\nto vbuffer vertices during canonical sampling.\nThis can improve temporal reuse");
                 dirty |= group.checkbox("Caustic reservoirs", mStaticParams.useCausticReservoirs);
                 group.tooltip("Use separate reservoirs for caustic light paths.", true);
 
@@ -499,7 +497,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             dirty |= group.checkbox("Temporal resampling", mStaticParams.useTemporalReuse);
             if (mStaticParams.useTemporalReuse)
             {
-                dirty |= group.checkbox("Validate path suffixes", mStaticParams.validateSuffixes);
+                dirty |= group.checkbox("Shift path suffixes", mStaticParams.shiftSuffixes);
                 group.tooltip("Retrace whole paths during temporal\nresampling, instead of just the prefix.", true);
             }
 
@@ -521,6 +519,8 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                 group.tooltip("Number of neighbor pixels to merge with.", true);
                 runtimeDirty |= group.var("Spatial radius", mParams.mSpatialReuseRadius, 1.f);
                 group.tooltip("Spatial reuse radius, in pixels.", true);
+                dirty |= group.checkbox("Shift path suffixes ", mStaticParams.shiftSuffixesSpatial);
+                group.tooltip("Retrace whole paths during spatial\nresampling, instead of just the prefix.", true);
             }
 
             group.separator();
@@ -1267,15 +1267,15 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_VERTEX_MERGING", (useBPT && useVM && !lightTraceOnly) ? "1" : "0");
     defines.add("USE_PPM_ONLY", (useBPT && useVM && useVMOnly && !lightTraceOnly) ? "1" : "0");
     defines.add("DYNAMIC_MERGE_RADIUS", (useBPT && useVM && !lightTraceOnly && dynamicMergeRadius) ? "1" : "0");
-    defines.add("WAVEFRONT_TECHNIQUE_SELECTION", useWavefrontTechniqueSelection ? "1" : "0");
     defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
+    defines.add("SHIFT_LIGHT_PATHS_TO_CENTER", useResampling && useBPT && shiftLightPathsToPixelCenters ? "1" : "0");
     defines.add("CAUSTIC_RESERVOIRS", useResampling && useBPT && useCausticReservoirs ? "1" : "0");
     defines.add("CAUSTIC_MOTION_VECTORS", useResampling && useBPT && !useCausticReservoirs && useCausticMotionVectors ? "1" : "0");
     defines.add("MIS_IN_INTEGRAND", useResampling && useMisInIntegrand ? "1" : "0");
     defines.add("SPATIAL_RMIS_TYPE", std::to_string(uint(spatialRMIS)));
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("DEBUG_HEATMAP", debugHeatmap ? "1" : "0");
-    defines.add("VALIDATE_SUFFIXES", "0"); // placeholder
+    defines.add("SHIFT_SUFFIXES", "0"); // placeholder
     defines.add("USE_VIEW_DIR", "0"); // placeholder
 
     // Sampling utilities configuration.

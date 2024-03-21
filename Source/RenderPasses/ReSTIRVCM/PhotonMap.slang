@@ -2,13 +2,6 @@
 import Scene.HitInfo;
 import PathReservoir; // for PackedPathVertex
 
-struct RecursiveMisState {
-    float dVCM = 0;
-    float dVC = 0;
-    float dVM = 0;
-    uint pad;
-};
-
 struct LightSubpathVertex {
     LightSubpathData mLightSubpath = {};
     PackedPathVertex mVertex = {};
