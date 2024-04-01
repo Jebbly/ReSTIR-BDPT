@@ -285,15 +285,14 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
             mCurrentSeed++;
         }
 
+        // Temporal reservoir reuse.
         if (mStaticParams.useTemporalReuse)
         {
             FALCOR_PROFILE(pRenderContext, "Temporal reuse");
 
-            // Temporal reservoir reuse.
             FALCOR_ASSERT(mpTemporalReusePass);
             FALCOR_ASSERT(renderData.getTexture(kInputMotionVectors));
             preparePass(pRenderContext, renderData, *mpTemporalReusePass);
-
             if (mStaticParams.useBPT && (mStaticParams.useCausticReservoirs || mStaticParams.useCausticMotionVectors))
             {
                 FALCOR_ASSERT(mpShiftCausticsPass);
@@ -302,7 +301,20 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
 
             if (!mVarsChanged)
             {
-                // Shift caustics
+                // shift samples to last frame
+
+                if (mStaticParams.unbiasedTemporalReuse) {
+                    FALCOR_ASSERT(mpTemporalShiftPass);
+                    ref<Program> program = mpTemporalShiftPass->getProgram();
+                    FALCOR_ASSERT(program);
+                    auto var = mpTemporalShiftPass->getRootVar();
+                    mpPixelDebug->prepareProgram(program, var);
+                    var["CB"]["gSwapReservoirs"] = uint(mSwapReservoirs ? 1u : 0u);
+                    mpTemporalShiftPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+                }
+
+                // caustic shift
+
                 if (mStaticParams.useBPT && (mStaticParams.useCausticReservoirs || mStaticParams.useCausticMotionVectors))
                 {
                     FALCOR_PROFILE(pRenderContext, "Caustic shift");
@@ -316,6 +328,9 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                         mpCausticReservoirMap->sort(pRenderContext);
                 }
 
+                // reuse pass
+
+                mpTemporalReusePass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
                 mpTemporalReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
                 mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
             }
@@ -324,14 +339,15 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
 
         mSwapReservoirs = !mSwapReservoirs; // swap input and output reservoirs for the next pass
 
+        // Spatial reservoir reuse.
         if (mStaticParams.spatialReusePasses > 0)
         {
             FALCOR_PROFILE(pRenderContext, "Spatial reuse");
             FALCOR_ASSERT(mpSpatialReusePass);
 
             mpSpatialReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixesSpatial ? "1" : "0");
+            mpSpatialReusePass->addDefine("SPATIAL_RMIS_TYPE", std::to_string(uint(mStaticParams.spatialRMIS)));
 
-            // Spatial reservoir reuse.
             for (uint i = 0; i < mStaticParams.spatialReusePasses; i++)
             {
                 preparePass(pRenderContext, renderData, *mpSpatialReusePass);
@@ -485,6 +501,9 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useResampling)
         {
+            dirty |= group.checkbox("Disable early reconnection", mStaticParams.disableEarlyReconnection);
+            group.tooltip("Disable reconnection before the light subpath.", true);
+
             dirty |= group.checkbox("Unbiased MIS", mStaticParams.useMisInIntegrand);
             group.tooltip("Multiply the technique MIS weights into\nthe integrand, instead of using them\nas resampling MIS weights.", true);
 
@@ -505,6 +524,9 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             {
                 dirty |= group.checkbox("Shift path suffixes", mStaticParams.shiftSuffixes);
                 group.tooltip("Retrace whole paths during temporal\nresampling, instead of just the prefix.", true);
+
+                dirty |= group.checkbox("Unbiased temporal reuse", mStaticParams.unbiasedTemporalReuse);
+                group.tooltip("Shift paths to the previous frame during temporal reuse.", true);
             }
 
             group.separator();
@@ -669,6 +691,7 @@ void ReSTIRVCM::resetPrograms()
     mpLightReservoirResolvePass = nullptr;
     mpSpatialReusePass = nullptr;
     mpTemporalReusePass = nullptr;
+    mpTemporalShiftPass = nullptr;
     mpShiftCausticsPass = nullptr;
     mpCopyRadiancePass = nullptr;
 
@@ -743,6 +766,16 @@ void ReSTIRVCM::updatePrograms()
             mpTemporalReusePass = ComputePass::create(mpDevice, desc, defines, false);
         }
         preparePass(mpTemporalReusePass);
+
+        if (mStaticParams.unbiasedTemporalReuse) {
+            if (!mpTemporalShiftPass)
+            {
+                ProgramDesc desc = baseDesc;
+                desc.addShaderLibrary(kTemporalReusePassFilename).csEntry("ShiftToPrevFrame");
+                mpTemporalShiftPass = ComputePass::create(mpDevice, desc, defines, false);
+            }
+            preparePass(mpTemporalShiftPass);
+        }
 
         if (mStaticParams.useCausticReservoirs || mStaticParams.useCausticMotionVectors)
         {
@@ -1206,8 +1239,6 @@ bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& rend
 
 void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& renderData)
 {
-    mpPixelDebug->endFrame(pRenderContext);
-
     // Copy pixel stats to outputs if available.
     if (mStaticParams.useTemporalReuse && !mFreezeHistory)
     {
@@ -1229,11 +1260,18 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
         copyTexture( mpLastVbuffer.get(), renderData.getTexture(kInputVBuffer).get() );
         copyTexture( mpLastViewDir.get(), renderData.getTexture(kInputViewDir).get() );
 
+        if (mStaticParams.unbiasedTemporalReuse && mpTemporalShiftPass) {
+            preparePass(pRenderContext, renderData, *mpTemporalShiftPass);
+            mpTemporalShiftPass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
+        }
+
         pRenderContext->copyResource(mpLastReservoirs.get(), mSwapReservoirs ? mpReservoirs1.get() : mpReservoirs0.get());
 
         if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs)
             pRenderContext->copyResource(mpLastCausticReservoirs.get(), mpCausticReservoirs.get());
     }
+
+    mpPixelDebug->endFrame(pRenderContext);
 
     if (!mKeepFrameIndex)
         mFrameCount++;
@@ -1279,11 +1317,13 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("CAUSTIC_RESERVOIRS", useResampling && useBPT && useCausticReservoirs ? "1" : "0");
     defines.add("CAUSTIC_MOTION_VECTORS", useResampling && useBPT && !useCausticReservoirs && useCausticMotionVectors ? "1" : "0");
     defines.add("MIS_IN_INTEGRAND", useResampling && useMisInIntegrand ? "1" : "0");
-    defines.add("SPATIAL_RMIS_TYPE", std::to_string(uint(spatialRMIS)));
+    defines.add("DISABLE_EARLY_RECONNECTION", useResampling && disableEarlyReconnection ? "1" : "0");
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("DEBUG_HEATMAP", debugHeatmap ? "1" : "0");
     defines.add("SHIFT_SUFFIXES", "0"); // placeholder
     defines.add("USE_VIEW_DIR", "0"); // placeholder
+    defines.add("UNBIASED_TEMPORAL_REUSE", "0"); // placeholder
+    defines.add("SPATIAL_RMIS_TYPE", "0"); // placeholder
 
     // Sampling utilities configuration.
     FALCOR_ASSERT(owner.mpSampleGenerator);

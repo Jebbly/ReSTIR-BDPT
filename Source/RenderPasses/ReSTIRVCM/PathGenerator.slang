@@ -40,6 +40,7 @@ extension PathGenerator {
     static const bool  gDebugHeatmap                  = DEBUG_HEATMAP;
     static const float gMISPowerExponent              = MIS_POWER_EXPONENT;
     static const bool  gDisableCameraConnection       = DISABLE_CAMERA_CONNECTION;
+    static const bool  gDisableEarlyReconnection      = DISABLE_EARLY_RECONNECTION;
 }
 
 struct PathGenerator {
@@ -553,6 +554,9 @@ extension RecursiveMisState {
             const float cosIn = vertex.GetCosN(vertex.GetDirIn());
             const float3 d = gScene.camera.getPosition() - vertex.GetPosition();
             dVCM *= gPathGenerator.Mis(dot(d,d) / cosIn);
+
+            if (gPathGenerator.gDisableCameraConnection)
+                dVCM = 0;
         }
     }
 
@@ -1257,7 +1261,6 @@ extension PathGenerator {
         return result;
     }
 
-
     PathSample EvalLightContribution<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out float integrationWeight) {
         integrationWeight = 0;
         PathSample result = {};
@@ -1483,6 +1486,9 @@ extension PathGenerator {
     }
 
     void UpdateReconnectionData<let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const bool connectable, const float lastPdfW) {
+        if (gDisableEarlyReconnection)
+            return;
+
         // set vertex as rcv if one hasn't been found yet.
         if (!s.rcvFound && connectable) {
             s.rcv = vertex.Pack();

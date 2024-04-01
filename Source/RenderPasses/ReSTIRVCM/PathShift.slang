@@ -216,9 +216,6 @@ extension PathGenerator {
 
         PathSuffix newSuffix = GetShiftedSuffixVertex(vertex, basePath.mSuffix);
 
-        if (newSuffix.mCos < kMinCosTheta)
-            return result;
-
         if (!gDisableCameraConnection && basePath.HasFlag(PathFlags::eCausticLightPath) && !gUseCausticReservoirs) {
             // copy caustic paths if they are in the same pixel (or close)
             const float2 basePixel = GetPixelCoord(PathVertex(newSuffix.mVertex).GetPosition());
@@ -232,8 +229,12 @@ extension PathGenerator {
             return basePath;
         }
 
-        if (s.bounces < cameraBounces && newSuffix.mVertex.IsFinite() && newSuffix.mDist < mParams.mReconnectionDistance)
-            return result;
+        if (newSuffix.mVertex.IsFinite()) {
+            if (newSuffix.mCos < kMinCosTheta)
+                return result;
+            if (s.bounces < cameraBounces && newSuffix.mDist < mParams.mReconnectionDistance)
+                return result;
+        }
 
         ReflectanceEvalData f = {};
 
@@ -262,7 +263,10 @@ extension PathGenerator {
             s.throughput *= r.mReflectance;
         }
 
-        float misWeight = basePath.mMisWeight;
+        result = basePath;
+        result.mContribution = s.throughput * newSuffix.mContribution;
+        result.mPrefixPdf = prefixPdf;
+        result.mSuffix = newSuffix;
 
         // compute MIS weight for the shifted path
         if (PathSample::gIntegrandMIS && !DebugDisableMIS()) {
@@ -321,12 +325,6 @@ extension PathGenerator {
             */
         }
 
-        result = basePath;
-        result.mContribution = s.throughput * newSuffix.mContribution;
-        result.mMisWeight = misWeight;
-        result.mPrefixPdf = prefixPdf;
-        result.mSuffix = newSuffix;
-
         return result;
     }
 
@@ -336,12 +334,10 @@ extension PathGenerator {
 
         const uint cameraBounces = basePath.mBounces - (basePath.mSuffix.mLightSubpath.mVertexCount + (gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging) ? 1 : 0));
 
+        // advance to the 1st suffix vertex (the reconnection vertex)
         if (s.bounces < cameraBounces) {
-            // advance to the 1st suffix vertex (the reconnection vertex)
             const PathSuffix newSuffix = GetShiftedSuffixVertex(vertex, basePath.mSuffix);
-            if (newSuffix.mCos < kMinCosTheta)
-                return result;
-            if (s.bounces < cameraBounces && newSuffix.mVertex.IsFinite() && newSuffix.mDist < mParams.mReconnectionDistance)
+            if (newSuffix.mVertex.IsFinite() && (newSuffix.mDist < mParams.mReconnectionDistance || newSuffix.mCos < kMinCosTheta))
                 return result;
             const PathVertex rcv = PathVertex(newSuffix.mVertex);
             if (Occluded(Ray(rcv.mVertex.mRayOrigin, rcv.mVertex.mRayDirection, 0, rcv.mVertex.mRayDistance)))
@@ -351,8 +347,8 @@ extension PathGenerator {
                 return result;
         }
 
+        // advance to the 2nd suffix vertex
         if (s.bounces < cameraBounces) {
-            // advance to the 2nd suffix vertex
             SetNextVertex(s, vertex, PathVertex(TraceRay(Ray(vertex.ComputeRayOrigin(basePath.mSuffix.mDirOut), basePath.mSuffix.mDirOut))));
             if (!any(s.throughput > 0))
                 return result;
@@ -373,10 +369,7 @@ extension PathGenerator {
         float w;
         if (basePath.mSuffix.mLightSubpath.mVertexCount == 0) {
             result = EvalLightContribution(s, vertex, w);
-        } else {
-            if (!vertex.IsConnectable())
-                return result;
-
+        } else if (vertex.IsConnectable()) {
             if ((gBidirectional || gSampleDirectLight) && basePath.mSuffix.mLightSubpath.mVertexCount == 1) {
                 result = ConnectToLight(s, vertex, w);
             } else if (gBidirectional && basePath.mSuffix.mLightSubpath.mVertexCount > 1) {

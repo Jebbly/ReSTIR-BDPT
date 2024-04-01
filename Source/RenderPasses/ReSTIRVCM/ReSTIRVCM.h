@@ -71,6 +71,7 @@ private:
         bool        lightTraceOnly = false;
         bool        useVMOnly = false;
         bool        disableCameraConnection = false;
+        bool        disableEarlyReconnection = false;
         bool        debugBPT = false;
         bool        debugHeatmap = false;
         bool        useResampling = true;
@@ -79,6 +80,7 @@ private:
         bool        useCausticReservoirs = true;
         bool        useCausticMotionVectors = false;
         bool        useTemporalReuse = true;
+        bool        unbiasedTemporalReuse = false;
         bool        shiftSuffixes = true;
         bool        shiftSuffixesSpatial = false;
         uint        spatialReusePasses = 1;
@@ -126,6 +128,7 @@ private:
     ref<ComputePass>                mpSampleCameraPathsPass;     ///< Camera trace pass.
     ref<ComputePass>                mpSampleLightPathsPass;      ///< Light trace pass.
     ref<ComputePass>                mpTemporalReusePass;         ///< Temporal reservoir reuse pass.
+    ref<ComputePass>                mpTemporalShiftPass;         ///< Temporal shift pass.
     ref<ComputePass>                mpSpatialReusePass;          ///< Spatial reservoir reuse pass.
     ref<ComputePass>                mpShiftCausticsPass;         ///< Shift caustic reservoirs pass.
     ref<ComputePass>                mpLightReservoirResolvePass; ///< Fullscreen compute pass merging light traced reservoirs within each pixel.
