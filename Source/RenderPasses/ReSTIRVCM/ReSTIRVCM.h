@@ -72,6 +72,7 @@ private:
         bool        useVMOnly = false;
         bool        disableCameraConnection = false;
         bool        disableEarlyReconnection = false;
+        bool        reconnectionMIS = false;
         bool        debugBPT = false;
         bool        debugHeatmap = false;
         bool        useResampling = true;

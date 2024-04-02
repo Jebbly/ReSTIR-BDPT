@@ -84,34 +84,47 @@ struct RecursiveMisState {
     float dVM = 0;
 };
 
+struct ReconnectionMisData {
+    float cosCam;
+    float cosLight;
+    float invDist2;
+    float emissionPdfW;
+    float directPdfW;
+    float directPdfA;
+    float pad0;
+    float pad1;
+};
 struct PathSuffix {
-    PackedPathVertex  mVertex = {};       ///< First vertex in the suffix.
-    LightSubpathData  mLightSubpath = {}; ///< Light subpath id
-    float3            mContribution = 0;  ///< Contributions after the reconnection vertex.
-    float             mCameraFwdPdf = 0;  ///< solid-angle sampling PDFs after the reconnection vertex.
-    float3            mDirOut;            ///< Outgoing direction from the reconnection vertex.
-    float             mDist = 0;          ///< Geometry term between the prefix and the suffix.
-    RecursiveMisState mCachedMis    = {}; ///< MIS state at the end of the camera subpath.
-    float             mCos = 0;           ///< Geometry term between the prefix and the suffix.
+    PackedPathVertex    mVertex = {};          ///< First vertex in the suffix.
+    LightSubpathData    mLightSubpath = {};    ///< Light subpath id
+    float3              mContribution = 0;     ///< Contributions after the reconnection vertex.
+    float               mCameraFwdPdf = 0;     ///< solid-angle sampling PDFs after the reconnection vertex.
+    float3              mDirOut;               ///< Outgoing direction from the reconnection vertex.
+    float               mDist = 0;             ///< Geometry term between the prefix and the suffix.
+    ReconnectionMisData mReconnectionMis = {}; ///< Data for recomputing MIS weights during reconnection
+    RecursiveMisState   mLightSubpathMis = {}; ///< MIS state at the end of the light subpath.
+    float               mCos = 0;              ///< Geometry term between the prefix and the suffix.
 
     static PathSuffix Create(
-        const float3            contribution,
-        const float             pdf,
-        const PackedPathVertex  reconnectionVertex,
-        const float3            reconnectionDirOut,
-        const float             reconnectionDistance,
-        const float             reconnectionCos,
-        const RecursiveMisState mis,
-        const LightSubpathData  lightSubpath ) {
+        const float3              contribution,
+        const float               pdf,
+        const PackedPathVertex    reconnectionVertex,
+        const float3              reconnectionDirOut,
+        const float               reconnectionDistance,
+        const float               reconnectionCos,
+        //const ReconnectionMisData reconnectionMis,
+        const LightSubpathData    lightSubpath,
+        const RecursiveMisState   lightSubpathMis ) {
         PathSuffix s = {};
-        s.mVertex       = reconnectionVertex;
-        s.mLightSubpath = lightSubpath;
-        s.mContribution = contribution;
-        s.mCameraFwdPdf = pdf;
-        s.mDirOut       = reconnectionDirOut;
-        s.mDist         = reconnectionDistance;
-        s.mCachedMis    = mis;
-        s.mCos          = reconnectionCos;
+        s.mVertex          = reconnectionVertex;
+        s.mLightSubpath    = lightSubpath;
+        s.mContribution    = contribution;
+        s.mCameraFwdPdf    = pdf;
+        s.mDirOut          = reconnectionDirOut;
+        s.mDist            = reconnectionDistance;
+        //s.mReconnectionMis = reconnectionMis;
+        s.mLightSubpathMis = lightSubpathMis;
+        s.mCos             = reconnectionCos;
         return s;
     }
 };

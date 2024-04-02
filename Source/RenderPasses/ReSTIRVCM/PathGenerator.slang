@@ -32,6 +32,7 @@ extension PathGenerator {
     static const bool  gProgressivePhotonMapping      = USE_PPM_ONLY;
     static const bool  gLightTraceOnly                = LIGHT_TRACE_ONLY;
     static const bool  gUseResampling                 = USE_RESAMPLING;
+    static const bool  gUseReconnectionMIS            = USE_RECONNECTION_MIS;
     static const bool  gUseCausticReservoirs          = CAUSTIC_RESERVOIRS;
     static const bool  gUseCausticMotionVectors       = CAUSTIC_MOTION_VECTORS;
     static const bool  gShiftSuffixes                 = SHIFT_SUFFIXES;
@@ -934,8 +935,8 @@ extension PathGenerator {
             suffixDir,
             hasRcv ? s.rcvDist : l.mRayDistance,
             hasRcv ? s.rcvCos : cosLight,
-            s.mis,
-            lightSubpath
+            lightSubpath,
+            {},
         );
 
         result = PathSample::Create(
@@ -1056,12 +1057,12 @@ extension PathGenerator {
         const PathSuffix suffix = PathSuffix::Create(
             suffixContrib,
             suffixPdf,
-            hasRcv ? s.rcv     : v.mVertex,
+            hasRcv ? s.rcv : v.mVertex,
             suffixDir,
             hasRcv ? s.rcvDist : dist,
-            hasRcv ? s.rcvCos  : cosLight,
-            s.mis,
-            v.mLightSubpath
+            hasRcv ? s.rcvCos : cosLight,
+            v.mLightSubpath,
+            v.mis
         );
 
         result = PathSample::Create(
@@ -1142,8 +1143,8 @@ extension PathGenerator {
             suffixDir,
             hasRcv ? s.rcvDist : 0,
             hasRcv ? s.rcvCos  : 0,
-            s.mis,
-            v.mLightSubpath
+            v.mLightSubpath,
+            v.mis
         );
 
         result = PathSample::Create(
@@ -1219,14 +1220,14 @@ extension PathGenerator {
                 vertex.GetDirIn(),
                 dist,
                 cosIn,
-                s.mis,
                 LightSubpathData::Create(
                     s.lightSubpathVertex,
                     s.id,
                     s.bounces + 2,
                     s.diffuseBounces + 1,
                     s.pdfW
-                )
+                ),
+                s.mis
             );
         } else {
             suffix = PathSuffix::Create(
@@ -1236,14 +1237,14 @@ extension PathGenerator {
                 s.rcvDirOut,
                 s.rcvDist,
                 s.rcvCos,
-                s.lastVertex.mis,
                 LightSubpathData::Create(
                     s.lightSubpathVertex,
                     s.id,
                     s.bounces + 1,
                     s.diffuseBounces + 1,
                     s.pdfAtRcv
-                )
+                ),
+                s.lastVertex.mis,
             );
         }
 
@@ -1308,7 +1309,7 @@ extension PathGenerator {
                             s.rcvDirOut,
                             s.rcvDist,
                             s.rcvCos,
-                            s.mis,
+                            {},
                             {}
                         );
         }

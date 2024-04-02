@@ -501,11 +501,11 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useResampling)
         {
-            dirty |= group.checkbox("Disable early reconnection", mStaticParams.disableEarlyReconnection);
-            group.tooltip("Disable reconnection before the light subpath.", true);
-
-            dirty |= group.checkbox("Unbiased MIS", mStaticParams.useMisInIntegrand);
+            dirty |= group.checkbox("MIS in integrand", mStaticParams.useMisInIntegrand);
             group.tooltip("Multiply the technique MIS weights into\nthe integrand, instead of using them\nas resampling MIS weights.", true);
+
+            dirty |= group.checkbox("Reconnection MIS", mStaticParams.reconnectionMIS);
+            group.tooltip("Recompute MIS weights during reconnection.", true);
 
             if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection) {
                 dirty |= group.checkbox("Shift light paths to pixel centers", mStaticParams.shiftLightPathsToPixelCenters);
@@ -599,6 +599,11 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
         if (mUseFixedSeed)
         {
             dirty |= group.var("Seed", mFixedSeed);
+        }
+
+        if (mStaticParams.useResampling) {
+            dirty |= group.checkbox("Disable early reconnection", mStaticParams.disableEarlyReconnection);
+            group.tooltip("Disable reconnection before the light subpath.", true);
         }
 
         dirty |= group.checkbox("Fix seed per-frame", mUsePerFrameSeed);
@@ -1313,6 +1318,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_PPM_ONLY", (useBPT && useVM && useVMOnly && !lightTraceOnly) ? "1" : "0");
     defines.add("DYNAMIC_MERGE_RADIUS", (useBPT && useVM && !lightTraceOnly && dynamicMergeRadius) ? "1" : "0");
     defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
+    defines.add("USE_RECONNECTION_MIS", (useResampling && reconnectionMIS) ? "1" : "0");
     defines.add("SHIFT_LIGHT_PATHS_TO_CENTER", useResampling && useBPT && shiftLightPathsToPixelCenters ? "1" : "0");
     defines.add("CAUSTIC_RESERVOIRS", useResampling && useBPT && useCausticReservoirs ? "1" : "0");
     defines.add("CAUSTIC_MOTION_VECTORS", useResampling && useBPT && !useCausticReservoirs && useCausticMotionVectors ? "1" : "0");
