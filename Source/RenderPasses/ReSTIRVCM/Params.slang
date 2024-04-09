@@ -85,16 +85,13 @@ struct PathGeneratorParams {
     float mMergeRadius       = 0.0025f;
     float mDynamicMergeRadius = 2.f;
 
-    float mReconnectionDistance  = 0.01f;
+    float mReconnectionDistance  = 0.3f;
     float mReconnectionRoughness = 0.08f; ///< sqrt(kMinGGXAlpha)
     float mCausticReuseRadius = 0.f;      ///< in pixels
 
     uint  mSpatialReuseSamples = 4;
     float mSpatialReuseRadius  = 30.f;
     uint  mMCap                = 20;
-
-    float mDirectLightProb = 0.8f; ///< Probability of performing direct light sampling at each path vertex.
-    float mMergeProb       = 0.5f; ///< Probability of performing vertex merigng at each path vertex.
     float mEnvMapProb      = 0.5f; ///< Probability of sampling the environment map (instead of emissive triangles).
 
     int mDebugTotalVertices  = -1; ///< Only render paths with this many vertices.

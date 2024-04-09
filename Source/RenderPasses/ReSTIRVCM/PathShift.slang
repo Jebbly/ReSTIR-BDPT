@@ -208,7 +208,7 @@ extension PathGenerator {
 
     // connect to suffix without shifting it. Assumes the path state is already at the end of the prefix
     PathSample ConnectToSuffix(inout PathState<true> s, inout PathVertex vertex, const PathSample basePath) {
-        const uint  cameraBounces = basePath.mBounces - (basePath.mSuffix.mLightSubpath.mVertexCount + (gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging) ? 1 : 0));
+        const uint  cameraBounces = basePath.mBounces - (basePath.mSuffix.mLightSubpath.mVertexCount + ((gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging)) ? 1 : 0));
         const float prefixPdf = s.pdfW;
 
         PathSample result = {};
@@ -236,9 +236,9 @@ extension PathGenerator {
                 return result;
         }
 
-        // advance to the suffix reconnection vertex
+        RecursiveMisState prefixMis = s.mis; // cache mis state at end of prefix
 
-        RecursiveMisState mis = s.mis; // cache mis state at end of prefix
+        // advance to the reconnection vertex
         float prefixFwdPdfW, prefixRevPdfW;
         {
             const PathVertex rcv = PathVertex(newSuffix.mVertex);
@@ -263,14 +263,11 @@ extension PathGenerator {
             s.throughput *= rcvF.mReflectance;
         }
 
-        result = basePath;
-        result.mContribution = s.throughput * newSuffix.mContribution;
-        result.mPrefixPdf = prefixPdf;
-        result.mSuffix = newSuffix;
+        float misWeight = basePath.mMisWeight;
 
         // compute new MIS weight for the shifted path
         if (PathSample::gIntegrandMIS && !DebugDisableMIS() && gUseReconnectionMIS) {
-            if (!gDisableCameraConnection && gBidirectional && basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
+            if (gBidirectional && !gDisableCameraConnection && basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
                 // non-caustic pure light path. caustic light paths are handled above.
 
                 float3 toCamera = gScene.camera.getPosition() - s.lastVertex.position;
@@ -285,73 +282,97 @@ extension PathGenerator {
                 const float cameraPdfA = imageToSolidAngleFactor * cosToCamera / sqr(distToCamera);
 
                 // advance the cached MIS state to 's.lastVertex', which is the primary hit
-                mis = basePath.mSuffix.mLightSubpathMis;
+                s.mis = basePath.mSuffix.mMisEvalArgs.lightSubpathMis;
                 {
                     // swap forward and reverse PDFs since light tracing would have evaluated the reverse BSDF
                     DirectionSampleData r = {};
                     r.mFwdPdfW = prefixRevPdfW;
                     r.mRevPdfW = prefixFwdPdfW;
-                    mis.ProcessDirection(r, vertex.GetCosN(vertex.GetDirIn()), true);
+                    r.mLobeType = 0;
+                    s.mis.ProcessDirection(r, vertex.GetCosN(vertex.GetDirIn()), true);
                     PackedPathVertex v = {};
                     v.mRayDistance = vertex.mVertex.mRayDistance;
-                    mis.ProcessRay(v, abs(dot(s.lastVertex.normal, vertex.GetDirIn())), false);
+                    s.mis.ProcessRay(v, abs(dot(s.lastVertex.normal, vertex.GetDirIn())), false);
                 }
 
-                result.mMisWeight = mis.EvalLightTraceMIS(prefixFwdPdfW, cameraPdfA);
+                result.mMisWeight = s.mis.EvalLightTraceMIS(prefixFwdPdfW, cameraPdfA);
             } else {
-                #if 0
-                ReconnectionMisData d = basePath.mSuffix.mReconnectionMis;
+                // update mis arguments
 
-                // at this point, the path state has been advanced to the reconnection vertex
-
-                ReflectanceEvalData cameraF = {};
-                ReflectanceEvalData lightF = {};
-
-                if (s.bounces == basePath.mBounces) {
-                    // rcv is the last vertex in the path.
-                    d.cosCam = s.lastVertex.HasNormal() ? abs(dot(s.lastVertex.normal, vertex.GetDirIn())) : 1;
-                    d.cosLight = vertex.GetCosN(vertex.GetDirIn());
-                    GetLightSamplePdf( vertex, s.lastVertex.position, s.lastVertex.normal, s.lastVertex.upperHemisphereOnly, d.emissionPdfW, d.directPdfW, d.directPdfA );
-                    if (basePath.mSuffix.mLightSubpath.mVertexCount == 0)
-                        mis = s.mis;
-                    cameraF = rcvF;
-                } else if (s.bounces < cameraBounces) {
-                    // advance mis state to the end of the camera subpath
-                    mis.dVC = coeff * (
-                        mis.dVC * Mis(r.mRevPdfW) * fullProd +
-                        sumProd_dVCM +
-                        GetMisVmWeightFactor() * sumProd_eta);
-                    r = ;
-                    f = ;
-                }  else if (s.bounces == cameraBounces) {
-                    // rcv is last camera subpath vertex. don't need to advance the mis state.
-                    mis = s.mis;
-                    r = f; // use reflectance at rcv for camera connection
-                    cameraF = { 0, prefixFwdPdfW, prefixRevPdfW }
-                } else if (s.bounces > cameraBounces) {
-                    // rcv is on the light subpath. don't need to advance the mis state.
-                    if (basePath.mSuffix.mLightSubpath.mVertexCount > 1) {
-                        // swap pdfs to get adjoint pdfs
-                        float tmp = f.mRevPdfW;
-                        f.mRevPdfW = f.mFwdPdfW;
-                        f.mFwdPdfW = tmp;
+                if (s.bounces == cameraBounces) {
+                    // rcv is last camera subpath vertex
+                    newSuffix.mMisEvalArgs.cameraScatterFwdPdfW = prefixFwdPdfW;
+                    newSuffix.mMisEvalArgs.cameraScatterRevPdfW = prefixRevPdfW;
+                }
+                else if (s.bounces > cameraBounces)
+                {
+                    // vertex before rcv is last camera subpath vertex (rcv is on the light subpath)
+                    s.mis = prefixMis;
+                    newSuffix.mMisEvalArgs.cameraScatterFwdPdfW = prefixFwdPdfW;
+                    newSuffix.mMisEvalArgs.cameraScatterRevPdfW = prefixRevPdfW;
+                    newSuffix.mMisEvalArgs.lightScatterFwdPdfW = rcvF.mRevPdfW;
+                    newSuffix.mMisEvalArgs.lightScatterRevPdfW = rcvF.mFwdPdfW;
+                    newSuffix.mMisEvalArgs.cosCam = s.lastVertex.HasNormal() ? abs(dot(s.lastVertex.normal, vertex.GetDirIn())) : 1;
+                    newSuffix.mMisEvalArgs.cosLight = vertex.GetCosN(vertex.GetDirIn());
+                    newSuffix.mMisEvalArgs.invDist2 = 1 / sqr(vertex.mVertex.mRayDistance);
+                    if (s.bounces == basePath.mBounces) {
+                        GetLightSamplePdf(
+                            vertex,
+                            s.lastVertex.position,
+                            s.lastVertex.normal,
+                            s.lastVertex.upperHemisphereOnly,
+                            newSuffix.mMisEvalArgs.emissionPdfW,
+                            newSuffix.mMisEvalArgs.directPdfW,
+                            newSuffix.mMisEvalArgs.directPdfA );
                     }
                 }
+                else
+                {
+                    // the last camera subpath vertex is after the rcv
+                    // advance s.mis to the end of the camera subpath
+                    newSuffix.mMisEvalArgs.reconnectionMis.Apply(s.mis, rcvF.mFwdPdfW, rcvF.mRevPdfW, cameraBounces - (s.bounces+1));
+                }
 
-                if (basePath.mSuffix.mLightSubpath.mVertexCount == 0) {
-                    result.mMisWeight = mis.EvalCameraTraceMIS(prefixFwdPdfW, d.directPdfA, d.directPdfW, d.emissionPdfW);
-                } else if (basePath.mSuffix.mLightSubpath.mVertexCount == 1) {
-                    result.mMisWeight = mis.EvalDirectLightMIS(d.directPdfW, d.emissionPdfW, cameraF, d.cosCam, d.cosLight);
-                } else {
+                // evaluate the mis weight for the original technique
+
+                if (newSuffix.mLightSubpath.mVertexCount == 0) {
+                    misWeight = s.mis.EvalCameraTraceMIS(
+                        newSuffix.mMisEvalArgs.cameraScatterFwdPdfW,
+                        newSuffix.mMisEvalArgs.directPdfA,
+                        newSuffix.mMisEvalArgs.directPdfW,
+                        newSuffix.mMisEvalArgs.emissionPdfW);
+                } else if (newSuffix.mLightSubpath.mVertexCount == 1) {
+                    misWeight = s.mis.EvalDirectLightMIS(
+                        newSuffix.mMisEvalArgs.directPdfW,
+                        newSuffix.mMisEvalArgs.emissionPdfW,
+                        { float3(0,0,0), newSuffix.mMisEvalArgs.cameraScatterFwdPdfW, newSuffix.mMisEvalArgs.cameraScatterRevPdfW },
+                        newSuffix.mMisEvalArgs.cosCam,
+                        newSuffix.mMisEvalArgs.cosLight);
+                } else if (gBidirectional) {
                     if (basePath.HasFlag(PathFlags::eVertexMerging)) {
-                        result.mMisWeight = mis.EvalVertexMergingMIS(basePath.mSuffix.mLightSubpathMis, cameraF);
+                        misWeight = s.mis.EvalVertexMergingMIS(
+                            newSuffix.mMisEvalArgs.lightSubpathMis,
+                            { float3(0,0,0), newSuffix.mMisEvalArgs.cameraScatterFwdPdfW, newSuffix.mMisEvalArgs.cameraScatterRevPdfW });
                     } else {
-                        result.mMisWeight = mis.EvalVertexConnectionMIS(basePath.mSuffix.mLightSubpathMis, lightF, cameraF, d.cosCam, d.cosLight, d.invDist2);
+                        misWeight = s.mis.EvalVertexConnectionMIS(
+                            newSuffix.mMisEvalArgs.lightSubpathMis,
+                            { float3(0,0,0), newSuffix.mMisEvalArgs.lightScatterFwdPdfW, newSuffix.mMisEvalArgs.lightScatterRevPdfW },
+                            { float3(0,0,0), newSuffix.mMisEvalArgs.cameraScatterFwdPdfW, newSuffix.mMisEvalArgs.cameraScatterRevPdfW },
+                            newSuffix.mMisEvalArgs.cosCam,
+                            newSuffix.mMisEvalArgs.cosLight,
+                            newSuffix.mMisEvalArgs.invDist2);
                     }
                 }
-                #endif
+                print("misWeight, baseMisWeight", float2(misWeight, basePath.mMisWeight));
+                print("bounces, cameraBounces, prefixBounces, s.bounces", uint4(basePath.mBounces, cameraBounces, basePath.mPrefixBounces, s.bounces));
             }
         }
+
+        result = basePath;
+        result.mContribution = s.throughput * newSuffix.mContribution;
+        result.mMisWeight = misWeight;
+        result.mPrefixPdf = prefixPdf;
+        result.mSuffix = newSuffix;
 
         return result;
     }
@@ -362,23 +383,35 @@ extension PathGenerator {
 
         const uint cameraBounces = basePath.mBounces - (basePath.mSuffix.mLightSubpath.mVertexCount + (gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging) ? 1 : 0));
 
+        if (s.rcvFound) {
+            print("Shift failed: Rcv mismatch", 0);
+            return result;
+        }
+
         // advance to the 1st suffix vertex (the reconnection vertex)
         if (s.bounces < cameraBounces) {
             const PathSuffix newSuffix = GetShiftedSuffixVertex(vertex, basePath.mSuffix);
             if (newSuffix.mVertex.IsFinite() && (newSuffix.mDist < mParams.mReconnectionDistance || newSuffix.mCos < kMinCosTheta))
                 return result;
+
             const PathVertex rcv = PathVertex(newSuffix.mVertex);
             if (Occluded(Ray(rcv.mVertex.mRayOrigin, rcv.mVertex.mRayDirection, 0, rcv.mVertex.mRayDistance)))
                 return result;
+
             SetNextVertex(s, vertex, rcv);
-            if (!any(s.throughput > 0))
+            if (!any(s.throughput > 0) || !(s.pdfW > 0))
                 return result;
+
+            if (!s.rcvFound) {
+                print("Shift failed: Rcv mismatch", 0);
+                return result;
+            }
         }
 
         // advance to the 2nd suffix vertex
         if (s.bounces < cameraBounces) {
             SetNextVertex(s, vertex, PathVertex(TraceRay(Ray(vertex.ComputeRayOrigin(basePath.mSuffix.mDirOut), basePath.mSuffix.mDirOut))));
-            if (!any(s.throughput > 0))
+            if (!any(s.throughput > 0) || !(s.pdfW > 0))
                 return result;
         }
 
@@ -386,7 +419,7 @@ extension PathGenerator {
         while (s.bounces < cameraBounces && any(s.throughput > 0) && vertex.IsFinite()) {
             SampleNextVertex(s, vertex);
         }
-        if (s.bounces != cameraBounces || !any(s.throughput > 0)) {
+        if (s.bounces != cameraBounces || !any(s.throughput > 0) || !(s.pdfW > 0)) {
             print("Shift failed: Camera subpath length mismatch:", uint2(s.bounces, cameraBounces));
             s.Terminate();
             return result;
@@ -546,6 +579,8 @@ extension PathGenerator {
                 if (gShiftSuffixes) {
                     // shift the suffix and apply the original sampling technique
                     #if 0
+                    // TODO: for some reason, using the shifted path directly causes rare exploding fireflies
+                    // this only seems to occur when the path has more camera bounces after the rcv.
                     result = ShiftSuffix(s, vertex, basePath, shiftedLightVertex);
                     #else
                     var tmp_s = s;
@@ -570,8 +605,8 @@ extension PathGenerator {
             return {};
         }
 
-        // random replay jacobian
         if (!(basePath.HasFlag(PathFlags::eCausticLightPath) && gUseCausticReservoirs)) {
+            // random replay jacobian
             jacobian = basePath.mPrefixPdf / result.mPrefixPdf;
 
             if (hasLightSubpath || (basePath.HasSuffix() && basePath.mSuffix.mVertex.IsFinite())) {

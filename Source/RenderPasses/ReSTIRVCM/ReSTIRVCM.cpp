@@ -301,40 +301,42 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
 
             if (!mVarsChanged)
             {
-                // shift samples to last frame
+                if (!mSkipReuse) {
+                    // shift samples to last frame
+                    if (mStaticParams.unbiasedTemporalReuse) {
+                        FALCOR_ASSERT(mpTemporalShiftPass);
+                        ref<Program> program = mpTemporalShiftPass->getProgram();
+                        FALCOR_ASSERT(program);
+                        auto var = mpTemporalShiftPass->getRootVar();
+                        mpPixelDebug->prepareProgram(program, var);
+                        var["CB"]["gSwapReservoirs"] = uint(mSwapReservoirs ? 1u : 0u);
+                        mpTemporalShiftPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+                    }
 
-                if (mStaticParams.unbiasedTemporalReuse) {
-                    FALCOR_ASSERT(mpTemporalShiftPass);
-                    ref<Program> program = mpTemporalShiftPass->getProgram();
-                    FALCOR_ASSERT(program);
-                    auto var = mpTemporalShiftPass->getRootVar();
-                    mpPixelDebug->prepareProgram(program, var);
-                    var["CB"]["gSwapReservoirs"] = uint(mSwapReservoirs ? 1u : 0u);
-                    mpTemporalShiftPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+                    // caustic shift
+
+                    if (mStaticParams.useBPT && (mStaticParams.useCausticReservoirs || mStaticParams.useCausticMotionVectors))
+                    {
+                        FALCOR_PROFILE(pRenderContext, "Caustic shift");
+
+                        if (mStaticParams.useCausticMotionVectors)
+                            pRenderContext->clearUAV(mpCausticMotionVectorMutex->getUAV().get(), uint4(0));
+
+                        mpShiftCausticsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+
+                        if (mStaticParams.useCausticReservoirs)
+                            mpCausticReservoirMap->sort(pRenderContext);
+                    }
+
+                    // reuse pass
+
+                    mpTemporalReusePass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
+                    mpTemporalReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
+                    mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
                 }
-
-                // caustic shift
-
-                if (mStaticParams.useBPT && (mStaticParams.useCausticReservoirs || mStaticParams.useCausticMotionVectors))
-                {
-                    FALCOR_PROFILE(pRenderContext, "Caustic shift");
-
-                    if (mStaticParams.useCausticMotionVectors)
-                        pRenderContext->clearUAV(mpCausticMotionVectorMutex->getUAV().get(), uint4(0));
-
-                    mpShiftCausticsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
-
-                    if (mStaticParams.useCausticReservoirs)
-                        mpCausticReservoirMap->sort(pRenderContext);
-                }
-
-                // reuse pass
-
-                mpTemporalReusePass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
-                mpTemporalReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
-                mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
             }
             mCurrentSeed++;
+            mSkipReuse = false;
         }
 
         mSwapReservoirs = !mSwapReservoirs; // swap input and output reservoirs for the next pass
@@ -657,7 +659,10 @@ bool ReSTIRVCM::onKeyEvent(const KeyboardEvent& keyEvent)
             break;
         case Input::Key::Left:
             if (mPauseRendering) {
-                mFrameCount--;
+                if (mFrameCount > 0)
+                    mFrameCount--;
+                else
+                    mSkipReuse = true;
                 mRenderOnce = true;
                 mKeepFrameIndex = true;
                 return true;
@@ -837,10 +842,10 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
 
     if (mStaticParams.useResampling)
     {
-        if (!mpReservoirs0 || mpReservoirs0->getElementCount() != screenPixelCount)
+        if (!mpReservoirs[0] || mpReservoirs[0]->getElementCount() != screenPixelCount)
         {
-            mpReservoirs0    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs0"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-            mpReservoirs1    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs1"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpReservoirs[0]    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs0"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpReservoirs[1]    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs1"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mpLastReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLastReservoirs"] , screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
@@ -901,7 +906,7 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
     {
         if (!mpLightVertices || mpLightVertices->getElementCount() != maxLightVertices || mVarsChanged)
         {
-            mpLightVertices    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightVertexCache"]["lightVertices"], maxLightVertices, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+            mpLightVertices = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightVertexCache"]["lightVertices"], maxLightVertices, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
             mpLightVertexCount = mpDevice->createBuffer(sizeof(uint32_t)*2, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
@@ -1075,8 +1080,8 @@ void ReSTIRVCM::bindShaderData(const ShaderVar& var, const RenderData& renderDat
 
         var["mOutputCounterData"] = mpPixelCounterData;
 
-        var["mPathReservoirs0"] = mpReservoirs0;
-        var["mPathReservoirs1"] = mpReservoirs1;
+        var["mPathReservoirs0"] = mpReservoirs[0];
+        var["mPathReservoirs1"] = mpReservoirs[1];
         var["mLastReservoirs"]  = mpLastReservoirs;
         var["mCausticReservoirs"] = mpCausticReservoirs;
         var["mLastCausticReservoirs"] = mpLastCausticReservoirs;
@@ -1270,7 +1275,7 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
             mpTemporalShiftPass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
         }
 
-        pRenderContext->copyResource(mpLastReservoirs.get(), mSwapReservoirs ? mpReservoirs1.get() : mpReservoirs0.get());
+        pRenderContext->copyResource(mpLastReservoirs.get(), mSwapReservoirs ? mpReservoirs[1].get() : mpReservoirs[0].get());
 
         if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs)
             pRenderContext->copyResource(mpLastCausticReservoirs.get(), mpCausticReservoirs.get());

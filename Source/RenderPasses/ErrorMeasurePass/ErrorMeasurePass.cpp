@@ -199,6 +199,7 @@ void ErrorMeasurePass::runDifferencePass(RenderContext* pRenderContext, const Re
     var[kConstantBufferName]["gIgnoreBackground"] = (uint32_t)(mIgnoreBackground && pWorldPositionTexture);
     var[kConstantBufferName]["gComputeDiffSqr"] = (uint32_t)mComputeSquaredDifference;
     var[kConstantBufferName]["gComputeAverage"] = (uint32_t)mComputeAverage;
+    var[kConstantBufferName]["gComputePercentage"] = (uint32_t)mComputePercentage;
 
     // Run the compute shader.
     mpErrorMeasurerPass->execute(pRenderContext, resolution.x, resolution.y);
@@ -291,6 +292,9 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
         "The average is computed after squaring the differences when L2 error is selected."
     );
 
+    widget.checkbox("Compute percentage", mComputePercentage);
+    widget.tooltip("When enabled, the error is divided by the reference value.");
+
     widget.checkbox("Use loaded reference image", mUseLoadedReference);
     widget.tooltip(
         "Take the reference from the loaded image instead or the input channel.\n\n"
@@ -325,9 +329,17 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
         // Use stream so we can control formatting.
         std::ostringstream oss;
         oss << std::scientific;
-        oss << (mComputeSquaredDifference ? "MSE (avg): " : "L1 error (avg): ")
+
+        const char* label = "MSE";
+        if (mComputeSquaredDifference) {
+            label = mComputePercentage ? "MSAPE" : "MSE";
+        } else {
+            label = mComputePercentage ? "MAPE" : "L1 error";
+        }
+
+        oss << label << " (avg): "
             << (mReportRunningError ? mRunningAvgError : mMeasurements.avgError) << std::endl;
-        oss << (mComputeSquaredDifference ? "MSE (rgb): " : "L1 error (rgb): ")
+        oss << label << " (rgb): "
             << (mReportRunningError ? mRunningError.r : mMeasurements.error.r) << ", "
             << (mReportRunningError ? mRunningError.g : mMeasurements.error.g) << ", "
             << (mReportRunningError ? mRunningError.b : mMeasurements.error.b);

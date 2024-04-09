@@ -36,6 +36,7 @@ cbuffer PerFrameCB
     uint gIgnoreBackground;
     uint gComputeDiffSqr;
     uint gComputeAverage;
+    uint gComputePercentage;
 };
 
 [numthreads(16, 16, 1)]
@@ -51,12 +52,23 @@ void main(uint3 DTid: SV_DispatchThreadID)
 
     const bool isPixelValid = !gIgnoreBackground || isForeground;
 
+    float3 src = float3(0.0f);
+    float3 ref = float3(0.0f);
+    float3 diff = float3(0.0f);
+    if (isPixelValid) {
+        src = gSource[pixel].rgb;
+        ref = gReference[pixel].rgb;
+        diff = abs(src - ref);
+    }
+
     // Compute error based on the current options.
-    float3 diff = isPixelValid ? abs(gSource[pixel].rgb - gReference[pixel].rgb) : float3(0.0f);
-    if (gComputeDiffSqr)
-        diff *= diff;
-    if (gComputeAverage)
-        diff.rgb = (diff.r + diff.g + diff.b) / 3.f;
+    if (gComputePercentage != 0) {
+        if (ref.r > 0) diff.r /= ref.r;
+        if (ref.g > 0) diff.g /= ref.g;
+        if (ref.b > 0) diff.b /= ref.b;
+    }
+    if (gComputeDiffSqr != 0) diff *= diff;
+    if (gComputeAverage != 0) diff.rgb = (diff.r + diff.g + diff.b) / 3.f;
 
     gResult[pixel] = float4(diff, 0.0f);
 }

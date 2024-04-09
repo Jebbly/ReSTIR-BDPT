@@ -16,6 +16,9 @@ def render_graph_PathTracer():
     AccumulatePass = createPass("AccumulatePass", {'enabled': False, 'precisionMode': 'Single'})
     g.addPass(AccumulatePass, "AccumulatePass")
 
+    ErrorMeasurePass = createPass("ErrorMeasurePass")
+    g.addPass(ErrorMeasurePass, "ErrorMeasurePass")
+
     ToneMapper = createPass("ToneMapper", {'autoExposure': False, 'exposureCompensation': 0.0})
     g.addPass(ToneMapper, "ToneMapper")
 
@@ -24,8 +27,9 @@ def render_graph_PathTracer():
     g.addEdge("VBufferRT.mvec",       "ReSTIRVCM.mvec")
     g.addEdge("ReSTIRVCM.color",      "AccumulatePass.input")
     g.addEdge("AccumulatePass.output", "ToneMapper.src")
-    g.markOutput("ToneMapper.dst")
+    g.addEdge("ToneMapper.dst", "ErrorMeasurePass.Source")
 
+    g.markOutput("ErrorMeasurePass.Output")
     return g
 
 PathTracer = render_graph_PathTracer()

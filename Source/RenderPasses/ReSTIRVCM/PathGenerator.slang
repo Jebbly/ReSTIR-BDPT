@@ -516,13 +516,15 @@ extension PathGenerator {
                     if (cosIn > kMinCosTheta) {
                         const TriangleHit triHit = hit.getTriangleHit();
                         const uint triangleIndex = gScene.lightCollection.getTriangleIndex(triHit.instanceID, triHit.primitiveIndex);
-                        directPdfA = 1.f / gScene.lightCollection.getTriangle(triangleIndex).area;
-                        directPdfA *= mEmissiveSampler.evalTriangleSelectionPdf(prevPos, prevNormal, upperOnly, triangleIndex);
+                        if (triangleIndex != LightCollection::kInvalidIndex) {
+                            directPdfA = 1.f / gScene.lightCollection.getTriangle(triangleIndex).area;
+                            directPdfA *= mEmissiveSampler.evalTriangleSelectionPdf(prevPos, prevNormal, upperOnly, triangleIndex);
 
-                        if (gUseEnvLight) directPdfA *= 1 - mParams.mEnvMapProb;
+                            if (gUseEnvLight) directPdfA *= 1 - mParams.mEnvMapProb;
 
-                        emissionPdfW = directPdfA * CosHemispherePdfW(cosIn);
-                        directPdfW   = directPdfA * sqr(vertex.mVertex.mRayDistance) / cosIn;
+                            emissionPdfW = directPdfA * CosHemispherePdfW(cosIn);
+                            directPdfW   = directPdfA * sqr(vertex.mVertex.mRayDistance) / cosIn;
+                        }
                     }
                 }
             }
@@ -661,6 +663,80 @@ extension RecursiveMisState {
     }
 }
 
+extension ReconnectionMisState {
+    property float sumProd_eta { get { return 0; } }
+
+    [mutating]
+    void Update(const RecursiveMisState mis, float pdfFwd, float pdfRev, float cosIn, float cosOut, float dist, uint idx) {
+        bool isDelta = mis.dVCM == 0;
+        if (idx == 0) {
+            invFwdG_r = (dist*dist) / cosIn;
+            sumProd_dVCM = 0;
+            prod_dVCM    = 0;
+            //sumProd_eta  = 0;
+            last_invPdf  = 1;
+            prod_ratio = gPathGenerator.Mis(cosOut / cosIn);
+        }
+        if (idx == 1)
+            prod_dVCM = isDelta ? 0 : 1;
+
+        // update sum products
+
+        if (idx > 1) {
+            float r = gPathGenerator.Mis(pdfRev * last_invPdf);
+            prod_ratio *= gPathGenerator.Mis(last_invPdf);
+            prod_dVCM  *= r;
+            //sumProd_eta  *= r;
+            sumProd_dVCM *= r;
+            if (!isDelta) {
+                //sumProd_eta  += r;
+                sumProd_dVCM += end_dVCM;
+            }
+        }
+        if (idx > 0) {
+            if (!isDelta)
+                prod_ratio *= gPathGenerator.Mis(pdfRev);
+        }
+
+        // update last_invPdf for next bounce
+
+        float r = cosOut / cosIn;
+        if (pdfFwd > 0)
+            r /= pdfFwd;
+        if (idx > 0) {
+            last_invPdf = r;
+        }
+
+        end_coeff = gPathGenerator.Mis(r);
+        end_dVCM = mis.dVCM;
+    }
+
+    void Apply(inout RecursiveMisState mis_r, float pdfFwd_r, float pdfRev_r, uint N) {
+        float invPdf = 1 / pdfFwd_r;
+        float ratio_r = gPathGenerator.Mis(invPdf) * prod_ratio;
+
+        if (N == 0) {
+            // vertex after rcv is last vertex
+            mis_r.dVC = ratio_r * (
+                gPathGenerator.GetMisVmWeightFactor()
+                +
+                mis_r.dVCM
+                +
+                mis_r.dVC * gPathGenerator.Mis(pdfRev_r));
+            mis_r.dVCM = gPathGenerator.Mis(invPdf * invFwdG_r);
+        } else {
+            mis_r.dVC = end_coeff * (
+                gPathGenerator.GetMisVmWeightFactor() * (1 + ratio_r + sumProd_eta)
+                +
+                mis_r.dVCM * ratio_r + gPathGenerator.Mis(invPdf * invFwdG_r) * prod_dVCM + sumProd_dVCM
+                +
+                mis_r.dVC * ratio_r * gPathGenerator.Mis(pdfRev_r));
+
+            mis_r.dVCM = end_dVCM;
+        }
+    }
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////// Path tracing implementation ///////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -693,6 +769,7 @@ extension PathGenerator {
         CachedVertexData lastVertex = {};
 
         RecursiveMisState mis = {};
+        ReconnectionMisState rcvMis = {};
 
         PackedPathVertex rcv = {};
         float3 throughputAtRcv = 0;
@@ -895,6 +972,14 @@ extension PathGenerator {
 
         // compute mis weight
         const float misWeight = s.mis.EvalDirectLightMIS(directPdfW, emissionPdfW, f, cosOut, cosLight);
+        MisEvalData misEvalArgs = {};
+        misEvalArgs.reconnectionMis = s.rcvMis;
+        misEvalArgs.directPdfW = directPdfW;
+        misEvalArgs.emissionPdfW = emissionPdfW;
+        misEvalArgs.cameraScatterFwdPdfW = f.mFwdPdfW;
+        misEvalArgs.cameraScatterRevPdfW = f.mRevPdfW;
+        misEvalArgs.cosCam = cosOut;
+        misEvalArgs.cosLight = cosLight;
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -935,8 +1020,8 @@ extension PathGenerator {
             suffixDir,
             hasRcv ? s.rcvDist : l.mRayDistance,
             hasRcv ? s.rcvCos : cosLight,
-            lightSubpath,
-            {},
+            misEvalArgs,
+            lightSubpath
         );
 
         result = PathSample::Create(
@@ -948,7 +1033,8 @@ extension PathGenerator {
             hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
             s.id,
             suffix,
-            PathFlags::eNone);
+            PathFlags::eNone
+        );
 
         return result;
     }
@@ -1030,6 +1116,16 @@ extension PathGenerator {
         integrationWeight = (cosLight * invDist2) / (s.pdfW * v.mLightSubpath.mPdf);
 
         const float misWeight = s.mis.EvalVertexConnectionMIS(v.mis, r, f, cosCam, cosLight, invDist2);
+        MisEvalData misEvalArgs = {};
+        misEvalArgs.reconnectionMis = s.rcvMis;
+        misEvalArgs.lightSubpathMis = v.mis;
+        misEvalArgs.lightScatterFwdPdfW = r.mFwdPdfW;
+        misEvalArgs.lightScatterRevPdfW = r.mRevPdfW;
+        misEvalArgs.cameraScatterFwdPdfW = f.mFwdPdfW;
+        misEvalArgs.cameraScatterRevPdfW = f.mRevPdfW;
+        misEvalArgs.cosCam = cosCam;
+        misEvalArgs.cosLight = cosLight;
+        misEvalArgs.invDist2 = invDist2;
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -1061,8 +1157,8 @@ extension PathGenerator {
             suffixDir,
             hasRcv ? s.rcvDist : dist,
             hasRcv ? s.rcvCos : cosLight,
-            v.mLightSubpath,
-            v.mis
+            misEvalArgs,
+            v.mLightSubpath
         );
 
         result = PathSample::Create(
@@ -1113,6 +1209,11 @@ extension PathGenerator {
         integrationWeight = 1 / (s.pdfW * v.mLightSubpath.mPdf * (sqr(mergeRadius) * M_PI * mParams.mLightSubpathCount));
 
         const float misWeight = s.mis.EvalVertexMergingMIS(v.mis, f);
+        MisEvalData misEvalArgs = {};
+        misEvalArgs.reconnectionMis = s.rcvMis;
+        misEvalArgs.lightSubpathMis = v.mis;
+        misEvalArgs.cameraScatterFwdPdfW = f.mFwdPdfW;
+        misEvalArgs.cameraScatterRevPdfW = f.mRevPdfW;
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -1143,8 +1244,8 @@ extension PathGenerator {
             suffixDir,
             hasRcv ? s.rcvDist : 0,
             hasRcv ? s.rcvCos  : 0,
-            v.mLightSubpath,
-            v.mis
+            misEvalArgs,
+            v.mLightSubpath
         );
 
         result = PathSample::Create(
@@ -1209,6 +1310,9 @@ extension PathGenerator {
         integrationWeight = 1.f / samplePdf;
 
         const float misWeight = s.mis.EvalLightTraceMIS(f.mRevPdfW, cameraPdfA);
+        MisEvalData misEvalArgs = {};
+        misEvalArgs.reconnectionMis = s.rcvMis;
+        misEvalArgs.lightSubpathMis = s.deltaRcv ? s.mis : s.lastVertex.mis;
 
         PathSuffix suffix = {};
         if (s.deltaRcv) {
@@ -1220,6 +1324,7 @@ extension PathGenerator {
                 vertex.GetDirIn(),
                 dist,
                 cosIn,
+                misEvalArgs,
                 LightSubpathData::Create(
                     s.lightSubpathVertex,
                     s.id,
@@ -1227,7 +1332,6 @@ extension PathGenerator {
                     s.diffuseBounces + 1,
                     s.pdfW
                 ),
-                s.mis
             );
         } else {
             suffix = PathSuffix::Create(
@@ -1237,14 +1341,14 @@ extension PathGenerator {
                 s.rcvDirOut,
                 s.rcvDist,
                 s.rcvCos,
+                misEvalArgs,
                 LightSubpathData::Create(
                     s.lightSubpathVertex,
                     s.id,
                     s.bounces + 1,
                     s.diffuseBounces + 1,
                     s.pdfAtRcv
-                ),
-                s.lastVertex.mis,
+                )
             );
         }
 
@@ -1285,6 +1389,12 @@ extension PathGenerator {
         integrationWeight = 1 / s.pdfW;
 
         float misWeight = s.mis.EvalCameraTraceMIS(s.lastVertex.scatterFwdPdfW, directPdfA, directPdfW, emissionPdfW);
+        MisEvalData misEvalArgs = {};
+        misEvalArgs.reconnectionMis = s.rcvMis;
+        misEvalArgs.cameraScatterFwdPdfW = s.lastVertex.scatterFwdPdfW;
+        misEvalArgs.directPdfA = directPdfA;
+        misEvalArgs.directPdfW = directPdfW;
+        misEvalArgs.emissionPdfW = emissionPdfW;
 
         PathSuffix suffix = {};
         const bool hasRcv = s.rcvFound;
@@ -1303,15 +1413,20 @@ extension PathGenerator {
             }
 
             suffix = PathSuffix::Create(
-                            suffixContrib,
-                            suffixPdf,
-                            s.rcv,
-                            s.rcvDirOut,
-                            s.rcvDist,
-                            s.rcvCos,
-                            {},
-                            {}
-                        );
+                suffixContrib,
+                suffixPdf,
+                s.rcv,
+                s.rcvDirOut,
+                s.rcvDist,
+                s.rcvCos,
+                misEvalArgs,
+                LightSubpathData::Create(
+                    {},
+                    {},
+                    0,
+                    0,
+                    0
+                ) );
         }
 
         result = PathSample::Create(
@@ -1490,11 +1605,13 @@ extension PathGenerator {
         if (gDisableEarlyReconnection)
             return;
 
+        float cosIn = vertex.HasFaceNormal() ? abs(dot(vertex.GetDirIn(), vertex.GetFaceNormal())) : 1;
+
         // set vertex as rcv if one hasn't been found yet.
         if (!s.rcvFound && connectable) {
             s.rcv = vertex.Pack();
             if (!vertex.IsFinite()) s.rcv.mRayDistance = FLT_MAX;
-            s.rcvCos = vertex.HasFaceNormal() ? abs(dot(vertex.GetDirIn(), vertex.GetFaceNormal())) : 1;
+            s.rcvCos = cosIn;
             s.rcvDist = s.rcv.mRayDistance;
             s.prefixBounces = s.bounces - 1;
             s.rcvDiffuseBounces = s.diffuseBounces - 1;
@@ -1507,6 +1624,14 @@ extension PathGenerator {
             s.rcvDirOut = vertex.mVertex.mRayDirection;
             s.throughputAtRcv = s.throughput;
             s.pdfAtRcv = s.pdfW;
+        }
+
+        if (s.rcvFound && s.bounces > s.prefixBounces) {
+            const float cosOut = s.lastVertex.HasNormal() ? abs(dot(s.lastVertex.normal, vertex.GetDirIn())) : 1;
+            s.rcvMis.Update( s.mis,
+                s.lastVertex.scatterFwdPdfW, s.lastVertex.scatterRevPdfW,
+                cosIn, cosOut, vertex.mVertex.mRayDistance,
+                s.bounces - (s.prefixBounces + 1) );
         }
     }
     // Sample the BSDF and trace a ray to find the next vertex. Returns a valid sample if the next vertex is emissive.
@@ -1543,7 +1668,7 @@ extension PathGenerator {
 
         const float cosOut = vertex.GetCosN(r.mDirection);
 
-        if (cosOut < kMinCosTheta || all(s.throughput <= 0) || any(s.throughput != s.throughput)) {
+        if (cosOut < kMinCosTheta || !any(s.throughput > 0) || any(s.throughput != s.throughput) || !(s.pdfW > 0)) {
             s.Terminate();
             return 0;
         }
@@ -1594,7 +1719,7 @@ extension PathGenerator {
         // sample direction to advance sample generator
         vertex.SampleDirection(s.sgBsdf, s.isLightPath);
 
-        const float3 dir = normalize(nextVertex.GetPosition() - vertex.GetPosition());
+        const float3 dir = nextVertex.IsFinite() ? normalize(nextVertex.GetPosition() - vertex.GetPosition()) : nextVertex.mVertex.mRayDirection;
 
         const float cosOut = vertex.GetCosN(dir);
         if (cosOut < kMinCosTheta) {

@@ -113,6 +113,7 @@ private:
     bool                            mSwapReservoirs = false;
     bool                            mUsePerFrameSeed = false;
     uint                            mCurrentSeed = 0;
+    bool                            mSkipReuse = false;
 
     // Internal state
     ref<Scene>                      mpScene;                     ///< The current scene, or nullptr if no scene loaded.
@@ -143,8 +144,7 @@ private:
     ref<Buffer>                     mpLightVertexCount;          ///< Light vertex counter.
     ref<Buffer>                     mpPhotonCellSizes;           ///< Photon grid cell sizes.
     ref<Buffer>                     mpPhotonCellOffsets;         ///< Photon grid cell offsets.
-    ref<Buffer>                     mpReservoirs0;               ///< Per-pixel reservoirs.
-    ref<Buffer>                     mpReservoirs1;               ///< Per-pixel reservoirs.
+    ref<Buffer>                     mpReservoirs[2];             ///< Per-pixel reservoirs.
     ref<Buffer>                     mpLastReservoirs;            ///< Per-pixel reservoirs.
     ref<Buffer>                     mpCausticReservoirs;         ///< Per-pixel reservoirs.
     ref<Buffer>                     mpLastCausticReservoirs;     ///< Per-pixel reservoirs.

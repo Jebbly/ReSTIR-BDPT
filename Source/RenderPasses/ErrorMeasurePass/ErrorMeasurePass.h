@@ -108,6 +108,8 @@ private:
     bool mComputeSquaredDifference = true;
     /// Compute the average of the RGB components when creating the difference image.
     bool mComputeAverage = false;
+    /// Comptue the percentange error.
+    bool mComputePercentage = false;
     /// If true, use loaded reference image instead of input.
     bool mUseLoadedReference = false;
     /// Use exponetial moving average (EMA) for the computed error.
