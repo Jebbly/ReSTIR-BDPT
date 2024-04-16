@@ -78,13 +78,14 @@ private:
         bool        useResampling = true;
         bool        useMisInIntegrand = true;
         bool        shiftLightPathsToPixelCenters = true;
-        bool        useCausticReservoirs = true;
+        bool        useCausticReservoirs = false;
         bool        useCausticMotionVectors = false;
         bool        useTemporalReuse = true;
         bool        unbiasedTemporalReuse = false;
         bool        shiftSuffixes = true;
         bool        shiftSuffixesSpatial = false;
         uint        spatialReusePasses = 1;
+        bool        disableLVC = false;
 
         RMISType spatialRMIS = RMISType::ePairwise;
 

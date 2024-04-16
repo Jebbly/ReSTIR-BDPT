@@ -28,6 +28,7 @@
 #include "ErrorMeasurePass.h"
 #include "Core/AssetResolver.h"
 #include <sstream>
+#include <imgui.h>
 
 namespace
 {
@@ -66,6 +67,11 @@ const Gui::RadioButtonGroup ErrorMeasurePass::sOutputSelectionButtons = {
 
 const Gui::RadioButtonGroup ErrorMeasurePass::sOutputSelectionButtonsSourceOnly = {{(uint32_t)OutputId::Source, "Source", true}};
 
+const Gui::RadioButtonGroup ErrorMeasurePass::sGraphModeSelectionButtons = {
+    {(uint32_t)GraphAxisScale::Linear,    "Linear",     false},
+    {(uint32_t)GraphAxisScale::LogLinear, "Log-Linear", true},
+    {(uint32_t)GraphAxisScale::LogLog,    "Log-Log",    true}};
+
 ErrorMeasurePass::ErrorMeasurePass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
 {
     for (const auto& [key, value] : props)
@@ -100,6 +106,8 @@ ErrorMeasurePass::ErrorMeasurePass(ref<Device> pDevice, const Properties& props)
 
     mpParallelReduction = std::make_unique<ParallelReduction>(mpDevice);
     mpErrorMeasurerPass = ComputePass::create(mpDevice, kErrorComputationShaderFile);
+
+    mMeasurementHistory.reserve(mMeasurementHistoryLength);
 }
 
 Properties ErrorMeasurePass::getProperties() const
@@ -132,26 +140,6 @@ void ErrorMeasurePass::execute(RenderContext* pRenderContext, const RenderData& 
 {
     ref<Texture> pSourceImageTexture = renderData.getTexture(kInputChannelSourceImage);
     ref<Texture> pOutputImageTexture = renderData.getTexture(kOutputChannelImage);
-
-    // Create the texture for the difference image if this is our first
-    // time through or if the source image resolution has changed.
-    const uint32_t width = pSourceImageTexture->getWidth(), height = pSourceImageTexture->getHeight();
-    if (!mpDifferenceTexture || mpDifferenceTexture->getWidth() != width || mpDifferenceTexture->getHeight() != height)
-    {
-        mpDifferenceTexture = mpDevice->createTexture2D(
-            width,
-            height,
-            ResourceFormat::RGBA32Float,
-            1,
-            1,
-            nullptr,
-            ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
-        );
-        FALCOR_ASSERT(mpDifferenceTexture);
-    }
-
-    mMeasurements.valid = false;
-
     ref<Texture> pReference = getReference(renderData);
     if (!pReference)
     {
@@ -160,8 +148,31 @@ void ErrorMeasurePass::execute(RenderContext* pRenderContext, const RenderData& 
         return;
     }
 
-    runDifferencePass(pRenderContext, renderData);
-    runReductionPasses(pRenderContext, renderData);
+    if (mEnabled) {
+        // Create the texture for the difference image if this is our first
+        // time through or if the source image resolution has changed.
+        const uint32_t width = pSourceImageTexture->getWidth(), height = pSourceImageTexture->getHeight();
+        if (!mpDifferenceTexture || mpDifferenceTexture->getWidth() != width || mpDifferenceTexture->getHeight() != height)
+        {
+            mpDifferenceTexture = mpDevice->createTexture2D(
+                width,
+                height,
+                ResourceFormat::RGBA32Float,
+                1,
+                1,
+                nullptr,
+                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
+            );
+            FALCOR_ASSERT(mpDifferenceTexture);
+        }
+
+        mMeasurements.valid = false;
+
+        runDifferencePass(pRenderContext, renderData);
+        runReductionPasses(pRenderContext, renderData);
+
+        saveMeasurementsToFile();
+    }
 
     switch (mSelectedOutputId)
     {
@@ -177,8 +188,6 @@ void ErrorMeasurePass::execute(RenderContext* pRenderContext, const RenderData& 
     default:
         FALCOR_THROW("ErrorMeasurePass: Unhandled OutputId case");
     }
-
-    saveMeasurementsToFile();
 }
 
 void ErrorMeasurePass::runDifferencePass(RenderContext* pRenderContext, const RenderData& renderData)
@@ -226,10 +235,22 @@ void ErrorMeasurePass::runReductionPasses(RenderContext* pRenderContext, const R
         mRunningError = mRunningErrorSigma * mRunningError + (1 - mRunningErrorSigma) * mMeasurements.error;
         mRunningAvgError = mRunningErrorSigma * mRunningAvgError + (1 - mRunningErrorSigma) * mMeasurements.avgError;
     }
+
+    if (mMeasurementHistory.size() == mMeasurementHistoryLength) {
+        for (size_t i = 0; i < mMeasurementHistory.size() - 1; i++)
+            mMeasurementHistory[i] = mMeasurementHistory[i+1];
+        mMeasurementHistory.back() = mMeasurements.avgError;
+    } else
+        mMeasurementHistory.emplace_back(mMeasurements.avgError);
+    mMaxMeasurement = std::max(mMaxMeasurement, mMeasurements.avgError);
+    mMinMeasurement = std::min(mMinMeasurement, mMeasurements.avgError);
 }
 
 void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
 {
+    widget.checkbox("Enabled", mEnabled);
+    if (!mEnabled) return;
+
     const auto getFilename = [](const std::filesystem::path& path) { return path.empty() ? "N/A" : path.filename().string(); };
 
     // Create a button for loading the reference image.
@@ -348,6 +369,67 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
     else
     {
         widget.text("Error: N/A");
+        widget.text("Error delta: N/A");
+    }
+
+    if (widget.var("History length", mMeasurementHistoryLength, size_t(100), size_t(100000))) {
+        if (mMeasurementHistoryLength > mMeasurementHistory.size())
+            mMeasurementHistory.reserve(mMeasurementHistoryLength);
+        else
+            mMeasurementHistory.resize(mMeasurementHistoryLength);
+    }
+
+    widget.radioButtons(sGraphModeSelectionButtons, reinterpret_cast<uint32_t&>(mGraphScaleMode));
+
+    if (widget.button("Reset")) {
+        mMeasurementHistory.clear();
+        mMaxMeasurement = 0;
+        mMinMeasurement = FLT_MAX;
+    }
+    if (mMeasurementHistory.size() > 1 && mMaxMeasurement > 0) {
+        ImVec2 frame_size = { ImGui::GetWindowContentRegionWidth(), ImGui::GetTextLineHeight()*6 };
+
+        ImGuiStyle& style = ImGui::GetStyle();
+
+        ImVec2 windowCursor = ImGui::GetCursorScreenPos();
+        ImVec2 graphMin { windowCursor.x + style.FramePadding.x, windowCursor.y + style.FramePadding.y};
+        ImVec2 graphMax { windowCursor.x + frame_size.x - style.FramePadding.x, windowCursor.y + frame_size.y - style.FramePadding.y};
+
+        ImGui::Dummy(frame_size);
+
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        drawList->AddRectFilled(graphMin, graphMax, ImGui::GetColorU32(ImGuiCol_FrameBg), style.FrameRounding, 0);
+        drawList->PathClear();
+
+        ImVec2 mousePos = ImGui::GetIO().MousePos;
+
+        const ImU32 lineColor = ImGui::GetColorU32(ImGuiCol_PlotLines);
+
+        for (int i = 0; i < mMeasurementHistory.size(); i++)
+        {
+            ImVec2 p = { i+1.f, mMeasurementHistory[i] };
+
+            // scale x axis
+            if (mGraphScaleMode == GraphAxisScale::LogLog) {
+                p.x = std::log10(p.x) / std::log10(mMeasurementHistory.size());
+            } else {
+                p.x = (p.x - 1) / mMeasurementHistory.size();
+            }
+
+            // scale y axis
+            if (mGraphScaleMode == GraphAxisScale::LogLog || mGraphScaleMode == GraphAxisScale::LogLinear) {
+                p.y = (std::log10(p.y) - std::log10(mMinMeasurement)) / (std::log10(mMaxMeasurement) - std::log10(mMinMeasurement));
+            } else {
+                p.y = (p.y - mMinMeasurement) / (mMaxMeasurement - mMinMeasurement);
+            }
+
+            drawList->PathLineTo({
+                graphMin.x + (graphMax.x - graphMin.x) * p.x,
+                graphMin.y + (graphMax.y - graphMin.y) * (1 - p.y) // invert y since screen coordinates are y-down
+            });
+        }
+
+        drawList->PathStroke(lineColor, 0, 2.5f);
     }
 }
 

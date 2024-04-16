@@ -42,6 +42,7 @@ extension PathGenerator {
     static const float gMISPowerExponent              = MIS_POWER_EXPONENT;
     static const bool  gDisableCameraConnection       = DISABLE_CAMERA_CONNECTION;
     static const bool  gDisableEarlyReconnection      = DISABLE_EARLY_RECONNECTION;
+    static const bool  gDisableLVC                    = DISABLE_LVC;
 }
 
 struct PathGenerator {
@@ -173,10 +174,10 @@ struct PathVertex {
 
     float3 GetEmission() {
         if (IsFinite()) {
-            if (dot(mShadingData.faceN, mVertex.mRayDirection) > 0) {
-                return 0; // triangle lights are one-sided
-            } else {
+            if (mShadingData.frontFacing) {
                 return mMaterial.getProperties(mShadingData).emission;
+            } else {
+                return 0;
             }
         } else {
             return gScene.envMap.eval(mVertex.mRayDirection, 0);
@@ -264,19 +265,21 @@ struct PathVertex {
         r.mLobeType = s.lobeType;
         if (adjoint) r.mReflectance *= GetAdjointCorrection(r.mDirection, s.isLobe(LobeType::DeltaTransmission) || s.isLobe(LobeType::SpecularTransmission));
 
-        // cancel divide by pdf performed by material sampling.
-        // TODO: modify the material sampling code to return the unweighted BSDF
-        if (s.pdf > 0) r.mReflectance *= s.pdf;
-        //r.mReflectance = EvaluateReflectance(sg, r.mDirection, adjoint).mReflectance;
-
         r.mFwdPdfW = s.pdf;
 
+        // cancel divide by pdf performed by material sampling.
+        if (s.pdf > 0) r.mReflectance *= s.pdf;
+
         if (r.IsLobe(LobeType::Delta)) {
-            // Reverse pdf cannot be evaluated, use forward pdf instead, as they should be the same.
+            // rev  pdf should be the same as the fwdf pdf for delta lobes
             r.mRevPdfW = r.mFwdPdfW;
         } else {
             const PathVertex revVertex = Reversed(r.mDirection);
             r.mRevPdfW = revVertex.mMaterial.evalPdf(revVertex.mShadingData, GetDirIn(), gPathGenerator.gUseBsdfImportanceSampling);
+
+            // get unweighted BSDF
+            // TODO: modify the material sampling code to return the unweighted BSDF
+            r.mReflectance = EvaluateReflectance(sg, r.mDirection, adjoint).mReflectance;
         }
 
         const float contProb = GetContinuationProbability();
@@ -750,7 +753,16 @@ extension PathGenerator {
         float3            normal         = 0;
         float             scatterRevPdfW = 0;
         RecursiveMisState mis = {};
-        bool              upperHemisphereOnly = true;
+        uint              flags = 0;
+
+        property bool upperHemisphereOnly {
+            get { return (bool)BF_GET(flags, 0, 1); }
+            set { BF_SET(flags, (uint)newValue, 0, 1); }
+        }
+        property bool connectable {
+            get { return (bool)BF_GET(flags, 1, 1); }
+            set { BF_SET(flags, (uint)newValue, 1, 1); }
+        }
 
         bool HasNormal() { return all(normal != 0); }
     };
@@ -855,8 +867,10 @@ extension PathGenerator {
 
         PathSample result = {};
 
-        if (DebugDisablePath(s.bounces + 1, 1))
+        if (DebugDisablePath(s.bounces + 1, 1)) {
+            if (bShift) print("Shift failed: disabled", 0);
             return result;
+        }
 
         // Sample emissive path vertex
 
@@ -875,14 +889,18 @@ extension PathGenerator {
 
             if (gUseEnvLight && (!gUseEmissiveLights || useEnvMap)) {
                 EnvMapSample envSample;
-                if (!mEnvMapSampler.sample(uv, envSample))
+                if (!mEnvMapSampler.sample(uv, envSample)) {
+                    if (bShift) print("Shift failed: invalid sample", 0);
                     return result;
+                }
 
                 if (gUseEmissiveLights) envSample.pdf *= mParams.mEnvMapProb;
 
                 le = envSample.Le;
-                if (!any(le > 0))
+                if (!any(le > 0)) {
+                    if (bShift) print("Shift failed: zero le", 0);
                     return result;
+                }
 
                 l = PackedPathVertex(Ray(vertex.ComputeRayOrigin(envSample.dir), envSample.dir), HitInfo(0), FLT_MAX);
 
@@ -907,16 +925,20 @@ extension PathGenerator {
                     barycentrics = sample_triangle(uv);
                 }
 
-                if (triangleIndex == LightCollection::kInvalidIndex)
+                if (triangleIndex == LightCollection::kInvalidIndex) {
+                    if (bShift) print("Shift failed: invalid triangle", triangleIndex);
                     return result;
+                }
 
                 if (gUseEnvLight) selectionPdf *= 1 - mParams.mEnvMapProb;
 
                 let tri = gScene.lightCollection.getTriangle(triangleIndex);
 
                 le = gScene.materials.evalEmissive(tri.materialID, tri.getTexCoord(barycentrics));
-                if (!any(le > 0))
+                if (!any(le > 0)) {
+                    if (bShift) print("Shift failed: zero le", le);
                     return result;
+                }
 
                 directPdfA = selectionPdf / tri.area;
 
@@ -927,8 +949,10 @@ extension PathGenerator {
                 toLight /= dist;
 
                 cosLight = -dot(tri.normal, toLight);
-                if (cosLight < kMinCosTheta)
+                if (cosLight < kMinCosTheta) {
+                    if (bShift) print("Shift failed: cosLight < kMinCosTheta", cosLight);
                     return result;
+                }
 
                 const MeshLightData meshData = gScene.lightCollection.getMeshData(triangleIndex);
 
@@ -983,7 +1007,7 @@ extension PathGenerator {
 
         float3 suffixContrib;
         float3 suffixDir;
-        float suffixPdf;
+        float suffixPdf = directPdfW;
         const bool hasRcv = s.rcvFound;
         if (hasRcv) {
             // use rcv found earlier along the camera subpath
@@ -1062,18 +1086,11 @@ extension PathGenerator {
             if (cosLight < kMinCosTheta)
                 return result;
 
-            if (bShift) {
-                r = lightVertex.Reversed(-toLight).EvaluateReflectance(s.sg, lightVertex.GetDirIn(), false);
-                const float tmp = r.mFwdPdfW;
-                r.mFwdPdfW = r.mRevPdfW;
-                r.mRevPdfW = tmp;
-            } else {
-                r = lightVertex.EvaluateReflectance(s.sg, -toLight, true);
-                r.mReflectance /= cosLight;
+            r = lightVertex.EvaluateReflectance(s.sg, -toLight, true);
+            r.mReflectance /= cosLight;
 
-                if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 0)
-                    r.mFwdPdfW = 0;
-            }
+            if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 0)
+                r.mFwdPdfW = 0;
 
             const float3 rayOrigin = vertex.ComputeRayOrigin(toLight);
             visibilityRay = Ray(rayOrigin, lightVertex.ComputeRayOrigin(-toLight) - rayOrigin, 0, 0);
@@ -1111,9 +1128,11 @@ extension PathGenerator {
             return result;
         }
 
-        const float invDist2 = 1 / sqr(dist);
+        float lightSubpathPdfW = v.mLightSubpath.mPdf * (sqr(dist) / cosLight);
 
-        integrationWeight = (cosLight * invDist2) / (s.pdfW * v.mLightSubpath.mPdf);
+        integrationWeight = 1 / (s.pdfW * lightSubpathPdfW);
+
+        const float invDist2 = 1 / sqr(dist);
 
         const float misWeight = s.mis.EvalVertexConnectionMIS(v.mis, r, f, cosCam, cosLight, invDist2);
         MisEvalData misEvalArgs = {};
@@ -1129,7 +1148,7 @@ extension PathGenerator {
 
         float3 suffixContrib;
         float3 suffixDir;
-        float suffixPdf = v.mLightSubpath.mPdf;
+        float suffixPdf;
         const bool hasRcv = s.rcvFound;
         if (hasRcv) {
             // use rcv found earlier along the camera subpath
@@ -1137,17 +1156,18 @@ extension PathGenerator {
                 // the light vertex is the 2nd vertex in the suffix
                 suffixContrib = v.mThroughput * r.mReflectance;
                 suffixDir = toLight;
-                suffixPdf *= sqr(dist) / cosLight;
+                suffixPdf = lightSubpathPdfW;
             } else {
                 // the light vertex is after the 2nd suffix vertex
                 suffixContrib = SafeDivide(contrib, s.throughputAtRcv);
                 suffixDir = s.rcvDirOut;
-                suffixPdf *= (s.pdfW / s.pdfAtRcv);
+                suffixPdf = lightSubpathPdfW * (s.pdfW / s.pdfAtRcv);
             }
         } else {
             // use the light subpath vertex as the rcv
             suffixContrib = v.mThroughput;
             suffixDir = v.GetDirIn();
+            suffixPdf = v.mLightSubpath.mPdf;
         }
 
         const PathSuffix suffix = PathSuffix::Create(
@@ -1605,7 +1625,7 @@ extension PathGenerator {
         if (gDisableEarlyReconnection)
             return;
 
-        float cosIn = vertex.HasFaceNormal() ? abs(dot(vertex.GetDirIn(), vertex.GetFaceNormal())) : 1;
+        float cosIn = vertex.GetCosN(vertex.GetDirIn());
 
         // set vertex as rcv if one hasn't been found yet.
         if (!s.rcvFound && connectable) {
@@ -1621,9 +1641,14 @@ extension PathGenerator {
 
         // update rcvDirOut and throughputAtRcv if this vertex was selected as the rcv last iteration
         if (s.rcvFound && s.bounces == s.prefixBounces + 2) {
-            s.rcvDirOut = vertex.mVertex.mRayDirection;
-            s.throughputAtRcv = s.throughput;
-            s.pdfAtRcv = s.pdfW;
+            if (s.lastVertex.connectable) {
+                s.rcvDirOut = vertex.mVertex.mRayDirection;
+                s.throughputAtRcv = s.throughput;
+                s.pdfAtRcv = s.pdfW;
+            } else {
+                s.prefixPdf = 0;
+                s.prefixBounces = 0;
+            }
         }
 
         if (s.rcvFound && s.bounces > s.prefixBounces) {
@@ -1634,10 +1659,11 @@ extension PathGenerator {
                 s.bounces - (s.prefixBounces + 1) );
         }
     }
-    // Sample the BSDF and trace a ray to find the next vertex. Returns a valid sample if the next vertex is emissive.
+
+    // Sample the BSDF and trace a ray to find the next vertex.
     // Updates throughput, pdfW, bounces, MIS quantities, and reconnection data
     // returns sampled LobeType
-    uint SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout PathVertex vertex) {
+    uint AdvanceVertex<let bShift : bool, let bSetNext : bool>(inout PathState<bShift> s, inout PathVertex vertex, const PathVertex nextVertex, const bool evalReversed) {
         // russian roulette
         const float contProb = vertex.GetContinuationProbability();
         const float rrU = sampleNext1D(s.sg);
@@ -1645,9 +1671,16 @@ extension PathGenerator {
             s.Terminate();
             return 0;
         }
-
+\
         // sample direction
         DirectionSampleData r = vertex.SampleDirection(s.sgBsdf, s.isLightPath);
+
+        if (bSetNext) {
+            r.mDirection = nextVertex.mVertex.mRayDirection;
+            r.SetReflectance(vertex.EvaluateReflectance(s.sg, r.mDirection, s.isLightPath));
+            r.mLobeType = vertex.mMaterial.getLobeTypes(vertex.mShadingData) & ~uint(LobeType::Delta);
+            if (evalReversed) r.mReflectance *= vertex.GetCosN(vertex.GetDirIn()) / vertex.GetCosN(r.mDirection);
+        }
 
         if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 1)
             r.mRevPdfW = 0;
@@ -1673,7 +1706,8 @@ extension PathGenerator {
             return 0;
         }
 
-        const bool connectable = vertex.IsConnectable() && !r.IsLobe(LobeType::Delta);
+        const bool connectable = r.IsLobe(LobeType::Diffuse) || (r.IsLobe(LobeType::Specular) && vertex.mMaterial.getProperties(vertex.mShadingData).roughness >= mParams.mReconnectionRoughness);
+        s.lastVertex.connectable = connectable;
 
         // diffuse bounce limit
         if (connectable && s.diffuseBounces == mParams.mMaxDiffuseBounces) {
@@ -1685,7 +1719,11 @@ extension PathGenerator {
         s.mis.ProcessDirection(r, cosOut, connectable);
 
         // trace ray to find next vertex
-        vertex = PathVertex(TraceRay(Ray(vertex.ComputeRayOrigin(r.mDirection), r.mDirection)));
+        if (bSetNext) {
+            vertex = nextVertex;
+        } else {
+            vertex = PathVertex(TraceRay(Ray(vertex.ComputeRayOrigin(r.mDirection), r.mDirection)));
+        }
         s.bounces++;
         if (connectable)
             s.diffuseBounces++;
@@ -1707,87 +1745,14 @@ extension PathGenerator {
         return r.mLobeType;
     }
 
-    void SetNextVertex<let bShift : bool>(inout PathState<bShift> s, inout PathVertex vertex, const PathVertex nextVertex, const bool evalReversed = false) {
-        // russian roulette
-        const float contProb = vertex.GetContinuationProbability();
-        const float rrU = sampleNext1D(s.sg);
-        if (!bShift && contProb < 1 && rrU > contProb) {
-            s.Terminate();
-            return;
-        }
+    uint SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout PathVertex vertex) {
+        PathVertex tmp;
+        return AdvanceVertex<bShift, false>(s, vertex, tmp, false);
+    }
 
-        // sample direction to advance sample generator
-        vertex.SampleDirection(s.sgBsdf, s.isLightPath);
-
-        const float3 dir = nextVertex.IsFinite() ? normalize(nextVertex.GetPosition() - vertex.GetPosition()) : nextVertex.mVertex.mRayDirection;
-
-        const float cosOut = vertex.GetCosN(dir);
-        if (cosOut < kMinCosTheta) {
-            s.Terminate();
-            return;
-        }
-
-        ReflectanceEvalData r;
-        r = vertex.EvaluateReflectance(s.sg, dir, s.isLightPath);
-        if (evalReversed) r.mReflectance *= vertex.GetCosN(vertex.GetDirIn()) / cosOut;
-
-        if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 1)
-            r.mRevPdfW = 0;
-
-        // cache this vertex
-        s.lastVertex.position = vertex.GetPosition();
-        s.lastVertex.normal = vertex.HasFaceNormal() ? vertex.GetFaceNormal() : 0;
-        s.lastVertex.upperHemisphereOnly = vertex.UpperHemisphereOnly();
-        s.lastVertex.scatterFwdPdfW = r.mFwdPdfW;
-        s.lastVertex.scatterRevPdfW = r.mRevPdfW;
-        s.lastVertex.mis = s.mis;
-        const float lastPdfW = s.pdfW;
-
-        // modify throughput and pdfW
-        s.throughput *= r.mReflectance;
-        if (r.mFwdPdfW > 0)
-            s.pdfW *= r.mFwdPdfW;
-
-        if (all(s.throughput <= 0) || any(s.throughput != s.throughput)) {
-            s.Terminate();
-            return;
-        }
-
-        const bool connectable = vertex.IsConnectable() && s.lastVertex.scatterFwdPdfW > 0;
-
-        // diffuse bounce limit
-        if (connectable && s.diffuseBounces == mParams.mMaxDiffuseBounces) {
-            s.Terminate();
-            return;
-        }
-
-        // update mis quantities
-        {
-            DirectionSampleData r_ = {};
-            r_.mDirection = dir;
-            r_.SetReflectance(r);
-            s.mis.ProcessDirection(r_, cosOut, connectable);
-        }
-
-        // trace ray to find next vertex
-        vertex = nextVertex;
-        s.bounces++;
-        if (connectable)
-            s.diffuseBounces++;
-
-        const float cosIn = vertex.GetCosN(vertex.GetDirIn());
-
-        if (cosIn < kMinCosTheta) {
-            s.Terminate();
-            return;
-        }
-
-        s.mis.ProcessRay(vertex.mVertex, cosIn);
-
-        if (!s.isLightPath) {
-            const bool canReconnect = connectable && vertex.mVertex.mRayDistance >= mParams.mReconnectionDistance && (vertex.IsConnectable() || any(vertex.GetEmission() > 0));
-            UpdateReconnectionData(s, vertex, canReconnect, lastPdfW);
-        }
+    // Does everything SampleNextVertex does, but discards the sampled direction and instead sets the next vertex explicitly
+    void SetNextVertex<let bShift : bool>( inout PathState<bShift> s, inout PathVertex vertex, const PathVertex nextVertex, const bool evalReversed = false ) {
+        AdvanceVertex<bShift, true>(s, vertex, nextVertex, evalReversed);
     }
 }
 
@@ -1801,6 +1766,8 @@ extension PathGenerator {
         if (mParams.mMaxBounces == 0 || mParams.mMaxDiffuseBounces == 0)
             return;
 
+        if (gDisableLVC) mLightVertexCache.lightVertexCount[id.mId.y * mParams.mOutputDim.x + id.mId.x] = 0;
+
         PathVertex vertex;
         PathState<false> s = InitializeLightPath<false>(id, vertex);
 
@@ -1812,7 +1779,18 @@ extension PathGenerator {
                     const LightSubpathVertex v = PackLightSubpathVertex(s, vertex);
 
                     if (gVertexMerging || s.bounces + 2 <= mParams.mMaxBounces) {
-                        const uint i = mLightVertexCache.Insert(v);
+                        uint i;
+                        if (gDisableLVC) {
+                            i = id.mId.y * mParams.mOutputDim.x + id.mId.x;
+
+                            const uint b = mLightVertexCache.lightVertexCount[i];
+                            mLightVertexCache.lightVertexCount[i] = b + 1;
+
+                            i += b * mParams.mOutputDim.x * mParams.mOutputDim.y;
+                            mLightVertexCache[i] = v;
+                        } else {
+                            i = mLightVertexCache.Insert(v);
+                        }
 
                         if (gVertexMerging) {
                             const float3 pos = vertex.GetPosition();
@@ -1900,14 +1878,27 @@ extension PathGenerator {
 
                     if (gBidirectional) {
                         if (!gProgressivePhotonMapping) {
-                            // connect to a random light subpath vertex in the LVC
-                            const uint count = mLightVertexCache.size();
-                            if (count > 0) {
-                                const LightSubpathVertex v = mLightVertexCache[min(uint(sampleNext1D(s.sg) * count), count - 1)];
+                            if (gDisableLVC) {
+                                // connect to light subpath vertices
+                                uint i = id.mId.y * mParams.mOutputDim.x + id.mId.x;
+                                const uint count = mLightVertexCache.lightVertexCount[i];
+                                uint b = min(uint(sampleNext1D(s.sg) * count), count - 1);
+                                /*for (uint b = 0; b < count; b++)*/ {
+                                    const LightSubpathVertex v = mLightVertexCache[i + b*mParams.mOutputDim.x * mParams.mOutputDim.y];
+                                    float weight = 0;
+                                    PathSample ps = ConnectToLightSubpath(s, vertex, v, weight);
+                                    ProcessSample(r, s.sg, ps, weight * count);
+                                }
+                            } else {
+                                // connect to a random light subpath vertex in the LVC
+                                const uint count = mLightVertexCache.size();
+                                if (count > 0) {
+                                    const LightSubpathVertex v = mLightVertexCache[min(uint(sampleNext1D(s.sg) * count), count - 1)];
 
-                                float weight = 0;
-                                PathSample ps = ConnectToLightSubpath(s, vertex, v, weight);
-                                ProcessSample(r, s.sg, ps, weight * (count / (float)mParams.mLightSubpathCount));
+                                    float weight = 0;
+                                    PathSample ps = ConnectToLightSubpath(s, vertex, v, weight);
+                                    ProcessSample(r, s.sg, ps, weight * (count / (float)mParams.mLightSubpathCount));
+                                }
                             }
                         }
 

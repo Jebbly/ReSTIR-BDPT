@@ -288,8 +288,6 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
         // Temporal reservoir reuse.
         if (mStaticParams.useTemporalReuse)
         {
-            FALCOR_PROFILE(pRenderContext, "Temporal reuse");
-
             FALCOR_ASSERT(mpTemporalReusePass);
             FALCOR_ASSERT(renderData.getTexture(kInputMotionVectors));
             preparePass(pRenderContext, renderData, *mpTemporalReusePass);
@@ -304,6 +302,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                 if (!mSkipReuse) {
                     // shift samples to last frame
                     if (mStaticParams.unbiasedTemporalReuse) {
+                        FALCOR_PROFILE(pRenderContext, "Shift to last frame");
                         FALCOR_ASSERT(mpTemporalShiftPass);
                         ref<Program> program = mpTemporalShiftPass->getProgram();
                         FALCOR_ASSERT(program);
@@ -329,10 +328,12 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                     }
 
                     // reuse pass
-
-                    mpTemporalReusePass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
-                    mpTemporalReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
-                    mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+                    {
+                        FALCOR_PROFILE(pRenderContext, "Temporal reuse");
+                        mpTemporalReusePass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
+                        mpTemporalReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
+                        mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
+                    }
                 }
             }
             mCurrentSeed++;
@@ -424,7 +425,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useBPT)
         {
-            runtimeDirty |= group.var("Light sub-path count", mParams.mLightSubpathCount, 1u, 128000000u);
+            runtimeDirty |= group.var("Light sub-path count", mParams.mLightSubpathCount, 1u, 10000000u);
             group.tooltip("Number of light sub-paths to trace when BPT is enabled.");
 
             dirty |= group.checkbox("Light trace only", mStaticParams.lightTraceOnly);
@@ -603,8 +604,13 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
             dirty |= group.var("Seed", mFixedSeed);
         }
 
+        if (mStaticParams.useBPT) {
+            recompile |= group.checkbox("Disable LVC", mStaticParams.disableLVC);
+            group.tooltip("Trace 1 light subpath per pixel, connecting\ncamera subpath vertices to the whole light subpath.", true);
+        }
+
         if (mStaticParams.useResampling) {
-            dirty |= group.checkbox("Disable early reconnection", mStaticParams.disableEarlyReconnection);
+            recompile |= group.checkbox("Disable early reconnection", mStaticParams.disableEarlyReconnection);
             group.tooltip("Disable reconnection before the light subpath.", true);
         }
 
@@ -832,10 +838,8 @@ void ReSTIRVCM::updatePrograms()
 
 void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData& renderData)
 {
-    // Compute allocation requirements for paths and output samples.
-    // Note that the sample buffers are padded to whole tiles, while the max path count depends on actual frame dimension.
-    // If we don't have a fixed sample count, assume the worst case.
     const uint32_t screenPixelCount = mParams.mOutputDim.x * mParams.mOutputDim.y;
+    if (mStaticParams.disableLVC) mParams.mLightSubpathCount = screenPixelCount;
     const size_t maxLightVertices = mParams.mLightSubpathCount * std::max(1u, mParams.mMaxDiffuseBounces);
 
     auto var = mpReflectTypes->getRootVar();
@@ -844,8 +848,8 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
     {
         if (!mpReservoirs[0] || mpReservoirs[0]->getElementCount() != screenPixelCount)
         {
-            mpReservoirs[0]    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs0"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-            mpReservoirs[1]    = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs1"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpReservoirs[0]  = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs0"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpReservoirs[1]  = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs1"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mpLastReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLastReservoirs"] , screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
@@ -907,7 +911,13 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
         if (!mpLightVertices || mpLightVertices->getElementCount() != maxLightVertices || mVarsChanged)
         {
             mpLightVertices = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLightVertexCache"]["lightVertices"], maxLightVertices, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-            mpLightVertexCount = mpDevice->createBuffer(sizeof(uint32_t)*2, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mVarsChanged = true;
+        }
+
+        size_t vertexCountSize = sizeof(uint32_t) * (mStaticParams.disableLVC ? screenPixelCount : 2);
+        if (!mpLightVertexCount || mpLightVertexCount->getSize() != vertexCountSize || mVarsChanged)
+        {
+            mpLightVertexCount = mpDevice->createBuffer(vertexCountSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
             mVarsChanged = true;
         }
 
@@ -1329,6 +1339,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("CAUSTIC_MOTION_VECTORS", useResampling && useBPT && !useCausticReservoirs && useCausticMotionVectors ? "1" : "0");
     defines.add("MIS_IN_INTEGRAND", useResampling && useMisInIntegrand ? "1" : "0");
     defines.add("DISABLE_EARLY_RECONNECTION", useResampling && disableEarlyReconnection ? "1" : "0");
+    defines.add("DISABLE_LVC", useBPT && disableLVC ? "1" : "0");
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("DEBUG_HEATMAP", debugHeatmap ? "1" : "0");
     defines.add("SHIFT_SUFFIXES", "0"); // placeholder

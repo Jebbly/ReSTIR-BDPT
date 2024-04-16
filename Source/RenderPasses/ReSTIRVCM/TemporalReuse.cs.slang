@@ -24,15 +24,16 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
     float jacobianToCenter = 0;
 
     if (r.mSample.IsValid()) {
-        print("\nCenter id, seed:", uint3(r.mSample.mId.mId, r.mSample.mId.mSeed));
-        print("f, W:", float2(r.mSample.GetTargetPdf(), r.mW));
+        print("\nCenter id, seed, bounces:", uint4(r.mSample.mId.mId, r.mSample.mId.mSeed, r.mSample.mBounces));
+        print("  f, W:", float2(r.mSample.GetTargetPdf(), r.mW));
     } else {
         print("\nInvalid center sample", 0);
     }
 
     if (candidate.mSample.IsValid()) {
-        print("Candidate id, seed:", uint3(candidate.mSample.mId.mId, candidate.mSample.mId.mSeed));
-        print("f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
+        print("Candidate id, seed, bounces:", uint4(candidate.mSample.mId.mId, candidate.mSample.mId.mSeed, candidate.mSample.mBounces));
+        print("  f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
+        print("  suffix:", candidate.mSample.mSuffix.mContribution);
 
         if (gPathGenerator.gBidirectional && !gPathGenerator.gDisableCameraConnection && gPathGenerator.gUseCausticMotionVectors && candidate.mSample.HasFlag(PathFlags::eCausticLightPath)) {
             // sample was already shifted in ShiftCaustics
@@ -81,7 +82,6 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
                 const float shiftedTargetPdf = gPathGenerator.ShiftPath(r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
                 f = shiftedTargetPdf * jacobianToPrev;
             }
-            print("shiftedTargetPdf * jacobianToPrev:", f);
 
             msum += candidate.mM * f;
         }
@@ -108,6 +108,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
     r.FinalizeMerge();
 
     print("Final center f, W:", float2(r.mSample.GetTargetPdf(), r.mW));
+    print("  suffix f, bounces, lv, prefix:", float4(luminance(r.mSample.mSuffix.mContribution), r.mSample.mBounces, r.mSample.mSuffix.mLightSubpath.mVertexCount, r.mSample.mPrefixBounces));
 }
 
 [shader("compute")]

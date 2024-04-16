@@ -46,12 +46,27 @@ public:
         Count
     };
 
+    enum class GraphAxisScale {
+        Linear,
+        LogLinear,
+        LogLog
+    };
+
     FALCOR_ENUM_INFO(
         OutputId,
         {
             {OutputId::Source, "Source"},
             {OutputId::Reference, "Reference"},
             {OutputId::Difference, "Difference"},
+        }
+    );
+
+    FALCOR_ENUM_INFO(
+        GraphAxisScale,
+        {
+            {GraphAxisScale::Linear, "Linear"},
+            {GraphAxisScale::LogLinear, "LogLinear"},
+            {GraphAxisScale::LogLog, "LogLog"},
         }
     );
 
@@ -102,6 +117,8 @@ private:
     /// Path to the output file where measurements are stored (.csv).
     std::filesystem::path mMeasurementsFilePath;
 
+    bool mEnabled = true;
+
     /// If true, do not measure error on pixels that belong to the background.
     bool mIgnoreBackground = true;
     /// Compute the square difference when creating the difference image.
@@ -117,10 +134,18 @@ private:
     /// Coefficient used for the exponential moving average. Larger values mean slower response.
     float mRunningErrorSigma = 0.995f;
 
+    std::vector<float> mMeasurementHistory = {};
+    size_t mMeasurementHistoryLength = 16384;
+    float mMinMeasurement = FLT_MAX;
+    float mMaxMeasurement = 0;
+
+    GraphAxisScale mGraphScaleMode = GraphAxisScale::LogLog;
+
     OutputId mSelectedOutputId = OutputId::Source;
 
     static const Gui::RadioButtonGroup sOutputSelectionButtons;
     static const Gui::RadioButtonGroup sOutputSelectionButtonsSourceOnly;
+    static const Gui::RadioButtonGroup sGraphModeSelectionButtons;
 };
 
 FALCOR_ENUM_REGISTER(ErrorMeasurePass::OutputId);

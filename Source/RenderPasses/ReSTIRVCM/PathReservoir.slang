@@ -50,6 +50,7 @@ struct LightSubpathData {
     PackedHitInfo mFirstVertex = {};
     PathId mId = {};
     uint mPackedBounces = 0;
+    // product of solid-angle BSDF sampling pdfs, and the area-measure pdf of sampling the emissive vertex
     float mPdf = 0;
 
     property uint mVertexCount {
