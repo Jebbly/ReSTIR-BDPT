@@ -9,7 +9,7 @@ __exported import PathGenerator;
 import PhotonMap;
 
 extension PathGenerator {
-    // shift a 1-bounce light subpath to a new primary hit. Copied from InitializeLightPath
+    // shift a 1-bounce light subpath to a new primary hit. Mostly copied from InitializeLightPath
     PathState<true> ShiftLightSubpath(const LightSubpathData basePath, const PackedPathVertex newPrimaryHit, out PathVertex vertex) {
         PathState<true> s = {};
         s.id = basePath.mId;
@@ -150,14 +150,11 @@ extension PathGenerator {
             s.prefixBounces = 0;
             s.rcvDiffuseBounces = 0;
 
-            const bool connectable = vertex.IsConnectable();
-            const float3 prevN = vertex.GetFaceNormal();
+            SampleNextVertex(s, vertex);
 
-            const uint lobe = SampleNextVertex(s, vertex);
-
-            s.rcvCos = abs(dot(prevN, vertex.mVertex.mRayDirection));
+            s.rcvCos = abs(dot(s.lastVertex.normal, vertex.mVertex.mRayDirection));
             s.rcvDist = vertex.mVertex.mRayDistance;
-            s.deltaRcv = !connectable || ((lobe & uint(LobeType::Delta)) != 0);
+            s.deltaRcv = s.lastVertex.connectable;
         }
 
         return s;
@@ -224,11 +221,11 @@ extension PathGenerator {
         if (gBidirectional && !gDisableCameraConnection && basePath.HasFlag(PathFlags::eCausticLightPath) && !gUseCausticReservoirs) {
             // just copy caustic paths if they are in the same pixel (or close)
             const float2 basePixel = GetPixelCoord(PathVertex(newSuffix.mVertex).GetPosition());
-            const float2 d = GetPixelCoord(vertex.GetPosition()) - basePixel;
-            const float d2 = dot(d, d);
-            const float r = mParams.mCausticReuseRadius;
-            if ((r == 0 && any(d != 0.f)) || (r > 0 && d2 > r * r)) {
-                print("Shift failed: Caustic path not in pixel", basePixel);
+            const float2 newPixel  = GetPixelCoord(vertex.GetPosition());
+            const float2 d = newPixel - basePixel;
+            if ((mParams.mCausticReuseRadius == 0 && any(int2(newPixel) != int2(basePixel))) ||
+                (mParams.mCausticReuseRadius > 0  && dot(d, d) > sqr(mParams.mCausticReuseRadius))) {
+                print("Shift failed: Caustic path not in pixel", float4(basePixel, newPixel));
                 return result;
             }
             result = basePath;
@@ -266,8 +263,8 @@ extension PathGenerator {
         } else {
             rcvF = vertex.EvaluateReflectance(s.sg, newSuffix.mDirOut, false);
             if (s.bounces > cameraBounces) {
-                // rcv is on light subpath, need the reverse BSDF
-                rcvF.mReflectance *= vertex.GetCosN(vertex.GetDirIn()) / vertex.GetCosN(newSuffix.mDirOut);
+                // divide out cosine term for light subpath vertices
+                rcvF.mReflectance /= vertex.GetCosN(newSuffix.mDirOut);
             }
             s.throughput *= rcvF.mReflectance;
         }
@@ -630,7 +627,6 @@ extension PathGenerator {
 
         if (!(basePath.HasFlag(PathFlags::eCausticLightPath) && gUseCausticReservoirs)) {
             // random replay jacobian
-            /*
             jacobian = basePath.mPrefixPdf / result.mPrefixPdf;
 
             if (hasLightSubpath || (basePath.HasSuffix() && basePath.mSuffix.mVertex.IsFinite())) {
@@ -640,9 +636,7 @@ extension PathGenerator {
                 // suffix jacobian (includes light subpath jacobian)
                 jacobian *= basePath.mSuffix.mCameraFwdPdf / result.mSuffix.mCameraFwdPdf;
             }
-            */
         }
-        jacobian = 1;
 
         return result;
     }

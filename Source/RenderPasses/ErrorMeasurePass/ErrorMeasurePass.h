@@ -135,7 +135,7 @@ private:
     float mRunningErrorSigma = 0.995f;
 
     std::vector<float> mMeasurementHistory = {};
-    size_t mMeasurementHistoryLength = 16384;
+    size_t mMeasurementHistoryLength = 4096;
     float mMinMeasurement = FLT_MAX;
     float mMaxMeasurement = 0;
 

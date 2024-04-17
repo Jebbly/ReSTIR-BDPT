@@ -1671,7 +1671,7 @@ extension PathGenerator {
             s.Terminate();
             return 0;
         }
-\
+
         // sample direction
         DirectionSampleData r = vertex.SampleDirection(s.sgBsdf, s.isLightPath);
 
@@ -1841,11 +1841,11 @@ extension PathGenerator {
             s.prefixBounces = 0;
             s.rcvDiffuseBounces = 0;
 
-            uint lobe = SampleNextVertex(s, vertex);
+            SampleNextVertex(s, vertex);
 
             s.rcvCos = abs(dot(s.lastVertex.normal, vertex.mVertex.mRayDirection));
             s.rcvDist = vertex.mVertex.mRayDistance;
-            s.deltaRcv = !connectable || ((lobe & uint(LobeType::Delta)) != 0);
+            s.deltaRcv = s.lastVertex.connectable;
         }
     }
 
@@ -1877,13 +1877,18 @@ extension PathGenerator {
                     }
 
                     if (gBidirectional) {
-                        if (!gProgressivePhotonMapping) {
+                        if (gBidirectional && !gProgressivePhotonMapping) {
                             if (gDisableLVC) {
-                                // connect to light subpath vertices
                                 uint i = id.mId.y * mParams.mOutputDim.x + id.mId.x;
                                 const uint count = mLightVertexCache.lightVertexCount[i];
+                                //*
+                                // pick a random light vertex and weight it by 'count'
                                 uint b = min(uint(sampleNext1D(s.sg) * count), count - 1);
-                                /*for (uint b = 0; b < count; b++)*/ {
+                                /*/
+                                // connect to light subpath vertices
+                                for (uint b = 0; b < count; b++)
+                                //*/
+                                {
                                     const LightSubpathVertex v = mLightVertexCache[i + b*mParams.mOutputDim.x * mParams.mOutputDim.y];
                                     float weight = 0;
                                     PathSample ps = ConnectToLightSubpath(s, vertex, v, weight);

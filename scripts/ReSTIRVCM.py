@@ -27,11 +27,10 @@ def render_graph_PathTracer():
     g.addEdge("VBufferRT.viewW",       "ReSTIRVCM.viewW")
     g.addEdge("VBufferRT.mvec",        "ReSTIRVCM.mvec")
     g.addEdge("ReSTIRVCM.color",       "AccumulatePass.input")
-    g.addEdge("AccumulatePass.output", "ToneMapper.src")
+    g.addEdge("AccumulatePass.output", "ErrorMeasurePass.Source")
+    g.addEdge("ErrorMeasurePass.Output", "ToneMapper.src")
 
-    g.addEdge("ToneMapper.dst", "ErrorMeasurePass.Source")
-
-    g.markOutput("ErrorMeasurePass.Output")
+    g.markOutput("ToneMapper.dst")
     return g
 
 PathTracer = render_graph_PathTracer()

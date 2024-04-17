@@ -89,7 +89,7 @@ struct PathGeneratorParams {
     float mReconnectionRoughness = 0.08f; ///< sqrt(kMinGGXAlpha)
     float mCausticReuseRadius = 0.f;      ///< in pixels
 
-    uint  mSpatialReuseSamples = 4;
+    uint  mSpatialReuseSamples = 2;
     float mSpatialReuseRadius  = 30.f;
     uint  mMCap                = 20;
     float mEnvMapProb      = 0.5f; ///< Probability of sampling the environment map (instead of emissive triangles).
