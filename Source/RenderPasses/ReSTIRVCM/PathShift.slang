@@ -154,7 +154,7 @@ extension PathGenerator {
 
             s.rcvCos = abs(dot(s.lastVertex.normal, vertex.mVertex.mRayDirection));
             s.rcvDist = vertex.mVertex.mRayDistance;
-            s.deltaRcv = s.lastVertex.connectable;
+            s.deltaRcv = !s.lastVertex.connectable;
         }
 
         return s;
@@ -220,12 +220,12 @@ extension PathGenerator {
 
         if (gBidirectional && !gDisableCameraConnection && basePath.HasFlag(PathFlags::eCausticLightPath) && !gUseCausticReservoirs) {
             // just copy caustic paths if they are in the same pixel (or close)
-            const float2 basePixel = GetPixelCoord(PathVertex(newSuffix.mVertex).GetPosition());
-            const float2 newPixel  = GetPixelCoord(vertex.GetPosition());
-            const float2 d = newPixel - basePixel;
-            if ((mParams.mCausticReuseRadius == 0 && any(int2(newPixel) != int2(basePixel))) ||
+            const int2 basePixel = GetPixelCoord(PathVertex(newSuffix.mVertex).GetPosition());
+            const int2 newPixel  = GetPixelCoord(vertex.GetPosition());
+            const int2 d = newPixel - basePixel;
+            if ((mParams.mCausticReuseRadius == 0 && any(d != 0)) ||
                 (mParams.mCausticReuseRadius > 0  && dot(d, d) > sqr(mParams.mCausticReuseRadius))) {
-                print("Shift failed: Caustic path not in pixel", float4(basePixel, newPixel));
+                print("Shift failed: Caustic path not in pixel", int4(basePixel, newPixel));
                 return result;
             }
             result = basePath;
@@ -251,6 +251,8 @@ extension PathGenerator {
             SetNextVertex(s, vertex, PathVertex(newSuffix.mVertex));
             prefixFwdPdfW = s.lastVertex.scatterFwdPdfW;
             prefixRevPdfW = s.lastVertex.scatterRevPdfW;
+            if (basePath.HasFlag(PathFlags::eNonCausticLightPath)) // divide out cosine term at primary hit for pure light paths
+                s.throughput /= abs(dot(s.lastVertex.normal, vertex.GetDirIn()));
             if (!any(s.throughput > 0)) {
                 print("Shift failed: Zero reconnection reflectance", 0);
                 return result;
@@ -451,7 +453,6 @@ extension PathGenerator {
                 return result;
             }
             if ((gBidirectional || gSampleDirectLight) && basePath.mSuffix.mLightSubpath.mVertexCount == 1) {
-                print("dir:", vertex.GetDirIn());
                 result = ConnectToLight(s, vertex, w);
             } else if (gBidirectional && basePath.mSuffix.mLightSubpath.mVertexCount > 1) {
                 if (gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging))
@@ -485,9 +486,11 @@ extension PathGenerator {
             // trace light subpath, so that vertex is the end of the light subpath
             PathVertex vertex;
             PathState<true> s;
-            if (!gDisableCameraConnection && basePath.HasFlag(PathFlags::eNonCausticLightPath) && basePath.mBounces == 1)
+            if (!gDisableCameraConnection && basePath.HasFlag(PathFlags::eNonCausticLightPath) && basePath.mBounces == 1) {
+                // for pure light paths with 1 bounce, we need to modify the initial sampling
+                // so that newPrimaryHit is the 2nd vertex
                 s = ShiftLightSubpath(basePath.mSuffix.mLightSubpath, newPrimaryHit, vertex);
-            else {
+            } else {
                 s = ShiftLightSubpath(basePath.mSuffix.mLightSubpath, vertex);
                 if (s.bounces + 2 != basePath.mSuffix.mLightSubpath.mVertexCount || !vertex.IsFinite())
                     s.Terminate();
@@ -504,15 +507,22 @@ extension PathGenerator {
                     float w;
                     result = ConnectToCamera(s, vertex, offsetPixel, w);
                     if (!result.IsValid()) {
+                        print("Shift failed: ConnectToCamera failed", 0);
+                        result = {};
+                        return result;
+                    }
+
+                    if (!result.HasFlag(PathFlags::eCausticLightPath)) {
+                        print("Shift failed: Non-caustic result", 0);
                         result = {};
                         return result;
                     }
 
                     // reject path if it's not in the same pixel (or close)
-                    const float2 d = GetPixelCoord(PathVertex(newPrimaryHit).GetPosition()) - offsetPixel;
+                    const int2 d = GetPixelCoord(PathVertex(newPrimaryHit).GetPosition()) - offsetPixel;
                     const float d2 = dot(d, d);
                     const float r = mParams.mCausticReuseRadius;
-                    if ((r == 0 && any(d != 0.f)) || (r > 0 && d2 > r * r)) {
+                    if ((r == 0 && any(d != 0)) || (r > 0 && d2 > r * r)) {
                         print("Shift failed: Caustic path not in pixel", offsetPixel);
                         result = {};
                         return result;
@@ -530,7 +540,7 @@ extension PathGenerator {
                         to_v /= dist;
 
                         if (!vertex.IsConnectable() || !v.IsConnectable()) {
-                            print("Shift failed: Unconnectable light subpath", dist);
+                            print("Shift failed: Unconnectable light subpath", bool2(vertex.IsConnectable(), v.IsConnectable()));
                             return result;
                         }
 
@@ -554,7 +564,7 @@ extension PathGenerator {
                             s.prefixBounces = 0;
                             s.rcvDiffuseBounces = 0;
 
-                            SetNextVertex(s, vertex, PathVertex(PackedPathVertex(Ray(rayOrigin, to_v), HitInfo(newPrimaryHit.mPackedHit), dist)), true);
+                            SetNextVertex(s, vertex, PathVertex(PackedPathVertex(Ray(rayOrigin, to_v), HitInfo(newPrimaryHit.mPackedHit), dist)));
 
                             s.rcvCos = abs(dot(s.lastVertex.normal, vertex.mVertex.mRayDirection));
                             s.rcvDist = vertex.mVertex.mRayDistance;
@@ -637,6 +647,37 @@ extension PathGenerator {
                 jacobian *= basePath.mSuffix.mCameraFwdPdf / result.mSuffix.mCameraFwdPdf;
             }
         }
+
+        return result;
+    }
+
+    // Shift a pure light path, return pixel it contributes to
+    PathSample ShiftCausticPath(const PathSample basePath, out float jacobian, out int2 pixelCoord) {
+        jacobian = 0;
+        pixelCoord = -1;
+
+        PathVertex vertex;
+        PathState<true> s = ShiftLightSubpath(basePath.mSuffix.mLightSubpath, vertex);
+        if (!any(s.throughput > 0) || !(s.pdfW > 0) || s.bounces + 2 != basePath.mSuffix.mLightSubpath.mVertexCount || !vertex.IsFinite()) {
+            print("Caustic shift failed: Light subpath shift failed", uint2(s.bounces + 2, basePath.mSuffix.mLightSubpath.mVertexCount));
+            return {};
+        }
+
+        float w;
+        PathSample result = ConnectToCamera(s, vertex, pixelCoord, w);
+
+        if (!result.IsValid()) {
+            print("Caustic shift failed: invalid result", 0);
+            return {};
+        }
+
+        if (!result.HasFlag(PathFlags::eCausticLightPath)) {
+            print("Caustic shift failed: Result not caustic", 0);
+            return {};
+        }
+
+        // random replay jacobian
+        jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
 
         return result;
     }

@@ -45,6 +45,11 @@ extension PathGenerator {
     static const bool  gDisableLVC                    = DISABLE_LVC;
 }
 
+struct LightTraceReservoir {
+    PathSample path;
+    float W;
+};
+
 struct PathGenerator {
     PathGeneratorParams mParams;
 
@@ -61,7 +66,7 @@ struct PathGenerator {
     RWStructuredBuffer<PathReservoir> mPathReservoirs0;
     RWStructuredBuffer<PathReservoir> mPathReservoirs1;
     RWStructuredBuffer<PathReservoir> mCausticReservoirs;
-    HashMap<PathReservoir> mLightTraceReservoirs;
+    HashMap<LightTraceReservoir> mLightTraceReservoirs;
     HashMap<PathReservoir> mCausticReservoirMap;
 
     Texture2D<PackedHitInfo> mVbuffer;
@@ -1308,7 +1313,15 @@ extension PathGenerator {
 
         ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, toCamera, true);
         f.mReflectance /= cosOut;
-        if (bShift) f.mReflectance *= vertex.GetCosN(vertex.GetDirIn());
+
+        /*{
+            const uint2 cached = gPixelDebugPixel;
+            printSetPixel(pixelCoord);
+            print(bShift ? "shifting" : "canonical", uint4(s.bounces, s.deltaRcv, s.id.mId));
+            print("   s.throughput", luminance(s.throughput));
+            print("   f.mReflectance", luminance(f.mReflectance));
+            printSetPixel(cached);
+        }*/
 
         // Compute pdf conversion factor from image plane area to surface area
         const float cameraPdfA = imageToSolidAngleFactor * cosOut / sqr(dist);
@@ -1319,7 +1332,7 @@ extension PathGenerator {
         if (!any(contrib > 0))
             return result;
 
-        const float samplePdf = s.pdfW * (1 / cameraPdfA) * mParams.mLightSubpathCount;
+        const float samplePdf = s.pdfW * (1 / cameraPdfA);
         if (!(samplePdf > 0))
             return result;
         if (checkVisibility) {
@@ -1328,6 +1341,8 @@ extension PathGenerator {
         }
 
         integrationWeight = 1.f / samplePdf;
+
+        if (!gUseResampling) integrationWeight /= mParams.mLightSubpathCount;
 
         const float misWeight = s.mis.EvalLightTraceMIS(f.mRevPdfW, cameraPdfA);
         MisEvalData misEvalArgs = {};
@@ -1663,7 +1678,7 @@ extension PathGenerator {
     // Sample the BSDF and trace a ray to find the next vertex.
     // Updates throughput, pdfW, bounces, MIS quantities, and reconnection data
     // returns sampled LobeType
-    uint AdvanceVertex<let bShift : bool, let bSetNext : bool>(inout PathState<bShift> s, inout PathVertex vertex, const PathVertex nextVertex, const bool evalReversed) {
+    uint AdvanceVertex<let bShift : bool, let bSetNext : bool>(inout PathState<bShift> s, inout PathVertex vertex, const PathVertex nextVertex) {
         // russian roulette
         const float contProb = vertex.GetContinuationProbability();
         const float rrU = sampleNext1D(s.sg);
@@ -1679,7 +1694,6 @@ extension PathGenerator {
             r.mDirection = nextVertex.mVertex.mRayDirection;
             r.SetReflectance(vertex.EvaluateReflectance(s.sg, r.mDirection, s.isLightPath));
             r.mLobeType = vertex.mMaterial.getLobeTypes(vertex.mShadingData) & ~uint(LobeType::Delta);
-            if (evalReversed) r.mReflectance *= vertex.GetCosN(vertex.GetDirIn()) / vertex.GetCosN(r.mDirection);
         }
 
         if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 1)
@@ -1747,12 +1761,12 @@ extension PathGenerator {
 
     uint SampleNextVertex<let bShift : bool>(inout PathState<bShift> s, inout PathVertex vertex) {
         PathVertex tmp;
-        return AdvanceVertex<bShift, false>(s, vertex, tmp, false);
+        return AdvanceVertex<bShift, false>(s, vertex, tmp);
     }
 
     // Does everything SampleNextVertex does, but discards the sampled direction and instead sets the next vertex explicitly
-    void SetNextVertex<let bShift : bool>( inout PathState<bShift> s, inout PathVertex vertex, const PathVertex nextVertex, const bool evalReversed = false ) {
-        AdvanceVertex<bShift, true>(s, vertex, nextVertex, evalReversed);
+    void SetNextVertex<let bShift : bool>( inout PathState<bShift> s, inout PathVertex vertex, const PathVertex nextVertex ) {
+        AdvanceVertex<bShift, true>(s, vertex, nextVertex);
     }
 }
 
@@ -1818,7 +1832,10 @@ extension PathGenerator {
                         if (gUseResampling) {
                             // store path reservoirs for each pixel in a hash map
                             // these reservoirs are merged into each pixel's reservoir in a later pass
-                            mLightTraceReservoirs.Insert(flatId, PathReservoir(ps, weight, 1));
+                            LightTraceReservoir r = {};
+                            r.path = ps;
+                            r.W = weight;
+                            mLightTraceReservoirs.Insert(flatId, r);
                         } else {
                             // splat radiance onto output directly, instead of using reservoirs
                             mAtomicRadiance.InterlockedAddF32(flatId * sizeof(float3)                  , ps.mContribution.r * (weight * ps.mMisWeight));
@@ -1845,7 +1862,7 @@ extension PathGenerator {
 
             s.rcvCos = abs(dot(s.lastVertex.normal, vertex.mVertex.mRayDirection));
             s.rcvDist = vertex.mVertex.mRayDistance;
-            s.deltaRcv = s.lastVertex.connectable;
+            s.deltaRcv = !s.lastVertex.connectable;
         }
     }
 

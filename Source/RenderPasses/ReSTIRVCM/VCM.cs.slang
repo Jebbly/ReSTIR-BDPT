@@ -33,40 +33,42 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
     SampleGenerator sg = MakeSampleGenerator(id, gRandomSeed);
 
     PathReservoir r = {};
-    if (gPathGenerator.gLightTraceOnly) {
-        r.mM = 1;
-    } else {
-        r = gPathGenerator.LoadOutputReservoir(id);
-        r.PrepareMerge();
-    }
+    PathReservoir cr = {};
+    r.mM = 1;
+    cr.mM = 1;
 
     const PackedPathVertex primaryVertex = gPathGenerator.LoadPrimaryVertex(id);
 
-    PathReservoir cr = {};
-    cr.mM = 1;
-
     const uint2 range = gPathGenerator.mLightTraceReservoirs.GetCellDataRange(id.y * gPathGenerator.mParams.mOutputDim.x + id.x);
     for (uint i = range.x; i < range.y; i++) {
-        PathReservoir c = gPathGenerator.mLightTraceReservoirs[i];
-        c.mM = 0;
-        c.PrepareMerge();
+        const LightTraceReservoir lr = gPathGenerator.mLightTraceReservoirs[i];
+        PathReservoir c = PathReservoir(lr.path, lr.W, 0);
+        c.PrepareMerge(1/float(gPathGenerator.mParams.mLightSubpathCount));
+
         const float u = sampleNext1D(sg);
+
         if (gPathGenerator.gUseCausticReservoirs && c.mSample.HasFlag(PathFlags::eCausticLightPath)) {
+            // Separate caustic paths
             cr.Merge(u, c);
-        } else {
-            if (gPathGenerator.gShiftLightPathsToPixelCenters && c.mSample.HasFlag(PathFlags::eNonCausticLightPath)) {
-                // Shift the light path to the pixel center so that future reconnection works
-                float jacobian;
-                c.mSample = gPathGenerator.ShiftPath(c.mSample, primaryVertex, jacobian);
-                if (jacobian > 0 && c.mSample.IsValid()) {
-                    c.mW *= jacobian;
-                    r.Merge(u, c);
-                }
-            } else
-                r.Merge(u, c);
+            continue;
         }
+        if (gPathGenerator.gShiftLightPathsToPixelCenters && c.mSample.HasFlag(PathFlags::eNonCausticLightPath)) {
+            // Reject path if it is not samplable from the primary vertex
+            float jacobian;
+            bool valid = gPathGenerator.ShiftPath(c.mSample, primaryVertex, jacobian).IsValid();
+            if (!valid || !(jacobian > 0))
+                continue;
+        }
+
+        r.Merge(u, c);
     }
 
+    // merge camera tracing sample
+    if (!gPathGenerator.gLightTraceOnly) {
+        PathReservoir c = gPathGenerator.LoadOutputReservoir(id);
+        c.PrepareMerge();
+        r.Merge(sampleNext1D(sg), c);
+    }
 
     r.FinalizeMerge();
     gPathGenerator.StoreReservoir(id, r);
