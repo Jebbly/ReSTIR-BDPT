@@ -33,8 +33,6 @@ extension PathGenerator {
     static const bool  gLightTraceOnly                = LIGHT_TRACE_ONLY;
     static const bool  gUseResampling                 = USE_RESAMPLING;
     static const bool  gUseReconnectionMIS            = USE_RECONNECTION_MIS;
-    static const bool  gUseCausticReservoirs          = CAUSTIC_RESERVOIRS;
-    static const bool  gUseCausticMotionVectors       = CAUSTIC_MOTION_VECTORS;
     static const bool  gShiftSuffixes                 = SHIFT_SUFFIXES;
     static const bool  gUseBsdfImportanceSampling     = USE_BSDF_IMPORTANCE_SAMPLING;
     static const bool  gDebugBPT                      = DEBUG_BPT;
@@ -65,17 +63,14 @@ struct PathGenerator {
 
     RWStructuredBuffer<PathReservoir> mPathReservoirs0;
     RWStructuredBuffer<PathReservoir> mPathReservoirs1;
-    RWStructuredBuffer<PathReservoir> mCausticReservoirs;
     HashMap<LightTraceReservoir> mLightTraceReservoirs;
     HashMap<PathReservoir> mCausticReservoirMap;
 
     Texture2D<PackedHitInfo> mVbuffer;
     Texture2D<float3> mViewDir;
-    RWTexture2D<float2> mMotionVectors;
-    RWByteAddressBuffer mCausticMotionVectorMutex;
+    Texture2D<float2> mMotionVectors;
 
     RWStructuredBuffer<PathReservoir> mLastReservoirs;
-    RWStructuredBuffer<PathReservoir> mLastCausticReservoirs;
     Texture2D<float3> mLastViewDir;
     Texture2D<PackedHitInfo> mLastVbuffer;
 }
@@ -480,22 +475,6 @@ extension PathGenerator {
             mPathReservoirs0[flatIndex] = r;
         else
             mPathReservoirs1[flatIndex] = r;
-    }
-
-    PathReservoir LoadPrevCausticReservoir(const uint2 pixel) {
-        if (!gUseResampling || !gUseCausticReservoirs) return {};
-        const uint flatIndex = pixel.y * mParams.mOutputDim.x + pixel.x;
-        return mLastCausticReservoirs[flatIndex];
-    }
-    PathReservoir LoadCausticReservoir(const uint2 pixel) {
-        if (!gUseResampling || !gUseCausticReservoirs) return {};
-        const uint flatIndex = pixel.y * mParams.mOutputDim.x + pixel.x;
-        return mCausticReservoirs[flatIndex];
-    }
-    void StoreCausticReservoir(const uint2 pixel, const PathReservoir r) {
-        if (!gUseResampling || !gUseCausticReservoirs) return;
-        const uint flatIndex = pixel.y * mParams.mOutputDim.x + pixel.x;
-        mCausticReservoirs[flatIndex] = r;
     }
 
     // ---------------------------------------------------------------------------------------------------------
@@ -1375,7 +1354,7 @@ extension PathGenerator {
                 s.rcv,
                 s.rcvDirOut,
                 s.rcvDist,
-                s.rcvCos,
+                cosIn,
                 misEvalArgs,
                 LightSubpathData::Create(
                     s.lightSubpathVertex,

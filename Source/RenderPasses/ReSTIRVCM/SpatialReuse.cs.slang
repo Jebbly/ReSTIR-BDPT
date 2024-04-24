@@ -7,9 +7,7 @@ Texture2D<uint4> gVertices;
 
 static const RMISType gMISType = (RMISType)SPATIAL_RMIS_TYPE;
 
-SampleGenerator GetNeighborOffsetSampleGenerator(const uint2 id) {
-    return SampleGenerator(id, gRandomSeed + 1);
-}
+SampleGenerator GetNeighborOffsetSampleGenerator(const uint2 id) { return MakeSampleGenerator(id, gRandomSeed + 1); }
 
 // Generalized Talbot RMIS weight
 float ComputeSpatialMisWeight(const uint2 center, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex, float candidateTargetPdf) {
@@ -124,7 +122,7 @@ void main(uint3 index: SV_DispatchThreadID) {
         r.PrepareMerge(centerM);
     }
 
-    SampleGenerator sg = SampleGenerator(id, gRandomSeed);
+    SampleGenerator sg = MakeSampleGenerator(id, gRandomSeed);
     SampleGenerator spatialSg = GetNeighborOffsetSampleGenerator(id);
     for (uint i = 0; i < gPathGenerator.mParams.mSpatialReuseSamples; i++) {
         const int2 p = id + int2(sample_disk_concentric(sampleNext2D(spatialSg)) * gPathGenerator.mParams.mSpatialReuseRadius);

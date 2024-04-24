@@ -78,8 +78,7 @@ private:
         bool        useResampling = true;
         bool        useMisInIntegrand = true;
         bool        shiftLightPathsToPixelCenters = true;
-        bool        useCausticReservoirs = false;
-        bool        useCausticMotionVectors = false;
+        bool        useCausticShift = false;
         bool        useTemporalReuse = true;
         bool        unbiasedTemporalReuse = false;
         bool        shiftSuffixes = true;
@@ -147,9 +146,6 @@ private:
     ref<Buffer>                     mpPhotonCellOffsets;         ///< Photon grid cell offsets.
     ref<Buffer>                     mpReservoirs[2];             ///< Per-pixel reservoirs.
     ref<Buffer>                     mpLastReservoirs;            ///< Per-pixel reservoirs.
-    ref<Buffer>                     mpCausticReservoirs;         ///< Per-pixel reservoirs.
-    ref<Buffer>                     mpLastCausticReservoirs;     ///< Per-pixel reservoirs.
-    ref<Buffer>                     mpCausticMotionVectorMutex;  ///< Mutex for writing caustic motion vectors.
     ref<Buffer>                     mpPixelCounterData;
 
     ref<Texture>                    mpLastVbuffer;               ///< Copy of the vbuffer from last frame.

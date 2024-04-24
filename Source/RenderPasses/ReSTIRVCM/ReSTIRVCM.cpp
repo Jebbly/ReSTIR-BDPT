@@ -132,18 +132,14 @@ void ReSTIRVCM::validateOptions()
         mStaticParams.emissiveSampler = EmissiveLightSamplerType::Power;
     }
 
-
     if (!mStaticParams.useResampling)
     {
         mStaticParams.useTemporalReuse = false;
         mStaticParams.spatialReusePasses = 0;
     }
 
-    if (mStaticParams.disableCameraConnection)
-        mStaticParams.useCausticReservoirs = false;
-
-    if (mStaticParams.useCausticReservoirs)
-        mStaticParams.useCausticMotionVectors = false;
+    if (!mStaticParams.useBPT || mStaticParams.disableCameraConnection || !mStaticParams.shiftSuffixes)
+        mStaticParams.useCausticShift = false;
 }
 
 Properties ReSTIRVCM::getProperties() const
@@ -236,7 +232,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
             if (mStaticParams.useResampling)
             {
                 mpLightReservoirs->clear(pRenderContext);
-                if (mStaticParams.useCausticReservoirs)
+                if (mStaticParams.useCausticShift)
                     mpCausticReservoirMap->clear(pRenderContext);
             }
             else
@@ -291,7 +287,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
             FALCOR_ASSERT(mpTemporalReusePass);
             FALCOR_ASSERT(renderData.getTexture(kInputMotionVectors));
             preparePass(pRenderContext, renderData, *mpTemporalReusePass);
-            if (mStaticParams.useBPT && (mStaticParams.useCausticReservoirs || mStaticParams.useCausticMotionVectors))
+            if (mStaticParams.useCausticShift)
             {
                 FALCOR_ASSERT(mpShiftCausticsPass);
                 preparePass(pRenderContext, renderData, *mpShiftCausticsPass);
@@ -309,22 +305,20 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                         auto var = mpTemporalShiftPass->getRootVar();
                         mpPixelDebug->prepareProgram(program, var);
                         var["CB"]["gSwapReservoirs"] = uint(mSwapReservoirs ? 1u : 0u);
+                        mpTemporalShiftPass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
                         mpTemporalShiftPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
                     }
 
                     // caustic shift
 
-                    if (mStaticParams.useBPT && (mStaticParams.useCausticReservoirs || mStaticParams.useCausticMotionVectors))
+                    if (mStaticParams.useCausticShift)
                     {
                         FALCOR_PROFILE(pRenderContext, "Caustic shift");
 
-                        if (mStaticParams.useCausticMotionVectors)
-                            pRenderContext->clearUAV(mpCausticMotionVectorMutex->getUAV().get(), uint4(0));
-
+                        mpShiftCausticsPass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
                         mpShiftCausticsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
 
-                        if (mStaticParams.useCausticReservoirs)
-                            mpCausticReservoirMap->sort(pRenderContext);
+                        mpCausticReservoirMap->sort(pRenderContext);
                     }
 
                     // reuse pass
@@ -332,6 +326,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                         FALCOR_PROFILE(pRenderContext, "Temporal reuse");
                         mpTemporalReusePass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
                         mpTemporalReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
+                        mpTemporalReusePass->addDefine("USE_CAUSTIC_SHIFT", mStaticParams.useCausticShift ? "1" : "0");
                         mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
                     }
                 }
@@ -513,23 +508,22 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
             if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection) {
                 dirty |= group.checkbox("Shift light paths to pixel centers", mStaticParams.shiftLightPathsToPixelCenters);
                 group.tooltip("Shift non-caustic light subpaths\nto vbuffer vertices during canonical sampling.\nThis can improve temporal reuse");
-                dirty |= group.checkbox("Caustic reservoirs", mStaticParams.useCausticReservoirs);
-                group.tooltip("Use separate reservoirs for caustic light paths.", true);
-
-                if (!mStaticParams.useCausticReservoirs) {
-                    dirty |= group.checkbox("Caustic motion vectors", mStaticParams.useCausticMotionVectors);
-                    group.tooltip("Compute new motion vectors for pixels containing caustic light paths.", true);
-                }
             }
+
+            group.separator();
 
             dirty |= group.checkbox("Temporal resampling", mStaticParams.useTemporalReuse);
             if (mStaticParams.useTemporalReuse)
             {
-                dirty |= group.checkbox("Shift path suffixes", mStaticParams.shiftSuffixes);
-                group.tooltip("Retrace whole paths during temporal\nresampling, instead of just the prefix.", true);
-
                 dirty |= group.checkbox("Unbiased temporal reuse", mStaticParams.unbiasedTemporalReuse);
                 group.tooltip("Shift paths to the previous frame during temporal reuse.", true);
+
+                dirty |= group.checkbox("Shift path suffixes", mStaticParams.shiftSuffixes);
+                group.tooltip("Retrace whole paths during temporal\nresampling, instead of just the prefix.", true);
+                if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection && mStaticParams.shiftSuffixes) {
+                    dirty |= group.checkbox("Caustic shift", mStaticParams.useCausticShift);
+                    group.tooltip("Allow caustic light paths to contribute to any\npixel during temporal resamlping.", true);
+                }
             }
 
             group.separator();
@@ -793,7 +787,7 @@ void ReSTIRVCM::updatePrograms()
             preparePass(mpTemporalShiftPass);
         }
 
-        if (mStaticParams.useCausticReservoirs || mStaticParams.useCausticMotionVectors)
+        if (mStaticParams.useCausticShift)
         {
             if (!mpShiftCausticsPass)
             {
@@ -860,20 +854,9 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
             {
                 mVarsChanged = true;
             }
-            if (mStaticParams.useCausticReservoirs) {
-                if (mpCausticReservoirMap->prepareResources(var["gPathGenerator"]["mCausticReservoirMap"], screenPixelCount, maxLightVertices))
+            if (mStaticParams.useCausticShift) {
+                if (mpCausticReservoirMap->prepareResources(var["gPathGenerator"]["mCausticReservoirMap"], screenPixelCount, screenPixelCount))
                 {
-                    mVarsChanged = true;
-                }
-                if (!mpCausticReservoirs || mpCausticReservoirs->getElementCount() != screenPixelCount)
-                {
-                    mpCausticReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mCausticReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-                    mVarsChanged = true;
-                }
-            } else if (mStaticParams.useCausticMotionVectors) {
-                if (!mpCausticMotionVectorMutex || mpCausticMotionVectorMutex->getSize() != (screenPixelCount + 7) / 8)
-                {
-                    mpCausticMotionVectorMutex = mpDevice->createBuffer((screenPixelCount + 7) / 8, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                     mVarsChanged = true;
                 }
             }
@@ -892,14 +875,6 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
                 {
                     const auto& pViewDir = renderData.getTexture(kInputViewDir);
                     mpLastViewDir = mpDevice->createTexture2D(mParams.mOutputDim.x, mParams.mOutputDim.y, pViewDir->getFormat(), 1, 1);
-                    mVarsChanged = true;
-                }
-            }
-
-            if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs) {
-                if (!mpLastCausticReservoirs || mpLastCausticReservoirs->getElementCount() != screenPixelCount)
-                {
-                    mpLastCausticReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLastCausticReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                     mVarsChanged = true;
                 }
             }
@@ -1093,9 +1068,6 @@ void ReSTIRVCM::bindShaderData(const ShaderVar& var, const RenderData& renderDat
         var["mPathReservoirs0"] = mpReservoirs[0];
         var["mPathReservoirs1"] = mpReservoirs[1];
         var["mLastReservoirs"]  = mpLastReservoirs;
-        var["mCausticReservoirs"] = mpCausticReservoirs;
-        var["mLastCausticReservoirs"] = mpLastCausticReservoirs;
-        var["mCausticMotionVectorMutex"] = mpCausticMotionVectorMutex;
 
         mpLightReservoirs->bindShaderData(var["mLightTraceReservoirs"]);
         mpCausticReservoirMap->bindShaderData(var["mCausticReservoirMap"]);
@@ -1286,9 +1258,6 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
         }
 
         pRenderContext->copyResource(mpLastReservoirs.get(), mSwapReservoirs ? mpReservoirs[1].get() : mpReservoirs[0].get());
-
-        if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs)
-            pRenderContext->copyResource(mpLastCausticReservoirs.get(), mpCausticReservoirs.get());
     }
 
     mpPixelDebug->endFrame(pRenderContext);
@@ -1335,8 +1304,6 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
     defines.add("USE_RECONNECTION_MIS", (useResampling && reconnectionMIS) ? "1" : "0");
     defines.add("SHIFT_LIGHT_PATHS_TO_CENTER", useResampling && useBPT && shiftLightPathsToPixelCenters ? "1" : "0");
-    defines.add("CAUSTIC_RESERVOIRS", useResampling && useBPT && useCausticReservoirs ? "1" : "0");
-    defines.add("CAUSTIC_MOTION_VECTORS", useResampling && useBPT && !useCausticReservoirs && useCausticMotionVectors ? "1" : "0");
     defines.add("MIS_IN_INTEGRAND", useResampling && useMisInIntegrand ? "1" : "0");
     defines.add("DISABLE_EARLY_RECONNECTION", useResampling && disableEarlyReconnection ? "1" : "0");
     defines.add("DISABLE_LVC", useBPT && disableLVC ? "1" : "0");
@@ -1345,6 +1312,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("SHIFT_SUFFIXES", "0"); // placeholder
     defines.add("USE_VIEW_DIR", "0"); // placeholder
     defines.add("UNBIASED_TEMPORAL_REUSE", "0"); // placeholder
+    defines.add("USE_CAUSTIC_SHIFT", "0"); // placeholder
     defines.add("SPATIAL_RMIS_TYPE", "0"); // placeholder
 
     // Sampling utilities configuration.
