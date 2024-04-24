@@ -315,7 +315,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                     {
                         FALCOR_PROFILE(pRenderContext, "Caustic shift");
 
-                        mpShiftCausticsPass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
+                        mpShiftCausticsPass->addDefine("SHIFT_SUFFIXES", "1");
                         mpShiftCausticsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
 
                         mpCausticReservoirMap->sort(pRenderContext);

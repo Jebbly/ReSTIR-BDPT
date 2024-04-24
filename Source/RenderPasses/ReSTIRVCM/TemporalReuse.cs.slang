@@ -6,6 +6,40 @@ import Utils.Sampling.SampleGenerator;
 static const bool gUnbiasedTemporalReuse = UNBIASED_TEMPORAL_REUSE;
 static const bool gUseCausticShift       = USE_CAUSTIC_SHIFT;
 
+PathSample TemporalShift(const uint2 basePixel, const PathSample basePath, const PackedPathVertex newVertex, out float jacobian, out bool causticReject) {
+    jacobian = 0;
+    causticReject = false;
+    PathSample result = {};
+
+    int2 newPixel;
+    if (basePath.HasFlag(PathFlags::eCausticLightPath) && gPathGenerator.gBidirectional && !gUseCausticShift && !gPathGenerator.gShiftSuffixes) {
+        // just copy caustic paths if suffix shifts are disabled
+        jacobian = 1;
+        newPixel = gPathGenerator.GetPixelCoord(PathVertex(basePath.mSuffix.mVertex).GetPosition());
+        result = basePath;
+    } else {
+        result = gPathGenerator.ShiftPath(basePath, newVertex, newPixel, jacobian);
+    }
+
+    if (result.IsValid() && jacobian > 0 && result.HasFlag(PathFlags::eCausticLightPath) && gPathGenerator.gBidirectional && !gUseCausticShift) {
+        // reject caustic paths
+        const int2 d = basePixel - newPixel;
+        if ((gPathGenerator.mParams.mCausticReuseRadius == 0 && any(d != 0)) ||
+            (gPathGenerator.mParams.mCausticReuseRadius > 0 && dot(d, d) > gPathGenerator.mParams.mCausticReuseRadius * gPathGenerator.mParams.mCausticReuseRadius)) {
+            print("Shift failed: Caustic path not in pixel", newPixel);
+            result = {};
+            jacobian = 0;
+            causticReject = true;
+        }
+    }
+
+    return result;
+}
+PathSample TemporalShift(const uint2 basePixel, const PathSample basePath, const PackedPathVertex newVertex, out float jacobian) {
+    bool tmp;
+    return TemporalShift(basePixel, basePath, newVertex, jacobian, tmp);
+}
+
 void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir r) {
     const PackedPathVertex primaryHit = gPathGenerator.LoadPrimaryVertex(id);
     if (!primaryHit.IsFinite()) return;
@@ -30,39 +64,52 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
 
     const float centerM = r.mM;
 
-    // shift candidate to current frame
+    // shift candidate from last frame to current frame
 
-    float candidateTargetPdf = candidate.mSample.GetTargetPdf();
+    float candidateTargetPdf = 0;
     float jacobianToCenter = 0;
 
     if (candidate.mSample.IsValid()) {
-        print("Candidate id, seed, bounces:", uint4(candidate.mSample.mId.mId, candidate.mSample.mId.mSeed, candidate.mSample.mBounces));
-        print("  f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
-        print("  suffix:", luminance(candidate.mSample.mSuffix.mContribution));
+        if (candidate.mSample.HasFlag(PathFlags::eCausticLightPath) && gUseCausticShift) {
+            // caustic samples handled separately below
+        } else {
+            print("Candidate id, seed, bounces:", uint4(candidate.mSample.mId.mId, candidate.mSample.mId.mSeed, candidate.mSample.mBounces));
+            print("  f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
+            print("  suffix:", luminance(candidate.mSample.mSuffix.mContribution));
 
-        candidate.mSample = gPathGenerator.ShiftPath(candidate.mSample, primaryHit, jacobianToCenter);
+            candidateTargetPdf = candidate.mSample.GetTargetPdf();
+            candidate.mSample = TemporalShift(id, candidate.mSample, primaryHit, jacobianToCenter);
+            gPathGenerator.IncrementCounter( candidate.mSample.IsValid() && jacobianToCenter > 0 ? DebugCounterType::eTemporalShiftSuccesses : DebugCounterType::eTemporalShiftFailures );
 
-        print("jacobianToCenter:", jacobianToCenter);
-
-        gPathGenerator.IncrementCounter( candidate.mSample.IsValid() && jacobianToCenter > 0 ? DebugCounterType::eTemporalShiftSuccesses : DebugCounterType::eTemporalShiftFailures );
+            print("jacobianToCenter:", jacobianToCenter);
+        }
     } else {
         print("Invalid candidate sample", 0);
     }
 
     // Talbot RMIS
 
+    // apply mis weight to previous frame's sample
+    {
+        const float mi = SafeDivide(candidate.mM * candidateTargetPdf, jacobianToCenter);
+        const float m = SafeDivide(
+            mi,
+            mi + centerM * candidate.mSample.GetTargetPdf());
+        candidate.PrepareMerge(m, jacobianToCenter);
+    }
+
     // apply mis weight to current frame's sample r.mSample
     {
+        // shift current sample to previous frame
         float f = 0;
         if (r.mSample.IsValid()) {
-            // shift current sample to previous frame
             if (gUnbiasedTemporalReuse) {
                 // sample was already shifted in ShiftToPrevFrame
                 // HACK: storing 'shiftedTargetPdf / jacobianToPrev' in reservoir
                 f = r.mSample.mSuffix.mVertex.pad1;
             } else {
-                float jacobianToPrev = 0;
-                const float shiftedTargetPdf = gPathGenerator.ShiftPath(r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
+                float jacobianToPrev;
+                const float shiftedTargetPdf = TemporalShift(prevPixel, r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
                 f = SafeDivide(shiftedTargetPdf, jacobianToPrev);
             }
         }
@@ -73,15 +120,6 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
             mi + candidate.mM * f);
 
         r.PrepareMerge(m);
-    }
-
-    // apply mis weight to previous frame's sample
-    {
-        const float mi = SafeDivide(candidate.mM * candidateTargetPdf, jacobianToCenter);
-        const float m = SafeDivide(
-            mi,
-            mi + centerM * candidate.mSample.GetTargetPdf());
-        candidate.PrepareMerge(m, jacobianToCenter);
     }
 
     // perform the merge
@@ -98,6 +136,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
             // HACK: store jacobian and original target pdf in reservoir
             jacobianToCenter   = candidate.mSample.mSuffix.mVertex.pad1;
             candidateTargetPdf = candidate.mSample.mPrefixPdf;
+            candidate.mSample.mPrefixPdf = 1;
 
             // apply mis weight to previous frame's sample
             {
@@ -105,7 +144,6 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
                 const float m = SafeDivide(
                     mi,
                     mi + centerM * candidate.mSample.GetTargetPdf());
-                candidate.mM = 0; // dont accumulate caustic candidate's M
                 candidate.PrepareMerge(m, jacobianToCenter);
             }
 
@@ -139,7 +177,7 @@ void ShiftToPrevFrame(uint3 index: SV_DispatchThreadID) {
     PathReservoir r = gPathGenerator.LoadOutputReservoir(id);
 
     float jacobianToPrev;
-    float shiftedTargetPdf = gPathGenerator.ShiftPath(r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
+    const float shiftedTargetPdf = TemporalShift(prevPixel, r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
 
     // HACK: storing 'shiftedTargetPdf / jacobianToPrev' in reservoir
     r.mSample.mSuffix.mVertex.pad1 = SafeDivide(shiftedTargetPdf, jacobianToPrev);

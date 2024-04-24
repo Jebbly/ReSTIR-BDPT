@@ -220,21 +220,6 @@ extension PathGenerator {
         Ray visibilityRay;
         PathSuffix newSuffix = GetShiftedSuffixVertex(vertex, basePath.mSuffix, visibilityRay);
 
-        if (gBidirectional && !gDisableCameraConnection && basePath.HasFlag(PathFlags::eCausticLightPath)) {
-            // just copy caustic paths if they are in the same pixel (or close)
-            const int2 basePixel = GetPixelCoord(PathVertex(newSuffix.mVertex).GetPosition());
-            const int2 newPixel  = GetPixelCoord(vertex.GetPosition());
-            const int2 d = newPixel - basePixel;
-            if ((mParams.mCausticReuseRadius == 0 && any(d != 0)) ||
-                (mParams.mCausticReuseRadius > 0  && dot(d, d) > sqr(mParams.mCausticReuseRadius))) {
-                print("Shift failed: Caustic path not in pixel", int4(basePixel, newPixel));
-                return result;
-            }
-            // TODO: reevaluate BSDF/geometry/importance
-            result = basePath;
-            return result;
-        }
-
         if (newSuffix.mVertex.IsFinite()) {
             if (newSuffix.mCos < kMinCosTheta)
                 return result;
@@ -475,8 +460,9 @@ extension PathGenerator {
 
 extension PathGenerator {
     // Shift a path to a new primary vertex. For pure random replay light paths, newPixel is set to the pixel the last light subpath vertex lands in.
-    PathSample ShiftPath(const PathSample basePath, const PackedPathVertex newPrimaryHit, out float jacobian) {
+    PathSample ShiftPath(const PathSample basePath, const PackedPathVertex newPrimaryHit, out int2 newPixel, out float jacobian) {
         jacobian = 0;
+        newPixel = -1;
         PathSample result = {};
 
         const bool hasLightSubpath = gBidirectional && (
@@ -515,7 +501,6 @@ extension PathGenerator {
                     if (basePath.HasFlag(PathFlags::eCausticLightPath)) {
                         // Connect caustic paths to the camera directly
                         float w;
-                        int2 newPixel;
                         result = ConnectToCamera(s, vertex, newPixel, w);
                         if (!result.IsValid() || any(newPixel != GetPixelCoord(PathVertex(newPrimaryHit).GetPosition()))) {
                             print("Shift failed: ConnectToCamera failed", 0);
@@ -525,16 +510,6 @@ extension PathGenerator {
 
                         if (!result.HasFlag(PathFlags::eCausticLightPath)) {
                             print("Shift failed: Non-caustic result", 0);
-                            result = {};
-                            return result;
-                        }
-
-                        // reject path if it's not in the same pixel (or close)
-                        const int2 d = GetPixelCoord(PathVertex(newPrimaryHit).GetPosition()) - newPixel;
-                        const float d2 = dot(d, d);
-                        const float r = mParams.mCausticReuseRadius;
-                        if ((r == 0 && any(d != 0)) || (r > 0 && d2 > r * r)) {
-                            print("Shift failed: Caustic path not in pixel", newPixel);
                             result = {};
                             return result;
                         }
@@ -649,6 +624,11 @@ extension PathGenerator {
         }
 
         return result;
+    }
+
+    PathSample ShiftPath(const PathSample basePath, const PackedPathVertex newPrimaryHit, out float jacobian) {
+        int2 tmp;
+        return ShiftPath(basePath, newPrimaryHit, tmp, jacobian);
     }
 
     // Faster version of ShiftPath with just the light subpath random replay code path
