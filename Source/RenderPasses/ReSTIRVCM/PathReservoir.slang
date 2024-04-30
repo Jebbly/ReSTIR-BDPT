@@ -31,10 +31,10 @@ struct PathId {
 
 struct PackedPathVertex {
     PackedHitInfo mPackedHit = 0; ///< Packed hit information.
-    float3 mRayOrigin;            ///< Origin of the incoming ray (or the outgoing ray for the first light subpath vertex)
-    float mRayDistance;           ///< Hit distance of the incoming ray (or the outgoing ray for the first light subpath vertex)
-    float3 mRayDirection;         ///< Direction of the incoming ray (or the outgoing ray for the first light subpath vertex)
-    float pad1;
+    float3 mRayOrigin = {};       ///< Origin of the incoming ray (or the outgoing ray for the first light subpath vertex)
+    float  mRayDistance = {};     ///< Hit distance of the incoming ray (or the outgoing ray for the first light subpath vertex)
+    float3 mRayDirection = {};    ///< Direction of the incoming ray (or the outgoing ray for the first light subpath vertex)
+    float  pad1 = {};
 
     __init(const Ray ray, const HitInfo hit, const float hitDist) {
         mRayOrigin = ray.origin;

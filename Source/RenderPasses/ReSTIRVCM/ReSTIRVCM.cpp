@@ -305,6 +305,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                         auto var = mpTemporalShiftPass->getRootVar();
                         mpPixelDebug->prepareProgram(program, var);
                         var["CB"]["gSwapReservoirs"] = uint(mSwapReservoirs ? 1u : 0u);
+                        var["gPathGenerator"]["mMotionVectors"] = renderData.getTexture(kInputMotionVectors);
                         mpTemporalShiftPass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
                         mpTemporalShiftPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
                     }

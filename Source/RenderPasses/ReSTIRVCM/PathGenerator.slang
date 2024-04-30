@@ -51,11 +51,11 @@ struct LightTraceReservoir {
 struct PathGenerator {
     PathGeneratorParams mParams;
 
-    EnvMapSampler mEnvMapSampler;
+    EnvMapSampler        mEnvMapSampler;
     EmissiveLightSampler mEmissiveSampler;
 
     LightVertexCache mLightVertexCache;
-    PhotonMap mPhotonMap;
+    PhotonMap        mPhotonMap;
 
     RWByteAddressBuffer mAtomicRadiance;
     RWTexture2D<float4> mOutputRadiance;
@@ -63,16 +63,16 @@ struct PathGenerator {
 
     RWStructuredBuffer<PathReservoir> mPathReservoirs0;
     RWStructuredBuffer<PathReservoir> mPathReservoirs1;
-    HashMap<LightTraceReservoir> mLightTraceReservoirs;
-    HashMap<PathReservoir> mCausticReservoirMap;
+    HashMap<LightTraceReservoir>      mLightTraceReservoirs;
+    HashMap<PathReservoir>            mCausticReservoirMap;
 
     Texture2D<PackedHitInfo> mVbuffer;
-    Texture2D<float3> mViewDir;
-    Texture2D<float2> mMotionVectors;
+    Texture2D<float3>        mViewDir;
+    Texture2D<float2>        mMotionVectors;
 
     RWStructuredBuffer<PathReservoir> mLastReservoirs;
-    Texture2D<float3> mLastViewDir;
-    Texture2D<PackedHitInfo> mLastVbuffer;
+    Texture2D<float3>                 mLastViewDir;
+    Texture2D<PackedHitInfo>          mLastVbuffer;
 }
 ParameterBlock<PathGenerator> gPathGenerator;
 
@@ -1333,7 +1333,7 @@ extension PathGenerator {
             // if the rcv is unconnectable, this is a caustic light path and we store the primary vertex as the rcv instead.
             suffix = PathSuffix::Create(
                 s.throughput,
-                1,
+                cameraPdfA,
                 vertex.Pack(),
                 vertex.GetDirIn(),
                 dist,
@@ -1350,7 +1350,7 @@ extension PathGenerator {
         } else {
             suffix = PathSuffix::Create(
                 s.throughputAtRcv,
-                1,
+                cameraPdfA,
                 s.rcv,
                 s.rcvDirOut,
                 s.rcvDist,
@@ -1359,7 +1359,7 @@ extension PathGenerator {
                 LightSubpathData::Create(
                     s.lightSubpathVertex,
                     s.id,
-                    s.bounces + 1,
+                    s.bounces + 2,
                     s.diffuseBounces + 1,
                     s.pdfAtRcv
                 )
@@ -1481,7 +1481,7 @@ extension PathGenerator {
         s.mis = RecursiveMisState(vertex);
         return s;
     }
-    PathState<bShift> InitializeLightPath<let bShift : bool>(const PathId id, out PathVertex vertex, PackedHitInfo firstVertex = {}) {
+    PathState<bShift> InitializeLightPath<let bShift : bool, let bSetPrimary : bool>( const PathId id, out PathVertex vertex, PackedHitInfo firstVertex = {}, const PackedPathVertex newPrimaryHit = {}) {
         PathState<bShift> s = {};
         s.id = id;
         s.isLightPath = true;
@@ -1512,11 +1512,15 @@ extension PathGenerator {
 
                 if (gUseEmissiveLights) envSample.pdf *= mParams.mEnvMapProb;
 
-                float3 t, b;
-                StableONB(envSample.dir, t, b);
-                const float2 uv = sample_disk_concentric(sampleU.zw);
+                if (bSetPrimary) {
+                    ray = Ray(PathVertex(newPrimaryHit).ComputeRayOrigin(envSample.dir) + mParams.mSceneSphere.w * envSample.dir, -envSample.dir);
+                } else {
+                    float3 t, b;
+                    StableONB(envSample.dir, t, b);
+                    const float2 uv = sample_disk_concentric(sampleU.zw);
 
-                ray = Ray(mParams.mSceneSphere.xyz + mParams.mSceneSphere.w * (t * uv.x + b * uv.y + envSample.dir), -envSample.dir);
+                    ray = Ray(mParams.mSceneSphere.xyz + mParams.mSceneSphere.w * (t * uv.x + b * uv.y + envSample.dir), -envSample.dir);
+                }
                 l = PackedPathVertex(ray, HitInfo(0), FLT_MAX);
                 s.throughput = envSample.Le;
                 cosLight = 1;
@@ -1548,18 +1552,35 @@ extension PathGenerator {
                 directPdfA = selectionPdf / tri.area;
 
                 float dirPdfW;
-                const float3 localDir = sample_cosine_hemisphere_concentric(sampleU.zw, dirPdfW);
-                cosLight = localDir.z;
 
-                if (cosLight < kMinCosTheta)
-                    return s;
+                if (bSetPrimary) {
+                    const float3 rayOrigin = computeRayOrigin(tri.getPosition(barycentrics), tri.normal);
 
-                float3 t, b;
-                StableONB(tri.normal, t, b);
-                const float3 rayDir = normalize(localDir.x * t + localDir.y * b + localDir.z * tri.normal);
+                    PathVertex newVertex = PathVertex(newPrimaryHit);
+                    float3 rayDir = newVertex.ComputeRayOrigin(rayOrigin - newVertex.GetPosition()) - rayOrigin;
+                    const float dist = length(rayDir);
+                    rayDir /= dist;
 
-                const float3 rayOrigin = computeRayOrigin(tri.getPosition(barycentrics), tri.normal);
-                ray = Ray(rayOrigin, rayDir);
+                    cosLight = dot(tri.normal, rayDir);
+                    if (cosLight < kMinCosTheta) {
+                        print("cosLight < kMinCosTheta", cosLight);
+                        return s;
+                    }
+                    dirPdfW = CosHemispherePdfW(cosLight);
+                    ray = Ray(rayOrigin, rayDir, 0, dist);
+                } else {
+                    const float3 localDir = sample_cosine_hemisphere_concentric(sampleU.zw, dirPdfW);
+                    cosLight = localDir.z;
+
+                    if (cosLight < kMinCosTheta)
+                        return s;
+
+                    float3 t, b;
+                    StableONB(tri.normal, t, b);
+                    const float3 rayDir = normalize(localDir.x * t + localDir.y * b + localDir.z * tri.normal);
+                    const float3 rayOrigin = computeRayOrigin(tri.getPosition(barycentrics), tri.normal);
+                    ray = Ray(rayOrigin, rayDir);
+                }
 
                 const MeshLightData meshData = gScene.lightCollection.getMeshData(triangleIndex);
 
@@ -1598,7 +1619,16 @@ extension PathGenerator {
         s.pdfAtRcv = directPdfA;
         s.rcvCos = cosLight;
 
-        vertex = PathVertex(TraceRay(ray));
+        if (bSetPrimary) {
+            if (Occluded(ray)) {
+                print("Occluded", 0);
+                s.Terminate();
+                return s;
+            }
+            vertex = PathVertex(PackedPathVertex(ray, HitInfo(newPrimaryHit.mPackedHit), ray.tMax));
+        } else
+            vertex = PathVertex(TraceRay(ray));
+
         if (vertex.IsFinite()) {
             const float cosIn = vertex.GetCosN(ray.dir);
             if (cosIn < kMinCosTheta) {
@@ -1762,7 +1792,7 @@ extension PathGenerator {
         if (gDisableLVC) mLightVertexCache.lightVertexCount[id.mId.y * mParams.mOutputDim.x + id.mId.x] = 0;
 
         PathVertex vertex;
-        PathState<false> s = InitializeLightPath<false>(id, vertex);
+        PathState<false> s = InitializeLightPath<false, false>(id, vertex);
 
         while (any(s.throughput > 0) && s.pdfW > 0 && vertex.IsFinite() && s.bounces + 1 <= mParams.mMaxBounces && s.diffuseBounces + 1 <= mParams.mMaxDiffuseBounces) {
             const bool connectable = vertex.IsConnectable();

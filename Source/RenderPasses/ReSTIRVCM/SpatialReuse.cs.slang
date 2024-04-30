@@ -109,7 +109,7 @@ void main(uint3 index: SV_DispatchThreadID) {
 
     if (center.mSample.IsValid()) {
         print("\nCenter id:", center.mSample.mId.mId);
-        print("f, W:", float2(center.mSample.GetTargetPdf(), center.mW));
+        print("  f, W:", float2(center.mSample.GetTargetPdf(), center.mW));
     } else {
         print("\nInvalid center sample", 0);
     }
@@ -133,7 +133,7 @@ void main(uint3 index: SV_DispatchThreadID) {
 
         if (candidate.mSample.IsValid()) {
             print("Candidate id:", candidate.mSample.mId.mId);
-            print("f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
+            print("  f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
         }
 
         if (gMISType == RMISType::ePairwise) {

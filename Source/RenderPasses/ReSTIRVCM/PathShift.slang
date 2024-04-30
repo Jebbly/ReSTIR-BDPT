@@ -4,143 +4,19 @@ import Rendering.Lights.EnvMapSampler;
 import Rendering.Lights.EmissiveLightSampler;
 import Utils.Debug.PixelDebug;
 import Utils.Math.MathHelpers;
+import Utils.Color.ColorHelpers;
 import Utils.Geometry.GeometryHelpers;
 __exported import PathGenerator;
 import PhotonMap;
 
 extension PathGenerator {
-    // shift a 1-bounce light subpath to a new primary hit. Mostly copied from InitializeLightPath
-    PathState<true> ShiftLightSubpath(const LightSubpathData basePath, const PackedPathVertex newPrimaryHit, out PathVertex vertex) {
-        PathState<true> s = {};
-        s.id = basePath.mId;
-        s.isLightPath = true;
+    // shifts light paths with >1 bounce
+    PathState<true> ShiftLightSubpath(const PathSample basePath, out PathVertex vertex) {
+        PathState<true> s = InitializeLightPath<true, false>(basePath.mSuffix.mLightSubpath.mId, vertex, basePath.mSuffix.mLightSubpath.mFirstVertex);
 
-        s.throughput = 0;
-        s.pdfW = 0;
-        s.throughputAtRcv = 0;
-        s.rcvDirOut = 0;
+        const uint lightVertexCount = basePath.mSuffix.mLightSubpath.mVertexCount + (basePath.HasFlag(PathFlags::eNonCausticLightPath) ? -1 : 0);
 
-        s.sg     = MakeSampleGenerator(s.id.mId, s.id.mSeed);
-        s.sgBsdf = MakeSampleGenerator(s.id.mId, -s.id.mSeed);
-
-        PathVertex newVertex = PathVertex(newPrimaryHit);
-
-        vertex.mVertex = {};
-
-        float cosLight = 0;
-        float directPdfA = 0;
-        float emissionPdfW = 0;
-        Ray ray = {};
-        PackedPathVertex l = {};
-        {
-            const bool useEnvMap = sampleNext1D(s.sg) < mParams.mEnvMapProb;
-            const float4 sampleU = sampleNext4D(s.sg);
-
-            if (gUseEnvLight && !HitInfo(basePath.mFirstVertex).isValid()) {
-                EnvMapSample envSample;
-                if (!mEnvMapSampler.sample(sampleU.xy, envSample))
-                    return s;
-
-                if (gUseEmissiveLights) envSample.pdf *= mParams.mEnvMapProb;
-
-                ray = Ray(newVertex.GetPosition() + mParams.mSceneSphere.w * envSample.dir, -envSample.dir);
-                l = PackedPathVertex(ray, HitInfo(0), FLT_MAX);
-                s.throughput = envSample.Le;
-                cosLight = 1;
-
-                directPdfA = envSample.pdf;
-                emissionPdfW = directPdfA * gConcentricDiscPdfA / sqr(mParams.mSceneSphere.w);
-            } else if (gUseEmissiveLights && HitInfo(basePath.mFirstVertex).isValid()) {
-                const TriangleHit triHit = HitInfo(basePath.mFirstVertex).getTriangleHit();
-                const uint triangleIndex = gScene.lightCollection.getTriangleIndex(triHit.instanceID, triHit.primitiveIndex);
-                if (triangleIndex == LightCollection::kInvalidIndex) {
-                    print("triangleIndex == LightCollection::kInvalidIndex", triangleIndex);
-                    return s;
-                }
-                float selectionPdf = mEmissiveSampler.evalTriangleSelectionPdf(triangleIndex);
-
-                if (gUseEnvLight) selectionPdf *= 1 - mParams.mEnvMapProb;
-
-                let tri = gScene.lightCollection.getTriangle(triangleIndex);
-
-                directPdfA = selectionPdf / tri.area;
-
-                const float3 barycentrics = float3(1 - triHit.barycentrics.x - triHit.barycentrics.y, triHit.barycentrics);
-                const float3 rayOrigin = computeRayOrigin(tri.getPosition(barycentrics), tri.normal);
-
-                float3 rayDir = newVertex.ComputeRayOrigin(rayOrigin - newVertex.GetPosition()) - rayOrigin;
-                const float dist = length(rayDir);
-                rayDir /= dist;
-
-                cosLight = dot(tri.normal, rayDir);
-                if (cosLight < kMinCosTheta) {
-                    print("cosLight < kMinCosTheta", cosLight);
-                    return s;
-                }
-
-                float dirPdfW = CosHemispherePdfW(cosLight);
-
-                ray = Ray(rayOrigin, rayDir, 0, dist);
-
-                l = PackedPathVertex(ray, HitInfo(triHit), dist);
-
-                s.throughput = gScene.materials.evalEmissive(tri.materialID, tri.getTexCoord(barycentrics));
-
-                emissionPdfW = directPdfA * dirPdfW;
-            } else {
-                return s;
-            }
-        }
-
-        if (Occluded(ray)) {
-            print("Occluded", 0);
-            s.Terminate();
-            return s;
-        }
-
-        const bool finiteEmitter = l.IsFinite();
-
-        s.lightSubpathVertex = l.mPackedHit;
-        s.lightSubpathId = s.id;
-
-        s.pdfW = emissionPdfW;
-        s.bounces = 0;
-        s.diffuseBounces = 0;
-        s.prefixBounces = 0;
-        s.rcvDiffuseBounces = 0;
-
-        s.mis = RecursiveMisState(finiteEmitter, directPdfA, emissionPdfW, cosLight);
-        s.lastVertex.mis = s.mis;
-
-        // set initial vertex as rcv
-        s.rcv = l;
-        s.rcv.mRayDirection = -s.rcv.mRayDirection;
-        s.throughputAtRcv = s.throughput;
-        s.pdfAtRcv = directPdfA;
-        s.rcvCos = cosLight;
-
-        vertex = PathVertex(PackedPathVertex(ray, HitInfo(newPrimaryHit.mPackedHit), ray.tMax));
-        if (vertex.IsFinite()) {
-            const float cosIn = vertex.GetCosN(ray.dir);
-            if (cosIn < kMinCosTheta) {
-                print("cosIn < kMinCosTheta", cosIn);
-                s.Terminate();
-                return s;
-            }
-
-            s.mis.ProcessRay(vertex.mVertex, cosIn, finiteEmitter);
-
-            s.rcvDist = vertex.mVertex.mRayDistance;
-        } else
-            s.Terminate();
-
-        return s;
-    }
-
-    PathState<true> ShiftLightSubpath(const LightSubpathData basePath, out PathVertex vertex) {
-        PathState<true> s = InitializeLightPath<true>(basePath.mId, vertex, basePath.mFirstVertex);
-
-        while (any(s.throughput > 0) && s.pdfW > 0 && s.bounces + 2 < basePath.mVertexCount && vertex.IsFinite()) {
+        while (any(s.throughput > 0) && s.pdfW > 0 && s.bounces + 2 < lightVertexCount && vertex.IsFinite()) {
             // for light paths: rcv is always the 2nd to last vertex
             s.rcv = vertex.Pack();
             s.rcvDirOut = vertex.GetDirIn();
@@ -212,7 +88,8 @@ extension PathGenerator {
 
     // connect to suffix without shifting it. Assumes the path state is already at the end of the prefix
     PathSample ConnectToSuffix(inout PathState<true> s, inout PathVertex vertex, const PathSample basePath) {
-        const uint  cameraBounces = basePath.mBounces - (basePath.mSuffix.mLightSubpath.mVertexCount + ((gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging)) ? 1 : 0));
+        const uint lightVertexCount = basePath.mSuffix.mLightSubpath.mVertexCount + (basePath.HasFlag(PathFlags::eNonCausticLightPath) ? -1 : 0) + (basePath.HasFlag(PathFlags::eVertexMerging) ? 1 : 0);
+        const uint cameraBounces = max(0, int(basePath.mBounces) - int(lightVertexCount));
         const float prefixPdf = s.pdfW;
 
         PathSample result = {};
@@ -236,27 +113,49 @@ extension PathGenerator {
                 print("Shift failed: suffix occluded", 0);
                 return result;
             }
+
+            float cameraPdfA, cosOut;
+            if (basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
+                // for pure light paths, vertex is the primary hit
+                float3 toCamera = gScene.camera.getPosition() - vertex.GetPosition();
+                const float dist = length(toCamera);
+                toCamera /= dist;
+
+                float cosAtCamera;
+                const float imageToSolidAngleFactor = GetImageToSolidAngleFactor(-toCamera, cosAtCamera);
+                cameraPdfA = imageToSolidAngleFactor * vertex.GetCosN(toCamera) / sqr(dist);
+                cosOut = vertex.GetCosN(visibilityRay.dir);
+            }
+
             SetNextVertex(s, vertex, PathVertex(newSuffix.mVertex));
             prefixFwdPdfW = s.lastVertex.scatterFwdPdfW;
             prefixRevPdfW = s.lastVertex.scatterRevPdfW;
-            if (basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
-                // divide out cosine term at primary hit for pure light paths
-                s.throughput /= abs(dot(s.lastVertex.normal, vertex.GetDirIn()));
-            }
             if (!any(s.throughput > 0)) {
                 print("Shift failed: Zero reconnection reflectance", 0);
                 return result;
+            }
+            if (basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
+                // divide out cosine term at primary hit for pure light paths
+                s.throughput /= cosOut;
+                newSuffix.mCos = cosOut;
+                newSuffix.mCameraFwdPdf = cameraPdfA;
             }
         }
 
         ReflectanceEvalData rcvF = {};
         if (s.bounces == basePath.mBounces) {
             newSuffix.mContribution = vertex.GetEmission();
+            if (basePath.mSuffix.mLightSubpath.mVertexCount > 1) {
+                newSuffix.mContribution *= vertex.GetCosN(vertex.GetDirIn());
+            }
         } else {
             rcvF = vertex.EvaluateReflectance(s.sg, newSuffix.mDirOut, false);
             if (s.bounces > cameraBounces) {
-                // divide out cosine term for light subpath vertices
-                rcvF.mReflectance /= vertex.GetCosN(newSuffix.mDirOut);
+                // divide out cosine term if the rcv was originally on the light subpath
+                float fac = 1 / vertex.GetCosN(newSuffix.mDirOut);
+                if (basePath.HasFlag(PathFlags::eNonCausticLightPath))
+                    fac *= vertex.GetCosN(vertex.GetDirIn()); // include cosine term towards primary hit for pure light paths
+                rcvF.mReflectance *= fac;
             }
             s.throughput *= rcvF.mReflectance;
         }
@@ -379,7 +278,8 @@ extension PathGenerator {
     PathSample ShiftSuffix(inout PathState<true> s, inout PathVertex vertex, const PathSample basePath, const LightSubpathVertex shiftedLightVertex) {
         PathSample result = {};
 
-        const uint cameraBounces = basePath.mBounces - (basePath.mSuffix.mLightSubpath.mVertexCount + (gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging) ? 1 : 0));
+        const uint lightVertexCount = basePath.mSuffix.mLightSubpath.mVertexCount + (basePath.HasFlag(PathFlags::eNonCausticLightPath) ? -1 : 0) + (basePath.HasFlag(PathFlags::eVertexMerging) ? 1 : 0);
+        const uint cameraBounces = max(0, int(basePath.mBounces) - int(lightVertexCount));
 
         if (s.rcvFound) {
             print("Shift failed: Rcv mismatch", 0);
@@ -485,10 +385,10 @@ extension PathGenerator {
                 if (!gDisableCameraConnection && basePath.HasFlag(PathFlags::eNonCausticLightPath) && basePath.mBounces == 1) {
                     // for pure light paths with 1 bounce, we need to modify the initial sampling
                     // so that newPrimaryHit is the 2nd vertex
-                    s = ShiftLightSubpath(basePath.mSuffix.mLightSubpath, newPrimaryHit, vertex);
+                    s = InitializeLightPath<true, true>(basePath.mSuffix.mLightSubpath.mId, vertex, basePath.mSuffix.mLightSubpath.mFirstVertex, newPrimaryHit);
                 } else {
-                    s = ShiftLightSubpath(basePath.mSuffix.mLightSubpath, vertex);
-                    if (s.bounces + 2 != basePath.mSuffix.mLightSubpath.mVertexCount || !vertex.IsFinite())
+                    s = ShiftLightSubpath(basePath, vertex);
+                    if (!vertex.IsFinite())
                         s.Terminate();
                 }
                 if (!any(s.throughput > 0) || !(s.pdfW > 0)) {
@@ -637,12 +537,12 @@ extension PathGenerator {
         newPixel = -1;
         PathSample result = {};
 
-        if (!basePath.HasSuffix() || basePath.mSuffix.mLightSubpath.mVertexCount < 2 || !basePath.HasFlag(PathFlags::eCausticLightPath))
+        if (!basePath.HasSuffix() || !basePath.HasFlag(PathFlags::eCausticLightPath))
             return result;
 
         // trace light subpath, so that vertex is the end of the light subpath
         PathVertex vertex;
-        PathState<true> s = ShiftLightSubpath(basePath.mSuffix.mLightSubpath, vertex);
+        PathState<true> s = ShiftLightSubpath(basePath, vertex);
         if (s.bounces + 2 != basePath.mSuffix.mLightSubpath.mVertexCount || !vertex.IsFinite())
             s.Terminate();
 

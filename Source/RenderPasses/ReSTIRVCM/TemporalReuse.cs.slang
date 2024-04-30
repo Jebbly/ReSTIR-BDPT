@@ -22,7 +22,7 @@ PathSample TemporalShift(const uint2 basePixel, const PathSample basePath, const
     }
 
     if (result.IsValid() && jacobian > 0 && result.HasFlag(PathFlags::eCausticLightPath) && gPathGenerator.gBidirectional && !gUseCausticShift) {
-        // reject caustic paths
+        // reject caustic paths if they don't land in the same pixel
         const int2 d = basePixel - newPixel;
         if ((gPathGenerator.mParams.mCausticReuseRadius == 0 && any(d != 0)) ||
             (gPathGenerator.mParams.mCausticReuseRadius > 0 && dot(d, d) > gPathGenerator.mParams.mCausticReuseRadius * gPathGenerator.mParams.mCausticReuseRadius)) {
@@ -57,7 +57,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
 
     if (r.mSample.IsValid()) {
         print("\nCenter id, seed, bounces:", uint4(r.mSample.mId.mId, r.mSample.mId.mSeed, r.mSample.mBounces));
-        print("  f, W:", float2(r.mSample.GetTargetPdf(), r.mW));
+        print("  f, W, M, suffix:", float4(r.mSample.GetTargetPdf(), r.mW, r.mM, luminance(r.mSample.mSuffix.mContribution)));
     } else {
         print("\nInvalid center sample", 0);
     }
@@ -69,19 +69,21 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
     float candidateTargetPdf = 0;
     float jacobianToCenter = 0;
 
+    bool causticCandidate = false;
+
     if (candidate.mSample.IsValid()) {
         if (candidate.mSample.HasFlag(PathFlags::eCausticLightPath) && gUseCausticShift) {
             // caustic samples handled separately below
+            causticCandidate = true;
         } else {
             print("Candidate id, seed, bounces:", uint4(candidate.mSample.mId.mId, candidate.mSample.mId.mSeed, candidate.mSample.mBounces));
-            print("  f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
-            print("  suffix:", luminance(candidate.mSample.mSuffix.mContribution));
+            print("  f, W, M, suffix:", float4(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM, luminance(candidate.mSample.mSuffix.mContribution)));
 
             candidateTargetPdf = candidate.mSample.GetTargetPdf();
             candidate.mSample = TemporalShift(id, candidate.mSample, primaryHit, jacobianToCenter);
             gPathGenerator.IncrementCounter( candidate.mSample.IsValid() && jacobianToCenter > 0 ? DebugCounterType::eTemporalShiftSuccesses : DebugCounterType::eTemporalShiftFailures );
 
-            print("jacobianToCenter:", jacobianToCenter);
+            print("  prev->r, jacobianToCenter:", float2(candidate.mSample.GetTargetPdf(), jacobianToCenter));
         }
     } else {
         print("Invalid candidate sample", 0);
@@ -95,6 +97,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
         const float m = SafeDivide(
             mi,
             mi + centerM * candidate.mSample.GetTargetPdf());
+        print("m_c:", m);
         candidate.PrepareMerge(m, jacobianToCenter);
     }
 
@@ -111,6 +114,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
                 float jacobianToPrev;
                 const float shiftedTargetPdf = TemporalShift(prevPixel, r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
                 f = SafeDivide(shiftedTargetPdf, jacobianToPrev);
+                print("   r->prev, jacobianToPrev:", float2(shiftedTargetPdf, jacobianToPrev));
             }
         }
 
@@ -118,13 +122,18 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
         const float m = SafeDivide(
             mi,
             mi + candidate.mM * f);
-
+        print("m_r:", m);
         r.PrepareMerge(m);
     }
 
-    // perform the merge
-    if (r.Merge(sampleNext1D(sg), candidate)) {
-        gPathGenerator.IncrementCounter(DebugCounterType::eTemporalReuseAcceptances);
+    if (!causticCandidate) {
+        // perform the merge
+        if (r.Merge(sampleNext1D(sg), candidate)) {
+            gPathGenerator.IncrementCounter(DebugCounterType::eTemporalReuseAcceptances);
+            print("Accepted", 0);
+        } else {
+            print("Rejected", 0);
+        }
     }
 
     // merge with caustic reservoirs
@@ -155,8 +164,8 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
 
     r.FinalizeMerge();
 
-    print("Final center f, W:", float2(r.mSample.GetTargetPdf(), r.mW));
-    print("  suffix f, bounces, lv, prefix:", float4(luminance(r.mSample.mSuffix.mContribution), r.mSample.mBounces, r.mSample.mSuffix.mLightSubpath.mVertexCount, r.mSample.mPrefixBounces));
+    print("Final center f, W, M, suffix:", float4(r.mSample.GetTargetPdf(), r.mW, r.mM, luminance(r.mSample.mSuffix.mContribution)));
+    print("  bounces, lv, prefix:", float3(r.mSample.mBounces, r.mSample.mSuffix.mLightSubpath.mVertexCount, r.mSample.mPrefixBounces));
 }
 
 // shift current frame's reservoirs to the previous frame

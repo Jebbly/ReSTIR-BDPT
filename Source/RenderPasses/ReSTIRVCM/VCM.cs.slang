@@ -34,18 +34,19 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
 
     const PackedPathVertex primaryVertex = gPathGenerator.LoadPrimaryVertex(id);
 
+    const float m = 1 / float(gPathGenerator.mParams.mLightSubpathCount);
+
     // merge light trace reservoirs in pixel
 
+    uint minid = ~0u;
+
     PathReservoir r = {};
-    r.mM = 1;
 
     const uint2 range = gPathGenerator.mLightTraceReservoirs.GetCellDataRange(id.y * gPathGenerator.mParams.mOutputDim.x + id.x);
     for (uint i = range.x; i < range.y; i++) {
         const LightTraceReservoir lr = gPathGenerator.mLightTraceReservoirs[i];
         PathReservoir c = PathReservoir(lr.path, lr.W, 0);
-        c.PrepareMerge(1/float(gPathGenerator.mParams.mLightSubpathCount));
-
-        const float u = sampleNext1D(sg);
+        c.PrepareMerge(m);
 
         if (gPathGenerator.gShiftLightPathsToPixelCenters && c.mSample.HasFlag(PathFlags::eNonCausticLightPath)) {
             // Reject path if it is not samplable from the primary vertex
@@ -53,6 +54,17 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
             const bool valid = gPathGenerator.ShiftPath(c.mSample, primaryVertex, jacobian).IsValid();
             if (!valid || !(jacobian > 0))
                 continue;
+        }
+
+        float u = sampleNext1D(sg);
+
+        if (gPathGenerator.gDisableLVC) {
+            uint l = c.mSample.mSuffix.mLightSubpath.mId.mId.y * gPathGenerator.mParams.mOutputDim.x + c.mSample.mSuffix.mLightSubpath.mId.mId.x;
+            if (l < minid) {
+                u = 0; // always pick the lowest ID for deterministic-ness
+                minid = l;
+            } else
+                u = 1;
         }
 
         r.Merge(u, c);
