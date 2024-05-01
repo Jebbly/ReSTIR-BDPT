@@ -133,6 +133,10 @@ private:
     bool mReportRunningError = true;
     /// Coefficient used for the exponential moving average. Larger values mean slower response.
     float mRunningErrorSigma = 0.995f;
+    /// Offset to apply to per-pixel differences.
+    float mDifferenceOffset = 0;
+
+    bool mSetReference = false;
 
     std::vector<float> mMeasurementHistory = {};
     size_t mMeasurementHistoryLength = 4096;

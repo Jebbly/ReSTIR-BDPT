@@ -139,8 +139,31 @@ RenderPassReflection ErrorMeasurePass::reflect(const CompileData& compileData)
 void ErrorMeasurePass::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
     ref<Texture> pSourceImageTexture = renderData.getTexture(kInputChannelSourceImage);
+
+    if (mEnabled && mSetReference)
+    {
+        const uint32_t width = pSourceImageTexture->getWidth(), height = pSourceImageTexture->getHeight();
+        if (!mpReferenceTexture || mpReferenceTexture->getWidth() != width || mpReferenceTexture->getHeight() != height)
+        {
+            mpReferenceTexture = mpDevice->createTexture2D(
+                width,
+                height,
+                pSourceImageTexture->getFormat(),
+                1,
+                1,
+                nullptr,
+                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
+            );
+            FALCOR_ASSERT(mpReferenceTexture);
+        }
+        pRenderContext->copyResource(mpReferenceTexture.get(), pSourceImageTexture.get());
+        mUseLoadedReference = true;
+        mSetReference = false;
+    }
+
     ref<Texture> pOutputImageTexture = renderData.getTexture(kOutputChannelImage);
     ref<Texture> pReference = getReference(renderData);
+
     if (!pReference)
     {
         // We don't have a reference image, so just copy the source image to the output.
@@ -209,6 +232,7 @@ void ErrorMeasurePass::runDifferencePass(RenderContext* pRenderContext, const Re
     var[kConstantBufferName]["gComputeDiffSqr"] = (uint32_t)mComputeSquaredDifference;
     var[kConstantBufferName]["gComputeAverage"] = (uint32_t)mComputeAverage;
     var[kConstantBufferName]["gComputePercentage"] = (uint32_t)mComputePercentage;
+    var[kConstantBufferName]["gDifferenceOffset"] = mDifferenceOffset;
 
     // Run the compute shader.
     mpErrorMeasurerPass->execute(pRenderContext, resolution.x, resolution.y);
@@ -268,6 +292,11 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
         }
     }
 
+    if (widget.button("Set reference", true))
+    {
+        mSetReference = true;
+    }
+
     // Create a button for defining the measurements output file.
     if (widget.button("Set output data file", true))
     {
@@ -315,6 +344,9 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
 
     widget.checkbox("Compute percentage", mComputePercentage);
     widget.tooltip("When enabled, the error is divided by the reference value.");
+
+    widget.var("Difference offset", mDifferenceOffset);
+    widget.tooltip("Offset to apply to per-pixel differences.");
 
     widget.checkbox("Use loaded reference image", mUseLoadedReference);
     widget.tooltip(

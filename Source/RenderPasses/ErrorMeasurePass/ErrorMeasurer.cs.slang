@@ -37,6 +37,7 @@ cbuffer PerFrameCB
     uint gComputeDiffSqr;
     uint gComputeAverage;
     uint gComputePercentage;
+    float gDifferenceOffset;
 };
 
 [numthreads(16, 16, 1)]
@@ -58,7 +59,7 @@ void main(uint3 DTid: SV_DispatchThreadID)
     if (isPixelValid) {
         src = gSource[pixel].rgb;
         ref = gReference[pixel].rgb;
-        diff = abs(src - ref);
+        diff = abs((src - ref) + gDifferenceOffset);
     }
 
     // Compute error based on the current options.
