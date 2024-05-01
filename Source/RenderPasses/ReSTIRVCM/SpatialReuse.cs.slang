@@ -6,6 +6,7 @@ import Utils.Debug.PixelDebug;
 Texture2D<uint4> gVertices;
 
 static const RMISType gMISType = (RMISType)SPATIAL_RMIS_TYPE;
+static const bool gIgnoreCaustics = false;
 
 SampleGenerator GetNeighborOffsetSampleGenerator(const uint2 id) { return MakeSampleGenerator(id, gRandomSeed + 1); }
 
@@ -32,7 +33,7 @@ float ComputeSpatialMisWeight(const uint2 center, PathReservoir sample, float ja
             continue;
 
         const PathReservoir candidate = gPathGenerator.LoadInputReservoir(p);
-        if (!(candidate.mM > 0))
+        if (!(candidate.mM > 0) || (gIgnoreCaustics && candidate.mSample.HasFlag(PathFlags::eCausticLightPath)))
             continue;
 
         // Determine whether p could have generated sample by shifting sample to p's vertex
@@ -63,7 +64,7 @@ float ComputeSpatialZ(const uint2 center, PathReservoir sample, float centerM, i
             continue;
 
         const PathReservoir candidate = gPathGenerator.LoadInputReservoir(p);
-        if (!(candidate.mM > 0))
+        if (!(candidate.mM > 0) || (gIgnoreCaustics && candidate.mSample.HasFlag(PathFlags::eCausticLightPath)))
             continue;
 
         if (i == selectedIndex) {
@@ -96,7 +97,7 @@ void main(uint3 index: SV_DispatchThreadID) {
     PathReservoir r = gPathGenerator.LoadInputReservoir(id);
 
     const PackedPathVertex vertex = gPathGenerator.LoadPrimaryVertex(id);
-    if (!vertex.IsFinite()) {
+    if (!vertex.IsFinite() || (gIgnoreCaustics && r.mSample.HasFlag(PathFlags::eCausticLightPath))) {
         gPathGenerator.StoreReservoir(id, r);
         return;
     }
@@ -154,7 +155,7 @@ void main(uint3 index: SV_DispatchThreadID) {
             }
         }
 
-        if (!(candidate.mM > 0) || isinf(candidate.mM))
+        if (!(candidate.mM > 0) || isinf(candidate.mM) || (gIgnoreCaustics && candidate.mSample.HasFlag(PathFlags::eCausticLightPath)))
             continue;
 
 

@@ -78,6 +78,8 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
         r.Merge(sampleNext1D(sg), c);
     }
 
+    r.mM = 1;
+
     r.FinalizeMerge();
     gPathGenerator.StoreReservoir(id, r);
 }

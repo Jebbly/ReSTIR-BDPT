@@ -41,6 +41,7 @@ extension PathGenerator {
     static const bool  gDisableCameraConnection       = DISABLE_CAMERA_CONNECTION;
     static const bool  gDisableEarlyReconnection      = DISABLE_EARLY_RECONNECTION;
     static const bool  gDisableLVC                    = DISABLE_LVC;
+    static const bool  gTraceInPrevFrame              = TRACE_IN_PREV_FRAME;
 }
 
 struct LightTraceReservoir {
@@ -357,12 +358,6 @@ extension PathGenerator {
     float GetMisVcWeightFactor() { return Mis(1.f / (sqr(mParams.mMergeRadius) * M_PI * mParams.mLightSubpathCount)); }
     float GetMisVmWeightFactor() { return gVertexMerging ? Mis((sqr(mParams.mMergeRadius) * M_PI * mParams.mLightSubpathCount)) : 0; }
 
-    float GetImageToSolidAngleFactor(const float3 dir, out float cosCamera) {
-        cosCamera = dot(dir, normalize(gScene.camera.data.cameraW));
-        const float imagePlaneDist = mParams.mOutputDim.y * (gScene.camera.data.focalLength / gScene.camera.data.frameHeight);
-        const float imagePointToCameraDist = imagePlaneDist / cosCamera;
-        return (imagePointToCameraDist * imagePointToCameraDist) / cosCamera;
-    }
     float GetMergeRadius(const float3 pos, const bool discretize = false) {
         if (gDynamicMergeRadius) {
             const float d = length(pos - gScene.camera.getPosition());
@@ -374,6 +369,19 @@ extension PathGenerator {
             return r;
         }
         return mParams.mMergeRadius;
+    }
+
+    float GetImageToSolidAngleFactor(const float3 dir, out float cosCamera) {
+        cosCamera = dot(dir, normalize(gScene.camera.data.cameraW));
+        const float imagePlaneDist = mParams.mOutputDim.y * (gScene.camera.data.focalLength / gScene.camera.data.frameHeight);
+        const float imagePointToCameraDist = imagePlaneDist / cosCamera;
+        return (imagePointToCameraDist * imagePointToCameraDist) / cosCamera;
+    }
+    float GetPrevImageToSolidAngleFactor(const float3 dir, out float cosCamera) {
+        cosCamera = dot(dir, normalize(gScene.camera.data.prevCameraW));
+        const float imagePlaneDist = mParams.mOutputDim.y * (gScene.camera.data.focalLength / gScene.camera.data.frameHeight);
+        const float imagePointToCameraDist = imagePlaneDist / cosCamera;
+        return (imagePointToCameraDist * imagePointToCameraDist) / cosCamera;
     }
 
     int2 GetPixelCoord(const float3 pos) {
@@ -442,7 +450,8 @@ extension PathGenerator {
         if (any(id > mParams.mOutputDim))
             return {};
 
-        Ray cameraRay = gScene.camera.computeRayPinholePrevFrame(id, mParams.mOutputDim);
+        // if we are tracing with the previous frame's data, then gScene.camera is last frame's camera
+        Ray cameraRay = gTraceInPrevFrame ? gScene.camera.computeRayPinhole(id, mParams.mOutputDim) : gScene.camera.computeRayPinholePrevFrame(id, mParams.mOutputDim);
         if (gUseViewDir) cameraRay.dir = -mLastViewDir[id];
         return PackedPathVertex(cameraRay, HitInfo(mLastVbuffer[id]), cameraRay.tMax);
     }
@@ -1265,7 +1274,7 @@ extension PathGenerator {
 
         return result;
     }
-    PathSample ConnectToCamera      <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out int2 pixelCoord, out float integrationWeight, const bool checkVisibility = true) {
+    PathSample ConnectToCamera      <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out int2 pixelCoord, out float integrationWeight, const bool checkVisibility = true, const bool inPrevFrame = false) {
         integrationWeight = 0;
         pixelCoord = -1;
         PathSample result = {};
@@ -1273,16 +1282,16 @@ extension PathGenerator {
         if (DebugDisablePath(s.bounces + 1, s.bounces + 2))
             return result;
 
-        const float3 rayOrigin = vertex.ComputeRayOrigin(gScene.camera.getPosition() - vertex.GetPosition());
-
-        float3 toCamera = gScene.camera.getPosition() - rayOrigin;
+        const float3 cameraPos = inPrevFrame ? gScene.camera.data.prevPosW : gScene.camera.data.posW;
+        const float3 rayOrigin = vertex.ComputeRayOrigin(cameraPos - vertex.GetPosition());
+        float3 toCamera = cameraPos - rayOrigin;
         const float dist = length(toCamera);
         toCamera /= dist;
 
         float cosAtCamera;
         const float imageToSolidAngleFactor = GetImageToSolidAngleFactor(-toCamera, cosAtCamera);
 
-        pixelCoord = GetPixelCoord(vertex.GetPosition());
+        pixelCoord = inPrevFrame ? GetPrevPixelCoord(vertex.GetPosition()) : GetPixelCoord(vertex.GetPosition());
         if (any(pixelCoord < 0) || any(pixelCoord >= mParams.mOutputDim) || cosAtCamera <= 0)
             return result;
 
@@ -1333,7 +1342,7 @@ extension PathGenerator {
             // if the rcv is unconnectable, this is a caustic light path and we store the primary vertex as the rcv instead.
             suffix = PathSuffix::Create(
                 s.throughput,
-                cameraPdfA,
+                cosAtCamera * cosAtCamera * cosAtCamera,
                 vertex.Pack(),
                 vertex.GetDirIn(),
                 dist,
@@ -1350,7 +1359,7 @@ extension PathGenerator {
         } else {
             suffix = PathSuffix::Create(
                 s.throughputAtRcv,
-                cameraPdfA,
+                cosAtCamera * cosAtCamera * cosAtCamera,
                 s.rcv,
                 s.rcvDirOut,
                 s.rcvDist,

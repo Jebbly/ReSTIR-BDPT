@@ -6,7 +6,7 @@ import Utils.Sampling.SampleGenerator;
 static const bool gUnbiasedTemporalReuse = UNBIASED_TEMPORAL_REUSE;
 static const bool gUseCausticShift       = USE_CAUSTIC_SHIFT;
 
-PathSample TemporalShift(const uint2 basePixel, const PathSample basePath, const PackedPathVertex newVertex, out float jacobian, out bool causticReject) {
+PathSample TemporalShift<let bShiftToPrev : bool>(const uint2 basePixel, const PathSample basePath, const PackedPathVertex newVertex, out float jacobian, out bool causticReject) {
     jacobian = 0;
     causticReject = false;
     PathSample result = {};
@@ -18,7 +18,7 @@ PathSample TemporalShift(const uint2 basePixel, const PathSample basePath, const
         newPixel = gPathGenerator.GetPixelCoord(PathVertex(basePath.mSuffix.mVertex).GetPosition());
         result = basePath;
     } else {
-        result = gPathGenerator.ShiftPath(basePath, newVertex, newPixel, jacobian);
+        result = gPathGenerator.ShiftPath(basePath, newVertex, newPixel, jacobian, bShiftToPrev);
     }
 
     if (result.IsValid() && jacobian > 0 && result.HasFlag(PathFlags::eCausticLightPath) && gPathGenerator.gBidirectional && !gUseCausticShift) {
@@ -35,9 +35,9 @@ PathSample TemporalShift(const uint2 basePixel, const PathSample basePath, const
 
     return result;
 }
-PathSample TemporalShift(const uint2 basePixel, const PathSample basePath, const PackedPathVertex newVertex, out float jacobian) {
+PathSample TemporalShift<let bShiftToPrev : bool>(const uint2 basePixel, const PathSample basePath, const PackedPathVertex newVertex, out float jacobian) {
     bool tmp;
-    return TemporalShift(basePixel, basePath, newVertex, jacobian, tmp);
+    return TemporalShift<bShiftToPrev>(basePixel, basePath, newVertex, jacobian, tmp);
 }
 
 void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir r) {
@@ -80,7 +80,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
             print("  f, W, M, suffix:", float4(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM, luminance(candidate.mSample.mSuffix.mContribution)));
 
             candidateTargetPdf = candidate.mSample.GetTargetPdf();
-            candidate.mSample = TemporalShift(id, candidate.mSample, primaryHit, jacobianToCenter);
+            candidate.mSample = TemporalShift<false>(id, candidate.mSample, primaryHit, jacobianToCenter);
             gPathGenerator.IncrementCounter( candidate.mSample.IsValid() && jacobianToCenter > 0 ? DebugCounterType::eTemporalShiftSuccesses : DebugCounterType::eTemporalShiftFailures );
 
             print("  prev->r, jacobianToCenter:", float2(candidate.mSample.GetTargetPdf(), jacobianToCenter));
@@ -112,7 +112,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
                 f = r.mSample.mSuffix.mVertex.pad1;
             } else {
                 float jacobianToPrev;
-                const float shiftedTargetPdf = TemporalShift(prevPixel, r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
+                const float shiftedTargetPdf = TemporalShift<true>(prevPixel, r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
                 f = SafeDivide(shiftedTargetPdf, jacobianToPrev);
                 print("   r->prev, jacobianToPrev:", float2(shiftedTargetPdf, jacobianToPrev));
             }
@@ -168,7 +168,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
     print("  bounces, lv, prefix:", float3(r.mSample.mBounces, r.mSample.mSuffix.mLightSubpath.mVertexCount, r.mSample.mPrefixBounces));
 }
 
-// shift current frame's reservoirs to the previous frame
+// Shift current frame's reservoirs to the previous frame. This should be called with last frame's shader bindings.
 // Store the shifted target pdf and jacobian in extra space in the current frame's reservoir
 [shader("compute")]
 [numthreads(8, 4, 1)]
@@ -186,7 +186,7 @@ void ShiftToPrevFrame(uint3 index: SV_DispatchThreadID) {
     PathReservoir r = gPathGenerator.LoadOutputReservoir(id);
 
     float jacobianToPrev;
-    const float shiftedTargetPdf = TemporalShift(prevPixel, r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
+    const float shiftedTargetPdf = TemporalShift<true>(prevPixel, r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
 
     // HACK: storing 'shiftedTargetPdf / jacobianToPrev' in reservoir
     r.mSample.mSuffix.mVertex.pad1 = SafeDivide(shiftedTargetPdf, jacobianToPrev);

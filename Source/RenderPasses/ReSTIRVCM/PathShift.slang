@@ -114,17 +114,17 @@ extension PathGenerator {
                 return result;
             }
 
-            float cameraPdfA, cosOut;
+            float cosAtCamera, cosOut;
             if (basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
                 // for pure light paths, vertex is the primary hit
                 float3 toCamera = gScene.camera.getPosition() - vertex.GetPosition();
                 const float dist = length(toCamera);
                 toCamera /= dist;
 
-                float cosAtCamera;
-                const float imageToSolidAngleFactor = GetImageToSolidAngleFactor(-toCamera, cosAtCamera);
-                cameraPdfA = imageToSolidAngleFactor * vertex.GetCosN(toCamera) / sqr(dist);
-                cosOut = vertex.GetCosN(visibilityRay.dir);
+                GetImageToSolidAngleFactor(-toCamera, cosAtCamera);
+                cosOut = vertex.GetCosN(newSuffix.mVertex.mRayDirection);
+                if (cosOut < kMinCosTheta)
+                    return result;
             }
 
             SetNextVertex(s, vertex, PathVertex(newSuffix.mVertex));
@@ -138,7 +138,7 @@ extension PathGenerator {
                 // divide out cosine term at primary hit for pure light paths
                 s.throughput /= cosOut;
                 newSuffix.mCos = cosOut;
-                newSuffix.mCameraFwdPdf = cameraPdfA;
+                newSuffix.mCameraFwdPdf = cosAtCamera * cosAtCamera * cosAtCamera;
             }
         }
 
@@ -360,7 +360,7 @@ extension PathGenerator {
 
 extension PathGenerator {
     // Shift a path to a new primary vertex. For pure random replay light paths, newPixel is set to the pixel the last light subpath vertex lands in.
-    PathSample ShiftPath(const PathSample basePath, const PackedPathVertex newPrimaryHit, out int2 newPixel, out float jacobian) {
+    PathSample ShiftPath(const PathSample basePath, const PackedPathVertex newPrimaryHit, out int2 newPixel, out float jacobian, const bool shiftToPrev = false) {
         jacobian = 0;
         newPixel = -1;
         PathSample result = {};
@@ -401,7 +401,7 @@ extension PathGenerator {
                     if (basePath.HasFlag(PathFlags::eCausticLightPath)) {
                         // Connect caustic paths to the camera directly
                         float w;
-                        result = ConnectToCamera(s, vertex, newPixel, w);
+                        result = ConnectToCamera(s, vertex, newPixel, w, true, shiftToPrev);
                         if (!result.IsValid() || any(newPixel != GetPixelCoord(PathVertex(newPrimaryHit).GetPosition()))) {
                             print("Shift failed: ConnectToCamera failed", 0);
                             result = {};
@@ -460,7 +460,7 @@ extension PathGenerator {
 
                         int2 offsetPixel;
                         float w;
-                        result = ConnectToCamera(s, vertex, offsetPixel, w, false);
+                        result = ConnectToCamera(s, vertex, offsetPixel, w, false, shiftToPrev);
                         if (!result.IsValid()) {
                             print("Shift failed: ConnectToCamera failed", 0);
                             result = {};
@@ -526,13 +526,13 @@ extension PathGenerator {
         return result;
     }
 
-    PathSample ShiftPath(const PathSample basePath, const PackedPathVertex newPrimaryHit, out float jacobian) {
+    PathSample ShiftPath(const PathSample basePath, const PackedPathVertex newPrimaryHit, out float jacobian, const bool shiftToPrev = false) {
         int2 tmp;
-        return ShiftPath(basePath, newPrimaryHit, tmp, jacobian);
+        return ShiftPath(basePath, newPrimaryHit, tmp, jacobian, shiftToPrev);
     }
 
     // Faster version of ShiftPath with just the light subpath random replay code path
-    PathSample ShiftCausticPath(const PathSample basePath, out int2 newPixel, out float jacobian) {
+    PathSample ShiftCausticPath(const PathSample basePath, out int2 newPixel, out float jacobian, const bool shiftToPrev = false) {
         jacobian = 0;
         newPixel = -1;
         PathSample result = {};
@@ -553,7 +553,7 @@ extension PathGenerator {
 
         // Connect caustic paths to the camera directly
         float w;
-        result = ConnectToCamera(s, vertex, newPixel, w);
+        result = ConnectToCamera(s, vertex, newPixel, w, true, shiftToPrev);
         if (!result.IsValid()) {
             print("Shift failed: ConnectToCamera failed", 0);
             result = {};
@@ -567,6 +567,7 @@ extension PathGenerator {
         }
 
         jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
+        jacobian *= basePath.mSuffix.mCameraFwdPdf / result.mSuffix.mCameraFwdPdf; // includes camera cosine term
         return result;
     }
 }
