@@ -33,7 +33,7 @@ float ComputeSpatialMisWeight(const uint2 center, PathReservoir sample, float ja
             continue;
 
         const PathReservoir candidate = gPathGenerator.LoadInputReservoir(p);
-        if (!(candidate.mM > 0) || (gIgnoreCaustics && candidate.mSample.HasFlag(PathFlags::eCausticLightPath)))
+        if (!(candidate.mM > 0))
             continue;
 
         // Determine whether p could have generated sample by shifting sample to p's vertex
@@ -52,6 +52,7 @@ float ComputeSpatialMisWeight(const uint2 center, PathReservoir sample, float ja
     }
     return msum > 0 ? mi / msum : 0;
 }
+// denominator for constant MIS weight
 float ComputeSpatialZ(const uint2 center, PathReservoir sample, float centerM, int selectedIndex) {
     float msum = centerM;
     SampleGenerator spatialSg = GetNeighborOffsetSampleGenerator(center);
@@ -64,7 +65,7 @@ float ComputeSpatialZ(const uint2 center, PathReservoir sample, float centerM, i
             continue;
 
         const PathReservoir candidate = gPathGenerator.LoadInputReservoir(p);
-        if (!(candidate.mM > 0) || (gIgnoreCaustics && candidate.mSample.HasFlag(PathFlags::eCausticLightPath)))
+        if (!(candidate.mM > 0))
             continue;
 
         if (i == selectedIndex) {
@@ -133,6 +134,10 @@ void main(uint3 index: SV_DispatchThreadID) {
         PathReservoir candidate = gPathGenerator.LoadInputReservoir(p);
 
         if (candidate.mSample.IsValid()) {
+            if ((gIgnoreCaustics && candidate.mSample.HasFlag(PathFlags::eCausticLightPath))) {
+                r.mM += candidate.mM;
+                continue;
+            }
             print("Candidate id:", candidate.mSample.mId.mId);
             print("  f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
         }
@@ -155,9 +160,8 @@ void main(uint3 index: SV_DispatchThreadID) {
             }
         }
 
-        if (!(candidate.mM > 0) || isinf(candidate.mM) || (gIgnoreCaustics && candidate.mSample.HasFlag(PathFlags::eCausticLightPath)))
+        if (!(candidate.mM > 0) || isinf(candidate.mM))
             continue;
-
 
         if (!(candidate.mW > 0) || isinf(candidate.mW) || !candidate.mSample.IsValid()) {
             r.mM += candidate.mM;

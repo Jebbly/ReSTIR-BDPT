@@ -78,9 +78,9 @@ private:
         bool        useResampling = true;
         bool        useMisInIntegrand = true;
         bool        shiftLightPathsToPixelCenters = true;
-        bool        useCausticShift = false;
+        bool        useCausticShift = true;
         bool        useTemporalReuse = true;
-        bool        unbiasedTemporalReuse = false;
+        bool        unbiasedTemporalReuse = true;
         bool        shiftSuffixes = true;
         bool        shiftSuffixesSpatial = false;
         uint        spatialReusePasses = 1;

@@ -12,32 +12,23 @@ PathSample TemporalShift<let bShiftToPrev : bool>(const uint2 basePixel, const P
     PathSample result = {};
 
     int2 newPixel;
-    if (basePath.HasFlag(PathFlags::eCausticLightPath) && gPathGenerator.gBidirectional && !gUseCausticShift && !gPathGenerator.gShiftSuffixes) {
+    if (basePath.HasFlag(PathFlags::eCausticLightPath) && gPathGenerator.gBidirectional && !gPathGenerator.gShiftSuffixes) {
         // just copy caustic paths if suffix shifts are disabled
         jacobian = 1;
-        newPixel = gPathGenerator.GetPixelCoord(PathVertex(basePath.mSuffix.mVertex).GetPosition());
+        float3 pos = PathVertex(basePath.mSuffix.mVertex).GetPosition();
+        newPixel = bShiftToPrev ? gPathGenerator.GetPrevPixelCoord(pos) : gPathGenerator.GetPixelCoord(pos);
         result = basePath;
     } else {
         result = gPathGenerator.ShiftPath(basePath, newVertex, newPixel, jacobian, bShiftToPrev);
     }
 
-    if (result.IsValid() && jacobian > 0 && result.HasFlag(PathFlags::eCausticLightPath) && gPathGenerator.gBidirectional && !gUseCausticShift) {
-        // reject caustic paths if they don't land in the same pixel
+    if (result.IsValid() && jacobian > 0 && result.HasFlag(PathFlags::eCausticLightPath) && gPathGenerator.gBidirectional) {
+        // When caustic shifts are disabled, reject caustic paths if they don't land in the same pixel
         const int2 d = basePixel - newPixel;
-        if ((gPathGenerator.mParams.mCausticReuseRadius == 0 && any(d != 0)) ||
-            (gPathGenerator.mParams.mCausticReuseRadius > 0 && dot(d, d) > gPathGenerator.mParams.mCausticReuseRadius * gPathGenerator.mParams.mCausticReuseRadius)) {
-            print("Shift failed: Caustic path not in pixel", newPixel);
-            result = {};
-            jacobian = 0;
-            causticReject = true;
-        }
+        causticReject = dot(d, d) > (gPathGenerator.mParams.mCausticReuseRadius * gPathGenerator.mParams.mCausticReuseRadius);
     }
 
     return result;
-}
-PathSample TemporalShift<let bShiftToPrev : bool>(const uint2 basePixel, const PathSample basePath, const PackedPathVertex newVertex, out float jacobian) {
-    bool tmp;
-    return TemporalShift<bShiftToPrev>(basePixel, basePath, newVertex, jacobian, tmp);
 }
 
 void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir r) {
@@ -51,7 +42,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
     if (!(candidate.mM > 0) || isinf(candidate.mM))
         return;
 
-    const PackedPathVertex prevVertex = gPathGenerator.LoadPrevPrimaryVertex(prevPixel);
+    const PackedPathVertex prevVertex = gPathGenerator.LoadPrevPrimaryVertex<false>(prevPixel);
     if (!prevVertex.IsFinite())
         return;
 
@@ -80,7 +71,12 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
             print("  f, W, M, suffix:", float4(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM, luminance(candidate.mSample.mSuffix.mContribution)));
 
             candidateTargetPdf = candidate.mSample.GetTargetPdf();
-            candidate.mSample = TemporalShift<false>(id, candidate.mSample, primaryHit, jacobianToCenter);
+            bool causticReject;
+            candidate.mSample = TemporalShift<false>(id, candidate.mSample, primaryHit, jacobianToCenter, causticReject);
+            if (causticReject) {
+                candidate.mSample = {};
+                jacobianToCenter = 0;
+            }
             gPathGenerator.IncrementCounter( candidate.mSample.IsValid() && jacobianToCenter > 0 ? DebugCounterType::eTemporalShiftSuccesses : DebugCounterType::eTemporalShiftFailures );
 
             print("  prev->r, jacobianToCenter:", float2(candidate.mSample.GetTargetPdf(), jacobianToCenter));
@@ -97,7 +93,6 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
         const float m = SafeDivide(
             mi,
             mi + centerM * candidate.mSample.GetTargetPdf());
-        print("m_c:", m);
         candidate.PrepareMerge(m, jacobianToCenter);
     }
 
@@ -111,8 +106,9 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
                 // HACK: storing 'shiftedTargetPdf / jacobianToPrev' in reservoir
                 f = r.mSample.mSuffix.mVertex.pad1;
             } else {
+                bool causticReject;
                 float jacobianToPrev;
-                const float shiftedTargetPdf = TemporalShift<true>(prevPixel, r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
+                const float shiftedTargetPdf = TemporalShift<true>(prevPixel, r.mSample, prevVertex, jacobianToPrev, causticReject).GetTargetPdf();
                 f = SafeDivide(shiftedTargetPdf, jacobianToPrev);
                 print("   r->prev, jacobianToPrev:", float2(shiftedTargetPdf, jacobianToPrev));
             }
@@ -122,18 +118,13 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
         const float m = SafeDivide(
             mi,
             mi + candidate.mM * f);
-        print("m_r:", m);
         r.PrepareMerge(m);
     }
 
     if (!causticCandidate) {
         // perform the merge
-        if (r.Merge(sampleNext1D(sg), candidate)) {
+        if (r.Merge(sampleNext1D(sg), candidate))
             gPathGenerator.IncrementCounter(DebugCounterType::eTemporalReuseAcceptances);
-            print("Accepted", 0);
-        } else {
-            print("Rejected", 0);
-        }
     }
 
     // merge with caustic reservoirs
@@ -168,7 +159,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
     print("  bounces, lv, prefix:", float3(r.mSample.mBounces, r.mSample.mSuffix.mLightSubpath.mVertexCount, r.mSample.mPrefixBounces));
 }
 
-// Shift current frame's reservoirs to the previous frame. This should be called with last frame's shader bindings.
+// Shift current frame's reservoirs to the previous frame. This should be called with last frame's parameters.
 // Store the shifted target pdf and jacobian in extra space in the current frame's reservoir
 [shader("compute")]
 [numthreads(8, 4, 1)]
@@ -180,13 +171,16 @@ void ShiftToPrevFrame(uint3 index: SV_DispatchThreadID) {
     const int2 prevPixel = int2((id + 0.5) + gPathGenerator.mParams.mOutputDim * gPathGenerator.mMotionVectors[id]);
     if (any(prevPixel < 0) || any(prevPixel >= gPathGenerator.mParams.mOutputDim)) return;
 
-    const PackedPathVertex prevVertex = gPathGenerator.LoadPrevPrimaryVertex(prevPixel);
+    const PackedPathVertex prevVertex = gPathGenerator.LoadPrevPrimaryVertex<true>(prevPixel);
     if (!prevVertex.IsFinite()) return;
 
     PathReservoir r = gPathGenerator.LoadOutputReservoir(id);
 
+    if (!r.mSample.IsValid()) return;
+
+    bool causticReject;
     float jacobianToPrev;
-    const float shiftedTargetPdf = TemporalShift<true>(prevPixel, r.mSample, prevVertex, jacobianToPrev).GetTargetPdf();
+    const float shiftedTargetPdf = TemporalShift<false>(prevPixel, r.mSample, prevVertex, jacobianToPrev, causticReject).GetTargetPdf();
 
     // HACK: storing 'shiftedTargetPdf / jacobianToPrev' in reservoir
     r.mSample.mSuffix.mVertex.pad1 = SafeDivide(shiftedTargetPdf, jacobianToPrev);

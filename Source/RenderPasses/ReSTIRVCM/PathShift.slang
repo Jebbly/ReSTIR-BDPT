@@ -163,6 +163,7 @@ extension PathGenerator {
         float misWeight = basePath.mMisWeight;
 
         // compute new MIS weight for the shifted path
+        /*
         if (PathSample::gIntegrandMIS && !DebugDisableMIS() && gUseReconnectionMIS) {
             if (gBidirectional && !gDisableCameraConnection && basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
                 // non-caustic pure light path. caustic light paths are handled above.
@@ -264,6 +265,7 @@ extension PathGenerator {
                 print("bounces, cameraBounces, prefixBounces, s.bounces", uint4(basePath.mBounces, cameraBounces, basePath.mPrefixBounces, s.bounces));
             }
         }
+        */
 
         result = basePath;
         result.mContribution = s.throughput * newSuffix.mContribution;
@@ -402,7 +404,7 @@ extension PathGenerator {
                         // Connect caustic paths to the camera directly
                         float w;
                         result = ConnectToCamera(s, vertex, newPixel, w, true, shiftToPrev);
-                        if (!result.IsValid() || any(newPixel != GetPixelCoord(PathVertex(newPrimaryHit).GetPosition()))) {
+                        if (!result.IsValid()) {
                             print("Shift failed: ConnectToCamera failed", 0);
                             result = {};
                             return result;

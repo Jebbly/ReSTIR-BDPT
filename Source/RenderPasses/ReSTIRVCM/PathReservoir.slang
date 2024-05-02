@@ -119,7 +119,7 @@ struct PathSuffix {
     float3           mDirOut = 0;           ///< Outgoing direction from the reconnection vertex.
     float            mDist = 0;             ///< Geometry term between the prefix and the suffix.
     LightSubpathData mLightSubpath = {};    ///< Light subpath id
-    MisEvalData      mMisEvalArgs = {};     ///< Data for recomputing MIS weights during reconnection
+    //MisEvalData      mMisEvalArgs = {};     ///< Data for recomputing MIS weights during reconnection
     float            mCos = 0;              ///< Geometry term between the prefix and the suffix.
 
     static PathSuffix Create(
@@ -138,7 +138,7 @@ struct PathSuffix {
         s.mDirOut          = reconnectionDirOut;
         s.mDist            = reconnectionDistance;
         s.mLightSubpath    = lightSubpath;
-        s.mMisEvalArgs     = misData;
+        //s.mMisEvalArgs     = misData;
         s.mCos             = reconnectionCos;
         return s;
     }

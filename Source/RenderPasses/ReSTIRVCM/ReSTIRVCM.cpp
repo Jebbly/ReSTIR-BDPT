@@ -306,7 +306,6 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                         mpPixelDebug->prepareProgram(program, var);
                         var["CB"]["gSwapReservoirs"] = uint(mSwapReservoirs ? 1u : 0u);
                         var["gPathGenerator"]["mMotionVectors"] = renderData.getTexture(kInputMotionVectors);
-                        mpTemporalShiftPass->addDefine("TRACE_IN_PREV_FRAME", "1");
                         mpTemporalShiftPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
                     }
 
@@ -317,6 +316,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                         FALCOR_PROFILE(pRenderContext, "Caustic shift");
 
                         mpShiftCausticsPass->addDefine("SHIFT_SUFFIXES", "1");
+                        mpShiftCausticsPass->addDefine("USE_CAUSTIC_SHIFT", "1");
                         mpShiftCausticsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
 
                         mpCausticReservoirMap->sort(pRenderContext);
@@ -558,7 +558,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                 runtimeDirty |= group.var("Min reconnection distance", mParams.mReconnectionDistance, 0.f, 100.f);
                 if (mStaticParams.useBPT) {
                     runtimeDirty |= group.var("Caustic reuse radius", mParams.mCausticReuseRadius, 0.f, 10.f);
-                    group.tooltip("Radius in pixels which caustic paths are allowed to be reused.", true);
+                    group.tooltip("Radius in pixels for which caustic paths are allowed to be reused.", true);
                 }
             }
         }
@@ -1256,6 +1256,9 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
         if (mStaticParams.unbiasedTemporalReuse && mpTemporalShiftPass) {
             preparePass(pRenderContext, renderData, *mpTemporalShiftPass);
             mpTemporalShiftPass->getProgram()->addDefines(mStaticParams.getDefines(*this));
+            mpTemporalShiftPass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
+            mpTemporalShiftPass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
+            mpTemporalShiftPass->addDefine("USE_CAUSTIC_SHIFT", mStaticParams.useCausticShift ? "1" : "0");
         }
 
         pRenderContext->copyResource(mpLastReservoirs.get(), mSwapReservoirs ? mpReservoirs[1].get() : mpReservoirs[0].get());
@@ -1315,7 +1318,6 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("UNBIASED_TEMPORAL_REUSE", "0"); // placeholder
     defines.add("USE_CAUSTIC_SHIFT", "0"); // placeholder
     defines.add("SPATIAL_RMIS_TYPE", "0"); // placeholder
-    defines.add("TRACE_IN_PREV_FRAME", "0"); // placeholder
 
     // Sampling utilities configuration.
     FALCOR_ASSERT(owner.mpSampleGenerator);

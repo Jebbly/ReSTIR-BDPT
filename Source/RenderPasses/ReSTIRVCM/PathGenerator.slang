@@ -41,7 +41,6 @@ extension PathGenerator {
     static const bool  gDisableCameraConnection       = DISABLE_CAMERA_CONNECTION;
     static const bool  gDisableEarlyReconnection      = DISABLE_EARLY_RECONNECTION;
     static const bool  gDisableLVC                    = DISABLE_LVC;
-    static const bool  gTraceInPrevFrame              = TRACE_IN_PREV_FRAME;
 }
 
 struct LightTraceReservoir {
@@ -446,12 +445,13 @@ extension PathGenerator {
         if (gUseViewDir) cameraRay.dir = -mViewDir[id];
         return PackedPathVertex(cameraRay, HitInfo(mVbuffer[id]), cameraRay.tMax);
     }
-    PackedPathVertex LoadPrevPrimaryVertex(const uint2 id) {
+    PackedPathVertex LoadPrevPrimaryVertex<let bInPrevFrame : bool>(const uint2 id) {
         if (any(id > mParams.mOutputDim))
             return {};
 
         // if we are tracing with the previous frame's data, then gScene.camera is last frame's camera
-        Ray cameraRay = gTraceInPrevFrame ? gScene.camera.computeRayPinhole(id, mParams.mOutputDim) : gScene.camera.computeRayPinholePrevFrame(id, mParams.mOutputDim);
+        // but we stil need to use mLastVbuffer and mLastViewDir
+        Ray cameraRay = bInPrevFrame ? gScene.camera.computeRayPinhole(id, mParams.mOutputDim) : gScene.camera.computeRayPinholePrevFrame(id, mParams.mOutputDim);
         if (gUseViewDir) cameraRay.dir = -mLastViewDir[id];
         return PackedPathVertex(cameraRay, HitInfo(mLastVbuffer[id]), cameraRay.tMax);
     }
@@ -1274,7 +1274,7 @@ extension PathGenerator {
 
         return result;
     }
-    PathSample ConnectToCamera      <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out int2 pixelCoord, out float integrationWeight, const bool checkVisibility = true, const bool inPrevFrame = false) {
+    PathSample ConnectToCamera      <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, out int2 pixelCoord, out float integrationWeight, const bool checkVisibility = true, const bool usePrevCamera = false) {
         integrationWeight = 0;
         pixelCoord = -1;
         PathSample result = {};
@@ -1282,7 +1282,7 @@ extension PathGenerator {
         if (DebugDisablePath(s.bounces + 1, s.bounces + 2))
             return result;
 
-        const float3 cameraPos = inPrevFrame ? gScene.camera.data.prevPosW : gScene.camera.data.posW;
+        const float3 cameraPos = usePrevCamera ? gScene.camera.data.prevPosW : gScene.camera.data.posW;
         const float3 rayOrigin = vertex.ComputeRayOrigin(cameraPos - vertex.GetPosition());
         float3 toCamera = cameraPos - rayOrigin;
         const float dist = length(toCamera);
@@ -1291,7 +1291,7 @@ extension PathGenerator {
         float cosAtCamera;
         const float imageToSolidAngleFactor = GetImageToSolidAngleFactor(-toCamera, cosAtCamera);
 
-        pixelCoord = inPrevFrame ? GetPrevPixelCoord(vertex.GetPosition()) : GetPixelCoord(vertex.GetPosition());
+        pixelCoord = usePrevCamera ? GetPrevPixelCoord(vertex.GetPosition()) : GetPixelCoord(vertex.GetPosition());
         if (any(pixelCoord < 0) || any(pixelCoord >= mParams.mOutputDim) || cosAtCamera <= 0)
             return result;
 
