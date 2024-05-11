@@ -295,7 +295,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
 
             if (!mVarsChanged)
             {
-                if (!mSkipReuse) {
+                if (!mResetTemporalHistory) {
                     // shift samples to last frame
                     if (mStaticParams.unbiasedTemporalReuse) {
                         FALCOR_PROFILE(pRenderContext, "Shift to last frame");
@@ -333,7 +333,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                 }
             }
             mCurrentSeed++;
-            mSkipReuse = false;
+            mResetTemporalHistory = false;
         }
 
         mSwapReservoirs = !mSwapReservoirs; // swap input and output reservoirs for the next pass
@@ -500,22 +500,21 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
         if (mStaticParams.useResampling)
         {
-            dirty |= group.checkbox("MIS in integrand", mStaticParams.useMisInIntegrand);
-            group.tooltip("Multiply the technique MIS weights into\nthe integrand, instead of using them\nas resampling MIS weights.", true);
-
-            dirty |= group.checkbox("Reconnection MIS", mStaticParams.reconnectionMIS);
-            group.tooltip("Recompute MIS weights during reconnection.", true);
-
             if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection) {
                 dirty |= group.checkbox("Shift light paths to pixel centers", mStaticParams.shiftLightPathsToPixelCenters);
                 group.tooltip("Shift non-caustic light subpaths\nto vbuffer vertices during canonical sampling.\nThis can improve temporal reuse");
             }
+
+            dirty |= group.checkbox("Reconnection MIS", mStaticParams.reconnectionMIS);
+            group.tooltip("Recompute MIS weights during reconnection.", true);
 
             group.separator();
 
             dirty |= group.checkbox("Temporal resampling", mStaticParams.useTemporalReuse);
             if (mStaticParams.useTemporalReuse)
             {
+                if (group.button("Reset", true)) mResetTemporalHistory = true;
+
                 dirty |= group.checkbox("Unbiased temporal reuse", mStaticParams.unbiasedTemporalReuse);
                 group.tooltip("Shift paths to the previous frame during temporal reuse.", true);
 
@@ -625,8 +624,13 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
             dirty |= group.var("Light vertex count", mParams.mDebugLightVertices, -1);
             group.tooltip("Only render paths with this many light vertices.");
 
-            dirty |= group.checkbox("Disable Merging", mParams.mDebugDisableMerging);
-            group.tooltip("Don't render paths that use vertex merging.");
+            dirty |= group.var("Prefix bounces", mParams.mDebugPrefixBounces, -1);
+            group.tooltip("Only render paths with this many prefix bounces.");
+
+            if (mStaticParams.useVM) {
+                dirty |= group.checkbox("Disable Merging", mParams.mDebugDisableMerging);
+                group.tooltip("Don't render paths that use vertex merging.");
+            }
         }
 
         recompile |= group.checkbox("Visualize counter data", mStaticParams.debugHeatmap);
@@ -636,10 +640,13 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
             group.tooltip("Debug counter to visualize.");
         }
 
-        mpPixelDebug->renderUI(group);
-
         dirty      |= recompile;
         mRecompile |= recompile;
+    }
+
+    if (auto group = widget.group("Pixel debug"))
+    {
+        mpPixelDebug->renderUI(group);
     }
 
     return dirty;
@@ -654,16 +661,18 @@ bool ReSTIRVCM::onKeyEvent(const KeyboardEvent& keyEvent)
     if (keyEvent.type == KeyboardEvent::Type::KeyPressed)
     {
         switch (keyEvent.key) {
+        case Input::Key::T:
+            mResetTemporalHistory = true;
+            return true;
         case Input::Key::K:
             mPauseRendering = !mPauseRendering;
             return true;
-            break;
         case Input::Key::Left:
             if (mPauseRendering) {
                 if (mFrameCount > 0)
                     mFrameCount--;
                 else
-                    mSkipReuse = true;
+                    mResetTemporalHistory = true;
                 mRenderOnce = true;
                 mKeepFrameIndex = true;
                 return true;
@@ -1308,7 +1317,6 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
     defines.add("USE_RECONNECTION_MIS", (useResampling && reconnectionMIS) ? "1" : "0");
     defines.add("SHIFT_LIGHT_PATHS_TO_CENTER", useResampling && useBPT && shiftLightPathsToPixelCenters ? "1" : "0");
-    defines.add("MIS_IN_INTEGRAND", useResampling && useMisInIntegrand ? "1" : "0");
     defines.add("DISABLE_EARLY_RECONNECTION", useResampling && disableEarlyReconnection ? "1" : "0");
     defines.add("DISABLE_LVC", useBPT && disableLVC ? "1" : "0");
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");

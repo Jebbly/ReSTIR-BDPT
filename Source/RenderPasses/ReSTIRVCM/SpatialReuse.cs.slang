@@ -6,9 +6,21 @@ import Utils.Debug.PixelDebug;
 Texture2D<uint4> gVertices;
 
 static const RMISType gMISType = (RMISType)SPATIAL_RMIS_TYPE;
-static const bool gIgnoreCaustics = false;
 
 SampleGenerator GetNeighborOffsetSampleGenerator(const uint2 id) { return MakeSampleGenerator(id, gRandomSeed + 1); }
+
+PathSample SpatialShift(const PathSample basePath, const PackedPathVertex newVertex, out float jacobian) {
+    jacobian = 0;
+    PathSample result = {};
+
+    // caustic paths cannot be shifted between pixels
+    if (!basePath.HasFlag(PathFlags::eCausticLightPath)) {
+        int2 tmp;
+        result = gPathGenerator.ShiftPath(basePath, newVertex, tmp, jacobian);
+    }
+
+    return result;
+}
 
 // Generalized Talbot RMIS weight
 float ComputeSpatialMisWeight(const uint2 center, PathReservoir sample, float jacobianToCenter, float centerM, int candidateIndex, float candidateTargetPdf) {
@@ -41,7 +53,7 @@ float ComputeSpatialMisWeight(const uint2 center, PathReservoir sample, float ja
         print("Shifting sample to candidate", i);
 
         float jacobian;
-        const PathSample shifted = gPathGenerator.ShiftPath(sample.mSample, vp, jacobian);
+        const PathSample shifted = SpatialShift(sample.mSample, vp, jacobian);
         print("jacobian:", jacobian);
         if (jacobian > 0) {
             const float m = candidate.mM * shifted.GetTargetPdf() * jacobian;
@@ -78,7 +90,7 @@ float ComputeSpatialZ(const uint2 center, PathReservoir sample, float centerM, i
         print("Shifting sample to candidate", i);
 
         float jacobian;
-        gPathGenerator.ShiftPath(sample.mSample, vp, jacobian);
+        SpatialShift(sample.mSample, vp, jacobian);
         print("jacobian:", jacobian);
         if (jacobian > 0) {
             msum += candidate.mM;
@@ -98,7 +110,7 @@ void main(uint3 index: SV_DispatchThreadID) {
     PathReservoir r = gPathGenerator.LoadInputReservoir(id);
 
     const PackedPathVertex vertex = gPathGenerator.LoadPrimaryVertex(id);
-    if (!vertex.IsFinite() || (gIgnoreCaustics && r.mSample.HasFlag(PathFlags::eCausticLightPath))) {
+    if (!vertex.IsFinite()) {
         gPathGenerator.StoreReservoir(id, r);
         return;
     }
@@ -134,10 +146,6 @@ void main(uint3 index: SV_DispatchThreadID) {
         PathReservoir candidate = gPathGenerator.LoadInputReservoir(p);
 
         if (candidate.mSample.IsValid()) {
-            if ((gIgnoreCaustics && candidate.mSample.HasFlag(PathFlags::eCausticLightPath))) {
-                r.mM += candidate.mM;
-                continue;
-            }
             print("Candidate id:", candidate.mSample.mId.mId);
             print("  f, W, M:", float3(candidate.mSample.GetTargetPdf(), candidate.mW, candidate.mM));
         }
@@ -150,7 +158,7 @@ void main(uint3 index: SV_DispatchThreadID) {
             mc += 1;
             if (center.mSample.IsValid() && candidate.mM > 0) {
                 float jacobianToCandidate;
-                const float shiftedTargetPdf = gPathGenerator.ShiftPath(center.mSample, candidateVertex, jacobianToCandidate).GetTargetPdf();
+                const float shiftedTargetPdf = SpatialShift(center.mSample, candidateVertex, jacobianToCandidate).GetTargetPdf();
                 print("jacobianToCandidate:", jacobianToCandidate);
                 if (jacobianToCandidate > 0 && shiftedTargetPdf > 0) {
                     mc -= SafeDivide(
@@ -173,7 +181,7 @@ void main(uint3 index: SV_DispatchThreadID) {
         // shift candidate's sample to here
         print("Shifting candidate to center", i);
         float jacobianToCenter;
-        candidate.mSample = gPathGenerator.ShiftPath(candidate.mSample, vertex, jacobianToCenter);
+        candidate.mSample = SpatialShift(candidate.mSample, vertex, jacobianToCenter);
         print("jacobianToCenter:", jacobianToCenter);
 
         if (!candidate.mSample.IsValid() || !(jacobianToCenter > 0)) {

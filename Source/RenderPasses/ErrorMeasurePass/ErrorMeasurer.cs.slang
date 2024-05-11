@@ -59,7 +59,7 @@ void main(uint3 DTid: SV_DispatchThreadID)
     if (isPixelValid) {
         src = gSource[pixel].rgb;
         ref = gReference[pixel].rgb;
-        diff = abs((src - ref) + gDifferenceOffset);
+        diff = src - ref;
     }
 
     // Compute error based on the current options.
@@ -68,7 +68,11 @@ void main(uint3 DTid: SV_DispatchThreadID)
         if (ref.g > 0) diff.g /= ref.g;
         if (ref.b > 0) diff.b /= ref.b;
     }
-    if (gComputeDiffSqr != 0) diff *= diff;
+
+    if (gComputeDiffSqr != 0) diff = (diff * diff) * sign(diff);
+
+    diff = abs(diff + gDifferenceOffset);
+
     if (gComputeAverage != 0) diff.rgb = (diff.r + diff.g + diff.b) / 3.f;
 
     gResult[pixel] = float4(diff, 0.0f);

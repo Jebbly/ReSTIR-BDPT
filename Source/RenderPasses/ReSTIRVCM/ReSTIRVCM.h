@@ -76,7 +76,6 @@ private:
         bool        debugBPT = false;
         bool        debugHeatmap = false;
         bool        useResampling = true;
-        bool        useMisInIntegrand = true;
         bool        shiftLightPathsToPixelCenters = true;
         bool        useCausticShift = true;
         bool        useTemporalReuse = true;
@@ -113,7 +112,7 @@ private:
     bool                            mSwapReservoirs = false;
     bool                            mUsePerFrameSeed = false;
     uint                            mCurrentSeed = 0;
-    bool                            mSkipReuse = false;
+    bool                            mResetTemporalHistory = false;
 
     // Internal state
     ref<Scene>                      mpScene;                     ///< The current scene, or nullptr if no scene loaded.

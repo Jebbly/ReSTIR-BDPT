@@ -244,7 +244,7 @@ void ErrorMeasurePass::runReductionPasses(RenderContext* pRenderContext, const R
     mpParallelReduction->execute(pRenderContext, mpDifferenceTexture, ParallelReduction::Type::Sum, &error);
 
     const float pixelCountf = static_cast<float>(mpDifferenceTexture->getWidth() * mpDifferenceTexture->getHeight());
-    mMeasurements.error = error.xyz() / pixelCountf;
+    mMeasurements.error = error.xyz() / pixelCountf - mDifferenceOffset;
     mMeasurements.avgError = (mMeasurements.error.x + mMeasurements.error.y + mMeasurements.error.z) / 3.f;
     mMeasurements.valid = true;
 

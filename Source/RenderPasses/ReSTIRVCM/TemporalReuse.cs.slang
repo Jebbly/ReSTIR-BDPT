@@ -79,7 +79,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
             }
             gPathGenerator.IncrementCounter( candidate.mSample.IsValid() && jacobianToCenter > 0 ? DebugCounterType::eTemporalShiftSuccesses : DebugCounterType::eTemporalShiftFailures );
 
-            print("  prev->r, jacobianToCenter:", float2(candidate.mSample.GetTargetPdf(), jacobianToCenter));
+            print("  f, jacobianToCenter:", float2(candidate.mSample.GetTargetPdf(), jacobianToCenter));
         }
     } else {
         print("Invalid candidate sample", 0);
@@ -110,7 +110,7 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
                 float jacobianToPrev;
                 const float shiftedTargetPdf = TemporalShift<true>(prevPixel, r.mSample, prevVertex, jacobianToPrev, causticReject).GetTargetPdf();
                 f = SafeDivide(shiftedTargetPdf, jacobianToPrev);
-                print("   r->prev, jacobianToPrev:", float2(shiftedTargetPdf, jacobianToPrev));
+                print("  f, jacobianToPrev:", float2(shiftedTargetPdf, jacobianToPrev));
             }
         }
 

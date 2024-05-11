@@ -85,17 +85,17 @@ struct RecursiveMisState {
     float dVM = 0;
 };
 struct ReconnectionMisState {
-    float invFwdG_r;
-    float prod_ratio;
-    float prod_dVCM;
-    float sumProd_dVCM;
-    float end_coeff;
-    float end_dVCM;
-    float last_invPdf;
+    float invFwdG_r = 0;
+    float prod_ratio = 0;
+    float prod_dVCM = 0;
+    float sumProd_dVCM = 0;
+    float end_coeff = 0;
+    float end_dVCM = 0;
+    float last_invPdf = 0;
 };
 
 struct MisEvalData {
-    RecursiveMisState lightSubpathMis = {};
+    RecursiveMisState    lightSubpathMis = {};
     ReconnectionMisState reconnectionMis = {};
 
     float cameraScatterFwdPdfW = 0;
@@ -119,7 +119,7 @@ struct PathSuffix {
     float3           mDirOut = 0;           ///< Outgoing direction from the reconnection vertex.
     float            mDist = 0;             ///< Geometry term between the prefix and the suffix.
     LightSubpathData mLightSubpath = {};    ///< Light subpath id
-    //MisEvalData      mMisEvalArgs = {};     ///< Data for recomputing MIS weights during reconnection
+    MisEvalData      mMisEvalArgs = {};     ///< Data for recomputing MIS weights during reconnection
     float            mCos = 0;              ///< Geometry term between the prefix and the suffix.
 
     static PathSuffix Create(
@@ -138,7 +138,7 @@ struct PathSuffix {
         s.mDirOut          = reconnectionDirOut;
         s.mDist            = reconnectionDistance;
         s.mLightSubpath    = lightSubpath;
-        //s.mMisEvalArgs     = misData;
+        s.mMisEvalArgs     = misData;
         s.mCos             = reconnectionCos;
         return s;
     }
@@ -153,8 +153,6 @@ enum PathFlags : uint {
 
 // Represents an unweighted path sample, which can be shifted between domains.
 struct PathSample {
-    static const bool gIntegrandMIS = MIS_IN_INTEGRAND;
-
     PathId mId;
     uint   mPackedBounces = 0;
     uint   mFlags = 0;
@@ -192,7 +190,7 @@ struct PathSample {
     float GetTargetPdf() {
         //float p = max(max(mContribution.r, mContribution.g), mContribution.b);
         float p = luminance(mContribution);
-        return gIntegrandMIS ? p * mMisWeight : p;
+        return p * mMisWeight;
     }
 
     static PathSample Create(
@@ -232,9 +230,7 @@ struct PathReservoir {
     }
 
     float3 GetRadiance() {
-        return PathSample::gIntegrandMIS ?
-            mSample.mContribution * (mW * mSample.mMisWeight) :
-            mSample.mContribution * mW;
+        return mSample.mContribution * (mW * mSample.mMisWeight);
     }
 
     [mutating]

@@ -33,6 +33,8 @@ enum class DebugCounterType : uint {
     eSpatialReuseAcceptances  = (1 << 9),
     eCausticReuseAcceptances  = (1 << 10),
 
+    eMisWeightDebug           = (1 << 11),
+
     eRays                     = (1 << 0) | (1 << 1),
     eShiftSuccesses           = (1 << 2) | (1 << 3) | (1 << 4),
     eShiftFailures            = (1 << 5) | (1 << 6) | (1 << 7),
@@ -60,6 +62,8 @@ FALCOR_ENUM_INFO(
         { DebugCounterType::eSpatialReuseAcceptances, "Spatial reuse acceptances" },
         { DebugCounterType::eCausticReuseAcceptances, "Caustic reuse acceptances" },
         { DebugCounterType::eReuseAcceptances, "Reuse acceptances" },
+
+        { DebugCounterType::eMisWeightDebug, "MIS weight debugging" },
     }
 );
 FALCOR_ENUM_REGISTER(DebugCounterType);
@@ -92,6 +96,7 @@ struct PathGeneratorParams {
 
     int mDebugTotalVertices  = -1; ///< Only render paths with this many vertices.
     int mDebugLightVertices  = -1; ///< Only render paths with this many light vertices.
+    int mDebugPrefixBounces  = -1; ///< Only render paths with this many prefix bounces.
     int mDebugDisableMerging = 0;  ///< Don't render paths that use vertex merging.
     DebugCounterType mDebugCounter = DebugCounterType::eRays;
 };

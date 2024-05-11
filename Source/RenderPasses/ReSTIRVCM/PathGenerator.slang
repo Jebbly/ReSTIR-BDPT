@@ -304,10 +304,17 @@ extension PathGenerator {
 
     void IncrementCounter(const DebugCounterType type, const uint increment = 1) {
         #if DEBUG_HEATMAP
-        if ((uint(type) & uint(mParams.mDebugCounter)) != 0) {
+        if ((uint(type) & uint(mParams.mDebugCounter)) != 0 && all(gPixelDebugPixel < mParams.mOutputDim)) {
+            const uint addr = (1 + gPixelDebugPixel.y * mParams.mOutputDim.x + gPixelDebugPixel.x) * sizeof(uint);
             uint prevValue;
-            mOutputCounterData.InterlockedAdd((1 + gPixelDebugPixel.y * mParams.mOutputDim.x + gPixelDebugPixel.x) * sizeof(uint), increment, prevValue);
-            mOutputCounterData.InterlockedMax(0, prevValue + increment);
+            mOutputCounterData.InterlockedAdd(addr, increment, prevValue);
+            uint val = prevValue + increment;
+            if ((~uint(0)) - prevValue < increment) {
+                // clamp on overflow
+                val = (~uint(0));
+                mOutputCounterData.InterlockedMax(addr, val);
+            }
+            mOutputCounterData.InterlockedMax(0, val);
         }
         #endif
     }
@@ -345,14 +352,17 @@ extension PathGenerator {
         b = normalize(cross(n, t));
     }
 
-    bool DebugDisableMIS() { return (gDebugBPT && mParams.mDebugLightVertices != -1); }
-    bool DebugDisablePath(const uint bounces, const uint lightVertices, const bool merged = false) {
-        if (!gDebugBPT)
-            return false;
+    // Disable MIS when we are only rendering a single technique
+    bool DebugDisableMIS() {
+        return false;// (gDebugBPT && mParams.mDebugLightVertices != -1);
+    }
+    bool DebugDisablePath(const uint bounces, const uint lightVertices, const uint prefixBounces, const bool merged) {
+        if (!gDebugBPT) return false;
         return
             (merged && bool(mParams.mDebugDisableMerging))
             || (mParams.mDebugTotalVertices != -1 && mParams.mDebugTotalVertices != bounces + 2)
-            || (mParams.mDebugLightVertices != -1 && mParams.mDebugLightVertices != lightVertices);
+            || (mParams.mDebugLightVertices != -1 && mParams.mDebugLightVertices != lightVertices)
+            || (mParams.mDebugPrefixBounces != -1 && mParams.mDebugPrefixBounces != prefixBounces);
     }
     float GetMisVcWeightFactor() { return Mis(1.f / (sqr(mParams.mMergeRadius) * M_PI * mParams.mLightSubpathCount)); }
     float GetMisVmWeightFactor() { return gVertexMerging ? Mis((sqr(mParams.mMergeRadius) * M_PI * mParams.mLightSubpathCount)) : 0; }
@@ -585,11 +595,11 @@ extension RecursiveMisState {
     }
 
     [mutating]
-    void ProcessRay(const PackedPathVertex newVertex, const float cosIn, const bool prevFinite = true) {
+    void ProcessRay(const float dist, const float cosIn, const bool prevFinite = true) {
         // update mis quantities
-        if (gPathGenerator.gBidirectional && newVertex.IsFinite()) {
+        if (gPathGenerator.gBidirectional && dist < FLT_MAX) {
             if (prevFinite)
-                dVCM *= gPathGenerator.Mis(sqr(newVertex.mRayDistance));
+                dVCM *= gPathGenerator.Mis(sqr(dist));
             const float invCosIn = 1 / gPathGenerator.Mis(cosIn);
             dVCM *= invCosIn;
             dVC  *= invCosIn;
@@ -660,11 +670,19 @@ extension RecursiveMisState {
 }
 
 extension ReconnectionMisState {
+    // no vertex merging for now
     property float sumProd_eta { get { return 0; } }
 
     [mutating]
-    void Update(const RecursiveMisState mis, float pdfFwd, float pdfRev, float cosIn, float cosOut, float dist, uint idx) {
-        bool isDelta = mis.dVCM == 0;
+    void Update(
+        const RecursiveMisState mis,
+        const float pdfFwd,
+        const float pdfRev,
+        const float cosIn,
+        const float cosOut,
+        const float dist,
+        const uint idx) {
+        const bool isDelta = mis.dVCM == 0;
         if (idx == 0) {
             invFwdG_r = (dist*dist) / cosIn;
             sumProd_dVCM = 0;
@@ -707,11 +725,11 @@ extension ReconnectionMisState {
         end_dVCM = mis.dVCM;
     }
 
-    void Apply(inout RecursiveMisState mis_r, float pdfFwd_r, float pdfRev_r, uint N) {
+    void Apply(inout RecursiveMisState mis_r, float pdfFwd_r, float pdfRev_r, bool singleBounce) {
         float invPdf = 1 / pdfFwd_r;
         float ratio_r = gPathGenerator.Mis(invPdf) * prod_ratio;
 
-        if (N == 0) {
+        if (singleBounce) {
             // vertex after rcv is last vertex
             mis_r.dVC = ratio_r * (
                 gPathGenerator.GetMisVmWeightFactor()
@@ -740,6 +758,7 @@ extension ReconnectionMisState {
 SampleGenerator MakeSampleGenerator(const uint2 id, const uint seed) { return SampleGenerator(id, seed); }
 
 extension PathGenerator {
+    // stores information about the previous vertex along the path
     struct CachedVertexData {
         float3            position       = 0;
         float             scatterFwdPdfW = 0;
@@ -757,7 +776,7 @@ extension PathGenerator {
             set { BF_SET(flags, (uint)newValue, 1, 1); }
         }
 
-        bool HasNormal() { return all(normal != 0); }
+        bool HasNormal() { return any(normal != 0); }
     };
 
     struct PathState<let bShift : bool> {
@@ -839,7 +858,6 @@ extension PathGenerator {
     // Merges a canonical sample into the pixel's reservoir
     void ProcessSample(inout PathReservoir r, inout SampleGenerator sg, PathSample ps, float weight) {
         if (gUseResampling) {
-            if (!PathSample::gIntegrandMIS) weight *= ps.mMisWeight;
             r.Merge(sampleNext1D(sg), ps, weight * ps.GetTargetPdf(), 0);
         } else if (ps.IsValid() && weight > 0) {
             print("Found path. contrib:", ps.mContribution);
@@ -860,7 +878,7 @@ extension PathGenerator {
 
         PathSample result = {};
 
-        if (DebugDisablePath(s.bounces + 1, 1)) {
+        if (DebugDisablePath(s.bounces + 1, 1, s.rcvFound ? s.prefixBounces : s.bounces, false)) {
             if (bShift) print("Shift failed: disabled", 0);
             return result;
         }
@@ -1061,7 +1079,7 @@ extension PathGenerator {
         PathSample result = {};
 
         const uint bounces = s.bounces + v.mBounces + 2;
-        if (bounces > mParams.mMaxBounces || s.diffuseBounces + v.mDiffuseBounces + 2 > mParams.mMaxDiffuseBounces || DebugDisablePath(bounces, v.mLightSubpath.mVertexCount))
+        if (bounces > mParams.mMaxBounces || s.diffuseBounces + v.mDiffuseBounces + 2 > mParams.mMaxDiffuseBounces || DebugDisablePath(bounces, v.mLightSubpath.mVertexCount, s.rcvFound ? s.prefixBounces : s.bounces, false))
             return result;
 
         // evaluate the bsdf at the light subpath vertex
@@ -1195,7 +1213,7 @@ extension PathGenerator {
         const float mergeRadius = GetMergeRadius(vertex.GetPosition());
 
         const uint bounces = s.bounces + v.mBounces + 1;
-        if (bounces > mParams.mMaxBounces || s.diffuseBounces + v.mDiffuseBounces + 1 > mParams.mMaxDiffuseBounces || DebugDisablePath(bounces, v.mLightSubpath.mVertexCount, true))
+        if (bounces > mParams.mMaxBounces || s.diffuseBounces + v.mDiffuseBounces + 1 > mParams.mMaxDiffuseBounces || DebugDisablePath(bounces, v.mLightSubpath.mVertexCount, s.rcvFound ? s.prefixBounces : s.bounces, true))
             return result;
 
         const PathVertex photon = PathVertex(v.mVertex);
@@ -1279,7 +1297,7 @@ extension PathGenerator {
         pixelCoord = -1;
         PathSample result = {};
 
-        if (DebugDisablePath(s.bounces + 1, s.bounces + 2))
+        if (DebugDisablePath(s.bounces + 1, s.bounces + 2, 0, false))
             return result;
 
         const float3 cameraPos = usePrevCamera ? gScene.camera.data.prevPosW : gScene.camera.data.posW;
@@ -1301,15 +1319,6 @@ extension PathGenerator {
 
         ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, toCamera, true);
         f.mReflectance /= cosOut;
-
-        /*{
-            const uint2 cached = gPixelDebugPixel;
-            printSetPixel(pixelCoord);
-            print(bShift ? "shifting" : "canonical", uint4(s.bounces, s.deltaRcv, s.id.mId));
-            print("   s.throughput", luminance(s.throughput));
-            print("   f.mReflectance", luminance(f.mReflectance));
-            printSetPixel(cached);
-        }*/
 
         // Compute pdf conversion factor from image plane area to surface area
         const float cameraPdfA = imageToSolidAngleFactor * cosOut / sqr(dist);
@@ -1336,6 +1345,13 @@ extension PathGenerator {
         MisEvalData misEvalArgs = {};
         misEvalArgs.reconnectionMis = s.rcvMis;
         misEvalArgs.lightSubpathMis = s.deltaRcv ? s.mis : s.lastVertex.mis;
+
+        /*{
+            const uint2 cached = gPixelDebugPixel;
+            printSetPixel(pixelCoord);
+            print("     ConnectToCamera:", float4(f.mFwdPdfW, f.mRevPdfW, s.lastVertex.scatterFwdPdfW, s.lastVertex.scatterRevPdfW));
+            printSetPixel(cached);
+        }*/
 
         PathSuffix suffix = {};
         if (s.deltaRcv) {
@@ -1393,7 +1409,7 @@ extension PathGenerator {
         integrationWeight = 0;
         PathSample result = {};
 
-        if (DebugDisablePath(s.bounces, 0))
+        if (DebugDisablePath(s.bounces, 0, s.rcvFound ? s.prefixBounces : s.bounces, false))
             return result;
 
         const float3 le = vertex.GetEmission();
@@ -1645,7 +1661,7 @@ extension PathGenerator {
                 return s;
             }
 
-            s.mis.ProcessRay(vertex.mVertex, cosIn, finiteEmitter);
+            s.mis.ProcessRay(vertex.mVertex.mRayDistance, cosIn, finiteEmitter);
 
             s.rcvDist = vertex.mVertex.mRayDistance;
         } else
@@ -1679,17 +1695,18 @@ extension PathGenerator {
                 s.throughputAtRcv = s.throughput;
                 s.pdfAtRcv = s.pdfW;
             } else {
+                // rcv became unconnectable after BSDF sampling (sampled a delta lobe)
                 s.prefixPdf = 0;
                 s.prefixBounces = 0;
             }
         }
 
-        if (s.rcvFound && s.bounces > s.prefixBounces) {
+        if (s.rcvFound && gUseReconnectionMIS) {
             const float cosOut = s.lastVertex.HasNormal() ? abs(dot(s.lastVertex.normal, vertex.GetDirIn())) : 1;
             s.rcvMis.Update( s.mis,
                 s.lastVertex.scatterFwdPdfW, s.lastVertex.scatterRevPdfW,
                 cosIn, cosOut, vertex.mVertex.mRayDistance,
-                s.bounces - (s.prefixBounces + 1) );
+                s.bounces - (s.prefixBounces + 2) );
         }
     }
 
@@ -1767,7 +1784,7 @@ extension PathGenerator {
             return 0;
         }
 
-        s.mis.ProcessRay(vertex.mVertex, cosIn);
+        s.mis.ProcessRay(vertex.mVertex.mRayDistance, cosIn);
 
         if (!s.isLightPath) {
             const bool canReconnect = connectable && vertex.mVertex.mRayDistance >= mParams.mReconnectionDistance && (vertex.IsConnectable() || any(vertex.GetEmission() > 0));
@@ -1918,7 +1935,7 @@ extension PathGenerator {
                                 const uint count = mLightVertexCache.lightVertexCount[i];
                                 //*
                                 // pick a random light vertex and weight it by 'count'
-                                uint b = min(uint(sampleNext1D(s.sg) * count), count - 1);
+                                const uint b = min(uint(sampleNext1D(s.sg) * count), count - 1);
                                 /*/
                                 // connect to light subpath vertices
                                 for (uint b = 0; b < count; b++)

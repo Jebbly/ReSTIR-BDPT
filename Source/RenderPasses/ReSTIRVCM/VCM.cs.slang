@@ -49,9 +49,12 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
         c.PrepareMerge(m);
 
         if (gPathGenerator.gShiftLightPathsToPixelCenters && c.mSample.HasFlag(PathFlags::eNonCausticLightPath)) {
+            gPathGenerator.DebugSetPixel(-1); // dont want messages from this shift
             // Reject path if it is not samplable from the primary vertex
             float jacobian;
-            const bool valid = gPathGenerator.ShiftPath(c.mSample, primaryVertex, jacobian).IsValid();
+            int2 tmp;
+            const bool valid = gPathGenerator.ShiftPath(c.mSample, primaryVertex, tmp, jacobian).IsValid();
+            gPathGenerator.DebugSetPixel(id);
             if (!valid || !(jacobian > 0))
                 continue;
         }
