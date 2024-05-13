@@ -277,7 +277,7 @@ extension PathGenerator {
 
         result = basePath;
         result.mContribution = s.throughput * newSuffix.mContribution;
-        //result.mMisWeight = misWeight;
+        result.mMisWeight = misWeight;
         result.mPrefixPdf = prefixPdf;
         result.mSuffix = newSuffix;
 

@@ -354,7 +354,7 @@ extension PathGenerator {
 
     // Disable MIS when we are only rendering a single technique
     bool DebugDisableMIS() {
-        return false;// (gDebugBPT && mParams.mDebugLightVertices != -1);
+        return (gDebugBPT && mParams.mDebugLightVertices != -1);
     }
     bool DebugDisablePath(const uint bounces, const uint lightVertices, const uint prefixBounces, const bool merged) {
         if (!gDebugBPT) return false;
