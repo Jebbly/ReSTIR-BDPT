@@ -74,11 +74,13 @@ public:
 
     ErrorMeasurePass(ref<Device> pDevice, const Properties& props);
 
+    virtual void setProperties(const Properties& props) override;
     virtual Properties getProperties() const override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override;
+    virtual void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
 
 private:
     bool loadReference();
@@ -116,6 +118,10 @@ private:
     std::filesystem::path mReferenceImagePath;
     /// Path to the output file where measurements are stored (.csv).
     std::filesystem::path mMeasurementsFilePath;
+
+    std::filesystem::path mOutputImageFilePath;
+    size_t                mOutputFrameIndex = 1000;
+    size_t                mCurrentFrameIndex = 0;
 
     bool mEnabled = true;
 

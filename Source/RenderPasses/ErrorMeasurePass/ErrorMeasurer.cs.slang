@@ -75,5 +75,7 @@ void main(uint3 DTid: SV_DispatchThreadID)
 
     if (gComputeAverage != 0) diff.rgb = (diff.r + diff.g + diff.b) / 3.f;
 
+    if (any(isnan(diff)) || any(isinf(diff)) || any(diff != diff)) diff = 0;
+
     gResult[pixel] = float4(diff, 0.0f);
 }

@@ -63,6 +63,7 @@ struct PathGenerator {
 
     RWStructuredBuffer<PathReservoir> mPathReservoirs0;
     RWStructuredBuffer<PathReservoir> mPathReservoirs1;
+    RWStructuredBuffer<PathReservoir> mCausticReservoirs;
     HashMap<LightTraceReservoir>      mLightTraceReservoirs;
     HashMap<PathReservoir>            mCausticReservoirMap;
 
@@ -70,9 +71,10 @@ struct PathGenerator {
     Texture2D<float3>        mViewDir;
     Texture2D<float2>        mMotionVectors;
 
-    RWStructuredBuffer<PathReservoir> mLastReservoirs;
-    Texture2D<float3>                 mLastViewDir;
-    Texture2D<PackedHitInfo>          mLastVbuffer;
+    StructuredBuffer<PathReservoir> mLastReservoirs;
+    StructuredBuffer<PathReservoir> mLastCausticReservoirs;
+    Texture2D<float3>               mLastViewDir;
+    Texture2D<PackedHitInfo>        mLastVbuffer;
 }
 ParameterBlock<PathGenerator> gPathGenerator;
 
@@ -494,6 +496,22 @@ extension PathGenerator {
             mPathReservoirs0[flatIndex] = r;
         else
             mPathReservoirs1[flatIndex] = r;
+    }
+
+    PathReservoir LoadPrevCausticReservoir(const uint2 index) {
+        if (!gUseResampling) return {};
+        const uint flatIndex = index.y * mParams.mOutputDim.x + index.x;
+        return mLastCausticReservoirs[flatIndex];
+    }
+    PathReservoir LoadCausticReservoir(const uint2 index) {
+        if (!gUseResampling) return {};
+        const uint flatIndex = index.y * mParams.mOutputDim.x + index.x;
+        return mCausticReservoirs[flatIndex];
+    }
+    void StoreCausticReservoir(const uint2 index, const PathReservoir r) {
+        if (!gUseResampling) return;
+        const uint flatIndex = index.y * mParams.mOutputDim.x + index.x;
+        mCausticReservoirs[flatIndex] = r;
     }
 
     // ---------------------------------------------------------------------------------------------------------

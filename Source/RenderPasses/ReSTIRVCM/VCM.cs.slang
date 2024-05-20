@@ -3,6 +3,8 @@ import Utils.Sampling.SampleGenerator;
 import Utils.Debug.PixelDebug;
 import PathShift;
 
+static const bool gUseCausticReservoirs = USE_CAUSTIC_RESERVOIRS;
+
 [shader("compute")]
 [numthreads(8, 4, 1)]
 void SampleLightPaths(uint3 index: SV_DispatchThreadID) {
@@ -41,6 +43,7 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
     uint minid = ~0u;
 
     PathReservoir r = {};
+    PathReservoir cr = {};
 
     const uint2 range = gPathGenerator.mLightTraceReservoirs.GetCellDataRange(id.y * gPathGenerator.mParams.mOutputDim.x + id.x);
     for (uint i = range.x; i < range.y; i++) {
@@ -70,7 +73,11 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
                 u = 1;
         }
 
-        r.Merge(u, c);
+        if (gUseCausticReservoirs && c.mSample.HasFlag(PathFlags::eCausticLightPath)) {
+            cr.Merge(u, c);
+        } else {
+            r.Merge(u, c);
+        }
     }
 
     // Merge with camera tracing sample
@@ -82,9 +89,14 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
     }
 
     r.mM = 1;
-
     r.FinalizeMerge();
     gPathGenerator.StoreReservoir(id, r);
+
+    if (gUseCausticReservoirs) {
+        cr.mM = 1;
+        cr.FinalizeMerge();
+        gPathGenerator.StoreCausticReservoir(id, cr);
+    }
 }
 
 [shader("compute")]
@@ -104,6 +116,13 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
         const PathReservoir r = gPathGenerator.LoadInputReservoir(id);
         if (r.mW > 0 && r.mSample.IsValid()) {
             radiance.rgb += r.GetRadiance();
+        }
+
+        if (gUseCausticReservoirs) {
+            const PathReservoir r = gPathGenerator.LoadCausticReservoir(id);
+            if (r.mW > 0 && r.mSample.IsValid()) {
+                radiance.rgb += r.GetRadiance();
+            }
         }
     } else if (gPathGenerator.gBidirectional && ! gPathGenerator.gDisableCameraConnection) {
         // Add light trace contribution from atomic buffer

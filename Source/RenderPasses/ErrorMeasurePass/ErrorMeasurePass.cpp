@@ -53,6 +53,8 @@ const std::string kUseLoadedReference = "UseLoadedReference";
 const std::string kReportRunningError = "ReportRunningError";
 const std::string kRunningErrorSigma = "RunningErrorSigma";
 const std::string kSelectedOutputId = "SelectedOutputId";
+const std::string kOutputImageFilePath = "OutputImageFilePath";
+const std::string kOutputFrameIndex = "OutputFrameIndex";
 } // namespace
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
@@ -74,6 +76,16 @@ const Gui::RadioButtonGroup ErrorMeasurePass::sGraphModeSelectionButtons = {
 
 ErrorMeasurePass::ErrorMeasurePass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
 {
+    setProperties(props);
+
+    mpParallelReduction = std::make_unique<ParallelReduction>(mpDevice);
+    mpErrorMeasurerPass = ComputePass::create(mpDevice, kErrorComputationShaderFile);
+
+    mMeasurementHistory.reserve(mMeasurementHistoryLength);
+}
+
+void ErrorMeasurePass::setProperties(const Properties& props)
+{
     for (const auto& [key, value] : props)
     {
         if (key == kReferenceImagePath)
@@ -94,6 +106,10 @@ ErrorMeasurePass::ErrorMeasurePass(ref<Device> pDevice, const Properties& props)
             mRunningErrorSigma = value;
         else if (key == kSelectedOutputId)
             mSelectedOutputId = value;
+        else if (key == kOutputImageFilePath)
+            mOutputImageFilePath = value.operator std::filesystem::path();
+        else if (key == kOutputFrameIndex)
+            mOutputFrameIndex = value;
         else
         {
             logWarning("Unknown property '{}' in ErrorMeasurePass properties.", key);
@@ -103,12 +119,8 @@ ErrorMeasurePass::ErrorMeasurePass(ref<Device> pDevice, const Properties& props)
     // Load/create files (if specified in config).
     loadReference();
     loadMeasurementsFile();
-
-    mpParallelReduction = std::make_unique<ParallelReduction>(mpDevice);
-    mpErrorMeasurerPass = ComputePass::create(mpDevice, kErrorComputationShaderFile);
-
-    mMeasurementHistory.reserve(mMeasurementHistoryLength);
 }
+
 
 Properties ErrorMeasurePass::getProperties() const
 {
@@ -122,6 +134,8 @@ Properties ErrorMeasurePass::getProperties() const
     props[kReportRunningError] = mReportRunningError;
     props[kRunningErrorSigma] = mRunningErrorSigma;
     props[kSelectedOutputId] = mSelectedOutputId;
+    props[kOutputImageFilePath] = mOutputImageFilePath;
+    props[kOutputFrameIndex] = mOutputFrameIndex;
     return props;
 }
 
@@ -195,6 +209,21 @@ void ErrorMeasurePass::execute(RenderContext* pRenderContext, const RenderData& 
         runReductionPasses(pRenderContext, renderData);
 
         saveMeasurementsToFile();
+
+        if (mMeasurementHistory.size() == mMeasurementHistoryLength) {
+            for (size_t i = 0; i < mMeasurementHistory.size() - 1; i++)
+                mMeasurementHistory[i] = mMeasurementHistory[i+1];
+            mMeasurementHistory.back() = mMeasurements.avgError;
+        } else
+            mMeasurementHistory.emplace_back(mMeasurements.avgError);
+        mMaxMeasurement = std::max(mMaxMeasurement, mMeasurements.avgError);
+        mMinMeasurement = std::min(mMinMeasurement, mMeasurements.avgError);
+
+        if (mCurrentFrameIndex == mOutputFrameIndex && !mOutputImageFilePath.empty())
+        {
+            pSourceImageTexture->captureToFile(0, 0, mOutputImageFilePath, Bitmap::FileFormat::ExrFile);
+        }
+        mCurrentFrameIndex++;
     }
 
     switch (mSelectedOutputId)
@@ -260,14 +289,10 @@ void ErrorMeasurePass::runReductionPasses(RenderContext* pRenderContext, const R
         mRunningAvgError = mRunningErrorSigma * mRunningAvgError + (1 - mRunningErrorSigma) * mMeasurements.avgError;
     }
 
-    if (mMeasurementHistory.size() == mMeasurementHistoryLength) {
-        for (size_t i = 0; i < mMeasurementHistory.size() - 1; i++)
-            mMeasurementHistory[i] = mMeasurementHistory[i+1];
-        mMeasurementHistory.back() = mMeasurements.avgError;
-    } else
-        mMeasurementHistory.emplace_back(mMeasurements.avgError);
-    mMaxMeasurement = std::max(mMaxMeasurement, mMeasurements.avgError);
-    mMinMeasurement = std::min(mMinMeasurement, mMeasurements.avgError);
+}
+
+void ErrorMeasurePass::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) {
+    mCurrentFrameIndex = 0;
 }
 
 void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
@@ -291,14 +316,16 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
                 msgBox("Error", fmt::format("Failed to load reference image from '{}'.", path), MsgBoxType::Ok, MsgBoxIcon::Error);
         }
     }
-
-    if (widget.button("Set reference", true))
+    if (mReferenceImagePath.empty())
     {
-        mSetReference = true;
+        if (widget.button("Set reference", true))
+            mSetReference = true;
+    } else {
+        widget.text(getFilename(mReferenceImagePath), true);
     }
 
     // Create a button for defining the measurements output file.
-    if (widget.button("Set output data file", true))
+    if (widget.button("Set output data file"))
     {
         FileDialogFilterVec filters;
         filters.push_back({"csv", "CSV Files"});
@@ -309,6 +336,40 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
             if (!loadMeasurementsFile())
                 msgBox("Error", fmt::format("Failed to save measurements to '{}'.", path), MsgBoxType::Ok, MsgBoxIcon::Error);
         }
+    }
+    widget.text(getFilename(mMeasurementsFilePath), true);
+    if (mMeasurementsFile && mMeasurementsFile.is_open())
+    {
+        if (widget.button("x", true))
+        {
+            mMeasurementsFile.close();
+            mMeasurementsFilePath.clear();
+        }
+    }
+
+    if (widget.button("Set output image"))
+    {
+        FileDialogFilterVec filters;
+        filters.push_back({"exr", "High Dynamic Range"});
+        std::filesystem::path path;
+        if (saveFileDialog(filters, path))
+        {
+            mOutputImageFilePath = path;
+        }
+    }
+    widget.text(getFilename(mOutputImageFilePath), true);
+    if (!mOutputImageFilePath.empty())
+    {
+        if (widget.button("x", true))
+        {
+            mOutputImageFilePath.clear();
+        }
+    }
+    widget.var<size_t>("Output frame", mOutputFrameIndex, 0, std::numeric_limits<size_t>::max(), 1.f);
+    widget.text(std::to_string(mCurrentFrameIndex));
+    if (widget.button("Reset counter", true))
+    {
+        mCurrentFrameIndex = 0;
     }
 
     // Radio buttons to select the output.
@@ -528,6 +589,8 @@ bool ErrorMeasurePass::loadMeasurementsFile()
         }
         mMeasurementsFile << std::scientific;
     }
+
+    mCurrentFrameIndex = 0;
 
     return true;
 }

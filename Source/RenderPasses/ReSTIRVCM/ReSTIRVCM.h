@@ -9,6 +9,7 @@
 #include "Rendering/Lights/EmissivePowerSampler.h"
 #include "Rendering/Lights/EnvMapSampler.h"
 #include "Rendering/Materials/TexLODTypes.slang"
+#include <fstream>
 
 #include "HashMap.h"
 #include "Params.slang"
@@ -72,12 +73,13 @@ private:
         bool        useVMOnly = false;
         bool        disableCameraConnection = false;
         bool        disableEarlyReconnection = false;
-        bool        reconnectionMIS = false;
+        bool        reconnectionMIS = true;
         bool        debugBPT = false;
         bool        debugHeatmap = false;
         bool        useResampling = true;
         bool        shiftLightPathsToPixelCenters = true;
         bool        useCausticShift = true;
+        bool        useCausticReservoirs = true;
         bool        useTemporalReuse = true;
         bool        unbiasedTemporalReuse = true;
         bool        shiftSuffixes = true;
@@ -114,6 +116,9 @@ private:
     uint                            mCurrentSeed = 0;
     bool                            mResetTemporalHistory = false;
 
+    std::filesystem::path           mCameraPosOutputFile;
+    std::ofstream                   mCameraPosOutputStream;
+
     // Internal state
     ref<Scene>                      mpScene;                     ///< The current scene, or nullptr if no scene loaded.
     ref<SampleGenerator>            mpSampleGenerator;           ///< GPU pseudo-random sample generator.
@@ -145,6 +150,8 @@ private:
     ref<Buffer>                     mpPhotonCellOffsets;         ///< Photon grid cell offsets.
     ref<Buffer>                     mpReservoirs[2];             ///< Per-pixel reservoirs.
     ref<Buffer>                     mpLastReservoirs;            ///< Per-pixel reservoirs.
+    ref<Buffer>                     mpCausticReservoirs;         ///< Per-pixel reservoirs.
+    ref<Buffer>                     mpLastCausticReservoirs;     ///< Per-pixel reservoirs.
     ref<Buffer>                     mpPixelCounterData;
 
     ref<Texture>                    mpLastVbuffer;               ///< Copy of the vbuffer from last frame.

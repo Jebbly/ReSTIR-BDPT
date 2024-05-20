@@ -179,7 +179,7 @@ extension PathGenerator {
         // compute new MIS weight for the shifted path
         if (gUseReconnectionMIS && !DebugDisableMIS()) {
             misWeight = 0;
-            if (basePath.HasFlag(PathFlags::eNonCausticLightPath)) {
+            if (basePath.HasFlag(PathFlags::eNonCausticLightPath) && gBidirectional) {
                 RecursiveMisState mis;
                 float cosIn = s.lastVertex.HasNormal() ? abs(dot(s.lastVertex.normal, vertex.GetDirIn())) : 1;
                 if (basePath.mBounces == 1) {
@@ -230,7 +230,7 @@ extension PathGenerator {
                     newSuffix.mMisEvalArgs.cosLight = vertex.GetCosN(vertex.GetDirIn());
                     newSuffix.mMisEvalArgs.invDist2 = 1/sqr(vertex.mVertex.mRayDistance);
                 } else if (s.bounces == cameraBounces) {
-                    // rcv is last camera subpath vertex. mis is up to date.
+                    // rcv is last camera subpath vertex. mis is up to date. dont need to do anything.
                 } else {
                     // rcv is on camera subpath. advance mis to end of camera subpath
                     basePath.mSuffix.mMisEvalArgs.reconnectionMis.Apply( mis, rcvF.mFwdPdfW, rcvF.mRevPdfW, cameraBounces == (basePath.mPrefixBounces + 2) );
@@ -250,7 +250,7 @@ extension PathGenerator {
                         { float3(0), newSuffix.mMisEvalArgs.cameraScatterFwdPdfW, newSuffix.mMisEvalArgs.cameraScatterRevPdfW },
                         newSuffix.mMisEvalArgs.cosCam,
                         newSuffix.mMisEvalArgs.cosLight );
-                } else {
+                } else if (gBidirectional) {
                     if (gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging)) {
                         misWeight = mis.EvalVertexMergingMIS(
                             newSuffix.mMisEvalArgs.lightSubpathMis,

@@ -1,4 +1,4 @@
-#include "ReSTIRVCM.h"
+    #include "ReSTIRVCM.h"
 #include "RenderGraph/RenderPassHelpers.h"
 #include "RenderGraph/RenderPassStandardFlags.h"
 #include "Rendering/Lights/EmissiveUniformSampler.h"
@@ -34,8 +34,15 @@ namespace
     const std::string kSampleGenerator = "sampleGenerator";
     const std::string kFixedSeed = "fixedSeed";
     const std::string kUseNEE = "useNEE";
-    const std::string kUseBPT  = "useVC";
+    const std::string kUseBPT  = "useBPT";
     const std::string kUseVM  = "useVM";
+    const std::string kUseReconnectionMis  = "useReconnectionMis";
+    const std::string kUseCausticReservoirs  = "useCausticReservoirs";
+    const std::string kUseCausticShift  = "useCausticShift";
+    const std::string kUseResampling  = "useResampling";
+    const std::string kUseTemporalResampling  = "useTemporalResampling";
+    const std::string kSpatialPasses  = "spatialResamplingPasses";
+    const std::string kMCap = "Mcap";
     const std::string kMISPowerExponent = "misPowerExponent";
     const std::string kEmissiveSampler = "emissiveSampler";
     const std::string kLightBVHOptions = "lightBVHOptions";
@@ -109,6 +116,13 @@ void ReSTIRVCM::parseProperties(const Properties& props)
         else if (key == kUseVM) mStaticParams.useVM = value;
         else if (key == kMISPowerExponent) mStaticParams.misPowerExponent = value;
         else if (key == kEmissiveSampler) mStaticParams.emissiveSampler = value;
+        else if (key == kUseResampling) mStaticParams.useResampling = value;
+        else if (key == kUseTemporalResampling) mStaticParams.useTemporalReuse = value;
+        else if (key == kSpatialPasses) mStaticParams.spatialReusePasses = value;
+        else if (key == kMCap) mParams.mMCap = value;
+        else if (key == kUseCausticReservoirs) mStaticParams.useCausticReservoirs = value;
+        else if (key == kUseCausticShift) mStaticParams.useCausticShift = value;
+        else if (key == kUseReconnectionMis) mStaticParams.reconnectionMIS = value;
         else if (key == kLightBVHOptions) mLightBVHOptions = value;
 
         else logWarning("Unknown property '{}' in ReSTIRVCM properties.", key);
@@ -138,8 +152,13 @@ void ReSTIRVCM::validateOptions()
         mStaticParams.spatialReusePasses = 0;
     }
 
-    if (!mStaticParams.useBPT || mStaticParams.disableCameraConnection || !mStaticParams.shiftSuffixes)
+    if (!mStaticParams.useBPT || mStaticParams.disableCameraConnection || !mStaticParams.shiftSuffixes) {
+        mStaticParams.useCausticReservoirs = false;
         mStaticParams.useCausticShift = false;
+    }
+
+    if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs)
+        mStaticParams.useCausticShift = true;
 }
 
 Properties ReSTIRVCM::getProperties() const
@@ -163,6 +182,13 @@ Properties ReSTIRVCM::getProperties() const
     props[kMISPowerExponent] = mStaticParams.misPowerExponent;
     props[kEmissiveSampler] = mStaticParams.emissiveSampler;
     if (mStaticParams.emissiveSampler == EmissiveLightSamplerType::LightBVH) props[kLightBVHOptions] = mLightBVHOptions;
+    props[kUseResampling] = mStaticParams.useResampling;
+    props[kUseTemporalResampling] = mStaticParams.useTemporalReuse;
+    props[kSpatialPasses] = mStaticParams.spatialReusePasses;
+    props[kMCap] = mParams.mMCap;
+    props[kUseCausticReservoirs] = mStaticParams.useCausticReservoirs;
+    props[kUseCausticShift] = mStaticParams.useCausticShift;
+    props[kUseReconnectionMis] = mStaticParams.reconnectionMIS;
 
     return props;
 }
@@ -378,6 +404,23 @@ void ReSTIRVCM::renderUI(Gui::Widgets& widget)
     // Stats and debug options.
     dirty |= renderDebugUI(widget);
 
+    if (widget.button("Output camera path")) {
+        FileDialogFilterVec filters;
+        filters.push_back({"csv", "CSV Files"});
+        std::filesystem::path path;
+        if (saveFileDialog(filters, path)) {
+            mCameraPosOutputFile = path;
+            mCameraPosOutputStream = std::ofstream(mCameraPosOutputFile, std::ios::trunc);
+        }
+    }
+    if (!mCameraPosOutputFile.empty()) {
+        widget.text(mCameraPosOutputFile.string(), true);
+        if (widget.button("x")) {
+            mCameraPosOutputFile.clear();
+            mCameraPosOutputStream.close();
+        }
+    }
+
     if (dirty)
     {
         validateOptions();
@@ -520,7 +563,11 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
                 dirty |= group.checkbox("Shift path suffixes", mStaticParams.shiftSuffixes);
                 group.tooltip("Retrace whole paths during temporal\nresampling, instead of just the prefix.", true);
+
                 if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection && mStaticParams.shiftSuffixes) {
+                    dirty |= group.checkbox("Caustic reservoirs", mStaticParams.useCausticReservoirs);
+                    group.tooltip("Use caustic reservoirs", true);
+
                     dirty |= group.checkbox("Caustic shift", mStaticParams.useCausticShift);
                     group.tooltip("Allow caustic light paths to contribute to any\npixel during temporal resamlping.", true);
                 }
@@ -874,6 +921,15 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
 
         if (mStaticParams.useTemporalReuse)
         {
+            if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs) {
+                if (!mpCausticReservoirs || mpCausticReservoirs->getElementCount() != screenPixelCount)
+                {
+                    mpCausticReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mCausticReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+                    mpLastCausticReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLastCausticReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+                    mVarsChanged = true;
+                }
+            }
+
             if (!mpLastVbuffer || mpLastVbuffer->getWidth() != mParams.mOutputDim.x || mpLastVbuffer->getHeight() != mParams.mOutputDim.y)
             {
                 mpLastVbuffer  = mpDevice->createTexture2D(mParams.mOutputDim.x, mParams.mOutputDim.y, mpScene->getHitInfo().getFormat(), 1, 1);
@@ -1078,6 +1134,8 @@ void ReSTIRVCM::bindShaderData(const ShaderVar& var, const RenderData& renderDat
         var["mPathReservoirs0"] = mpReservoirs[0];
         var["mPathReservoirs1"] = mpReservoirs[1];
         var["mLastReservoirs"]  = mpLastReservoirs;
+        var["mCausticReservoirs"]  = mpCausticReservoirs;
+        var["mLastCausticReservoirs"]  = mpLastCausticReservoirs;
 
         mpLightReservoirs->bindShaderData(var["mLightTraceReservoirs"]);
         mpCausticReservoirMap->bindShaderData(var["mCausticReservoirMap"]);
@@ -1271,6 +1329,8 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
         }
 
         pRenderContext->copyResource(mpLastReservoirs.get(), mSwapReservoirs ? mpReservoirs[1].get() : mpReservoirs[0].get());
+        if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs)
+            pRenderContext->copyResource(mpLastCausticReservoirs.get(), mpCausticReservoirs.get());
     }
 
     mpPixelDebug->endFrame(pRenderContext);
@@ -1280,6 +1340,14 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
     mKeepFrameIndex = false;
 
     mVarsChanged = false;
+
+    if (mCameraPosOutputStream) {
+        const Camera& cam = *mpScene->getCamera();
+        mCameraPosOutputStream << cam.getPosition().x << "," << cam.getPosition().y << "," << cam.getPosition().z << ",";
+        mCameraPosOutputStream << cam.getData().target.x << "," << cam.getData().target.y << "," << cam.getData().target.z << ",";
+        mCameraPosOutputStream << cam.getData().up.x << "," << cam.getData().up.y << "," << cam.getData().up.z;
+        mCameraPosOutputStream << std::endl;
+    }
 }
 
 void ReSTIRVCM::preparePass(RenderContext* pRenderContext, const RenderData& renderData, ComputePass& pass) const
@@ -1318,6 +1386,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("USE_RECONNECTION_MIS", (useResampling && reconnectionMIS) ? "1" : "0");
     defines.add("SHIFT_LIGHT_PATHS_TO_CENTER", useResampling && useBPT && shiftLightPathsToPixelCenters ? "1" : "0");
     defines.add("DISABLE_EARLY_RECONNECTION", useResampling && disableEarlyReconnection ? "1" : "0");
+    defines.add("USE_CAUSTIC_RESERVOIRS", useResampling && useBPT && useCausticReservoirs ? "1" : "0");
     defines.add("DISABLE_LVC", useBPT && disableLVC ? "1" : "0");
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("DEBUG_HEATMAP", debugHeatmap ? "1" : "0");
