@@ -1556,7 +1556,9 @@ extension PathGenerator {
                 if (gUseEmissiveLights) envSample.pdf *= mParams.mEnvMapProb;
 
                 if (bSetPrimary) {
-                    ray = Ray(PathVertex(newPrimaryHit).ComputeRayOrigin(envSample.dir) + mParams.mSceneSphere.w * envSample.dir, -envSample.dir);
+                    float3 p = PathVertex(newPrimaryHit).ComputeRayOrigin(envSample.dir);
+                    ray = Ray(p + mParams.mSceneSphere.w * envSample.dir, -envSample.dir);
+                    ray.tMax = mParams.mSceneSphere.w*0.99;
                 } else {
                     float3 t, b;
                     StableONB(envSample.dir, t, b);

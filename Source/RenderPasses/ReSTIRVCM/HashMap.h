@@ -40,6 +40,8 @@ public:
     void sort(RenderContext* pRenderContext) const;
     void barrier(RenderContext* pRenderContext) const;
 
+    size_t getTotalSize() const;
+
 private:
     ref<Device> mpDevice;
 

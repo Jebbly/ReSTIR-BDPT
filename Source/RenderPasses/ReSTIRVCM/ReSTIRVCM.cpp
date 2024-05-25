@@ -30,22 +30,25 @@ namespace
     };
 
     // Scripting options.
-    const std::string kMaxBounces = "maxBounces";
-    const std::string kSampleGenerator = "sampleGenerator";
-    const std::string kFixedSeed = "fixedSeed";
-    const std::string kUseNEE = "useNEE";
-    const std::string kUseBPT  = "useBPT";
-    const std::string kUseVM  = "useVM";
-    const std::string kUseReconnectionMis  = "useReconnectionMis";
+    const std::string kMaxBounces            = "maxBounces";
+    const std::string kSampleGenerator       = "sampleGenerator";
+    const std::string kFixedSeed             = "fixedSeed";
+    const std::string kUseNEE                = "useNEE";
+    const std::string kUseBPT                = "useBPT";
+    const std::string kNumLightSubpaths      = "numLightSubpaths";
+    const std::string kUseVM                 = "useVM";
+    const std::string kMISPowerExponent      = "misPowerExponent";
+    const std::string kEmissiveSampler       = "emissiveSampler";
+    const std::string kLightBVHOptions       = "lightBVHOptions";
+
+    const std::string kUseResampling         = "useResampling";
+    const std::string kMCap                  = "Mcap";
+    const std::string kUseReconnectionMis    = "useReconnectionMis";
+    const std::string kUseSuffixShift        = "useSuffixShift";
+    const std::string kUseCausticShift       = "useCausticShift";
     const std::string kUseCausticReservoirs  = "useCausticReservoirs";
-    const std::string kUseCausticShift  = "useCausticShift";
-    const std::string kUseResampling  = "useResampling";
-    const std::string kUseTemporalResampling  = "useTemporalResampling";
-    const std::string kSpatialPasses  = "spatialResamplingPasses";
-    const std::string kMCap = "Mcap";
-    const std::string kMISPowerExponent = "misPowerExponent";
-    const std::string kEmissiveSampler = "emissiveSampler";
-    const std::string kLightBVHOptions = "lightBVHOptions";
+    const std::string kUseTemporalResampling = "useTemporalResampling";
+    const std::string kSpatialPasses         = "spatialResamplingPasses";
 }
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
@@ -114,6 +117,7 @@ void ReSTIRVCM::parseProperties(const Properties& props)
         else if (key == kUseNEE) mStaticParams.useNEE = value;
         else if (key == kUseBPT) mStaticParams.useBPT = value;
         else if (key == kUseVM) mStaticParams.useVM = value;
+        else if (key == kNumLightSubpaths) mParams.mLightSubpathCount = value;
         else if (key == kMISPowerExponent) mStaticParams.misPowerExponent = value;
         else if (key == kEmissiveSampler) mStaticParams.emissiveSampler = value;
         else if (key == kUseResampling) mStaticParams.useResampling = value;
@@ -121,6 +125,7 @@ void ReSTIRVCM::parseProperties(const Properties& props)
         else if (key == kSpatialPasses) mStaticParams.spatialReusePasses = value;
         else if (key == kMCap) mParams.mMCap = value;
         else if (key == kUseCausticReservoirs) mStaticParams.useCausticReservoirs = value;
+        else if (key == kUseSuffixShift) mStaticParams.shiftSuffixes = value;
         else if (key == kUseCausticShift) mStaticParams.useCausticShift = value;
         else if (key == kUseReconnectionMis) mStaticParams.reconnectionMIS = value;
         else if (key == kLightBVHOptions) mLightBVHOptions = value;
@@ -152,13 +157,10 @@ void ReSTIRVCM::validateOptions()
         mStaticParams.spatialReusePasses = 0;
     }
 
-    if (!mStaticParams.useBPT || mStaticParams.disableCameraConnection || !mStaticParams.shiftSuffixes) {
+    if (!mStaticParams.useBPT || mStaticParams.disableCameraConnection) {
         mStaticParams.useCausticReservoirs = false;
         mStaticParams.useCausticShift = false;
     }
-
-    if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs)
-        mStaticParams.useCausticShift = true;
 }
 
 Properties ReSTIRVCM::getProperties() const
@@ -179,6 +181,7 @@ Properties ReSTIRVCM::getProperties() const
     props[kUseNEE] = mStaticParams.useNEE;
     props[kUseBPT] = mStaticParams.useBPT;
     props[kUseVM] = mStaticParams.useVM;
+    props[kNumLightSubpaths] = mParams.mLightSubpathCount;
     props[kMISPowerExponent] = mStaticParams.misPowerExponent;
     props[kEmissiveSampler] = mStaticParams.emissiveSampler;
     if (mStaticParams.emissiveSampler == EmissiveLightSamplerType::LightBVH) props[kLightBVHOptions] = mLightBVHOptions;
@@ -187,6 +190,7 @@ Properties ReSTIRVCM::getProperties() const
     props[kSpatialPasses] = mStaticParams.spatialReusePasses;
     props[kMCap] = mParams.mMCap;
     props[kUseCausticReservoirs] = mStaticParams.useCausticReservoirs;
+    props[kUseSuffixShift] = mStaticParams.shiftSuffixes;
     props[kUseCausticShift] = mStaticParams.useCausticShift;
     props[kUseReconnectionMis] = mStaticParams.reconnectionMIS;
 
@@ -343,6 +347,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
 
                         mpShiftCausticsPass->addDefine("SHIFT_SUFFIXES", "1");
                         mpShiftCausticsPass->addDefine("USE_CAUSTIC_SHIFT", "1");
+                        mpTemporalReusePass->addDefine("USE_CAUSTIC_M", mStaticParams.useCausticM ? "1" : "0");
                         mpShiftCausticsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
 
                         mpCausticReservoirMap->sort(pRenderContext);
@@ -354,6 +359,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                         mpTemporalReusePass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
                         mpTemporalReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
                         mpTemporalReusePass->addDefine("USE_CAUSTIC_SHIFT", mStaticParams.useCausticShift ? "1" : "0");
+                        mpTemporalReusePass->addDefine("USE_CAUSTIC_M", mStaticParams.useCausticM ? "1" : "0");
                         mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
                     }
                 }
@@ -403,6 +409,64 @@ void ReSTIRVCM::renderUI(Gui::Widgets& widget)
 
     // Stats and debug options.
     dirty |= renderDebugUI(widget);
+
+    if (widget.group("Resource Usage (kb)")) {
+        size_t totalSize = 0;
+        if (mStaticParams.useResampling && mpReservoirs[0])
+        {
+            size_t reservoirsSize = 0;
+            reservoirsSize += mpReservoirs[0]->getSize();
+            reservoirsSize += mpReservoirs[1]->getSize();
+            reservoirsSize += mpLastReservoirs->getSize();
+            totalSize += reservoirsSize;
+            widget.text("Reservoirs: " + std::to_string(reservoirsSize/1024));
+            widget.text("stride: " + std::to_string(mpReservoirs[0]->getElementSize()));
+
+            if (mStaticParams.useBPT)
+            {
+                size_t lrmSize = mpLightReservoirs->getTotalSize();
+                totalSize += lrmSize;
+                widget.text("LRM: " + std::to_string(lrmSize/1024));
+
+                size_t crmSize = mpCausticReservoirMap->getTotalSize();
+                totalSize += crmSize;
+                widget.text("CRM: " + std::to_string(crmSize/1024));
+            }
+
+            if (mStaticParams.useTemporalReuse)
+            {
+                if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs && mpCausticReservoirs)
+                {
+                    size_t causticReservoirsSize = 0;
+                    causticReservoirsSize += mpCausticReservoirs->getSize();
+                    causticReservoirsSize += mpLastCausticReservoirs->getSize();
+                    totalSize += causticReservoirsSize;
+                    widget.text("Caustic reservoirs: " + std::to_string(causticReservoirsSize/1024));
+                }
+            }
+        }
+
+        if (mStaticParams.useBPT && mpLightVertices)
+        {
+            size_t lvcSize = 0;
+            lvcSize += mpLightVertices->getSize();
+            lvcSize += mpLightVertexCount->getSize();
+            totalSize += lvcSize;
+            widget.text("LVC: " + std::to_string(lvcSize/1024));
+
+            if (mStaticParams.useVM && mpPhotonCellSizes) {
+                size_t pmSize = mpPhotonCellSizes->getSize() + mpPhotonCellOffsets->getSize();
+                totalSize += pmSize;
+                widget.text("Photon map: " + std::to_string(pmSize/1024));
+            }
+
+            if (!mStaticParams.useResampling && mpLightImage)
+                totalSize += mpLightImage->getSize();
+        }
+
+        widget.separator();
+        widget.text("Total: " + std::to_string(totalSize/1024));
+    }
 
     if (widget.button("Output camera path")) {
         FileDialogFilterVec filters;
@@ -548,6 +612,11 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                 group.tooltip("Shift non-caustic light subpaths\nto vbuffer vertices during canonical sampling.\nThis can improve temporal reuse");
             }
 
+            if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection) {
+                dirty |= group.checkbox("Caustic reservoirs", mStaticParams.useCausticReservoirs);
+                group.tooltip("Use caustic reservoirs", true);
+            }
+
             dirty |= group.checkbox("Reconnection MIS", mStaticParams.reconnectionMIS);
             group.tooltip("Recompute MIS weights during reconnection.", true);
 
@@ -564,12 +633,14 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                 dirty |= group.checkbox("Shift path suffixes", mStaticParams.shiftSuffixes);
                 group.tooltip("Retrace whole paths during temporal\nresampling, instead of just the prefix.", true);
 
-                if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection && mStaticParams.shiftSuffixes) {
-                    dirty |= group.checkbox("Caustic reservoirs", mStaticParams.useCausticReservoirs);
-                    group.tooltip("Use caustic reservoirs", true);
-
+                if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection) {
                     dirty |= group.checkbox("Caustic shift", mStaticParams.useCausticShift);
                     group.tooltip("Allow caustic light paths to contribute to any\npixel during temporal resamlping.", true);
+
+                    if (mStaticParams.useCausticReservoirs) {
+                        dirty |= group.checkbox("Caustic M", mStaticParams.useCausticM);
+                        group.tooltip("Use M from caustic reservoirs instead of from motion vectors.", true);
+                    }
                 }
             }
 
@@ -919,12 +990,19 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
             }
         }
 
+        if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs) {
+            if (!mpCausticReservoirs || mpCausticReservoirs->getElementCount() != screenPixelCount)
+            {
+                mpCausticReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mCausticReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+                mVarsChanged = true;
+            }
+        }
+
         if (mStaticParams.useTemporalReuse)
         {
             if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs) {
-                if (!mpCausticReservoirs || mpCausticReservoirs->getElementCount() != screenPixelCount)
+                if (!mpLastCausticReservoirs || mpLastCausticReservoirs->getElementCount() != screenPixelCount)
                 {
-                    mpCausticReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mCausticReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                     mpLastCausticReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLastCausticReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
                     mVarsChanged = true;
                 }
@@ -1283,6 +1361,8 @@ bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& rend
         seedsPerFrame += mStaticParams.spatialReusePasses*2; // spatial reuse pattern + resample
 
         mCurrentSeed = mFrameCount * seedsPerFrame;
+    } else {
+        mCurrentSeed = (uint)std::chrono::high_resolution_clock::now().time_since_epoch().count();
     }
 
     const auto& aabb = mpScene->getSceneBounds();
@@ -1326,6 +1406,7 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
             mpTemporalShiftPass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
             mpTemporalShiftPass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
             mpTemporalShiftPass->addDefine("USE_CAUSTIC_SHIFT", mStaticParams.useCausticShift ? "1" : "0");
+            mpTemporalShiftPass->addDefine("USE_CAUSTIC_M", mStaticParams.useCausticM ? "1" : "0");
         }
 
         pRenderContext->copyResource(mpLastReservoirs.get(), mSwapReservoirs ? mpReservoirs[1].get() : mpReservoirs[0].get());
@@ -1395,6 +1476,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("UNBIASED_TEMPORAL_REUSE", "0"); // placeholder
     defines.add("USE_CAUSTIC_SHIFT", "0"); // placeholder
     defines.add("SPATIAL_RMIS_TYPE", "0"); // placeholder
+    defines.add("USE_CAUSTIC_M", "0"); // placeholder
 
     // Sampling utilities configuration.
     FALCOR_ASSERT(owner.mpSampleGenerator);
