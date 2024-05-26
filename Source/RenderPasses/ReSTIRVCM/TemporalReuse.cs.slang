@@ -6,6 +6,7 @@ import Utils.Sampling.SampleGenerator;
 static const bool gUnbiasedTemporalReuse = UNBIASED_TEMPORAL_REUSE;
 static const bool gUseCausticShift       = USE_CAUSTIC_SHIFT;
 static const bool gUseCausticReservoirs  = USE_CAUSTIC_RESERVOIRS;
+static const bool gUseCausticM           = USE_CAUSTIC_M;
 
 PathSample TemporalShift<let bShiftToPrev : bool>(const uint2 basePixel, const PathSample basePath, const PackedPathVertex newVertex, out float jacobian, out bool causticReject) {
     jacobian = 0;
@@ -20,7 +21,7 @@ PathSample TemporalShift<let bShiftToPrev : bool>(const uint2 basePixel, const P
         newPixel = bShiftToPrev ? gPathGenerator.GetPrevPixelCoord(pos) : gPathGenerator.GetPixelCoord(pos);
         result = basePath;
     } else {
-        result = gPathGenerator.ShiftPath(basePath, newVertex, newPixel, jacobian, bShiftToPrev);
+        result = gPathGenerator.ShiftPath(true, basePath, newVertex, newPixel, jacobian, bShiftToPrev);
     }
 
     if (result.IsValid() && jacobian > 0 && result.HasFlag(PathFlags::eCausticLightPath) && gPathGenerator.gBidirectional) {

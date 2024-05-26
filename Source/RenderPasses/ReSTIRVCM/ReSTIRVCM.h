@@ -81,6 +81,7 @@ private:
         bool        shiftLightPathsToPixelCenters = true;
         bool        useCausticShift = true;
         bool        useCausticReservoirs = true;
+        bool        useCausticM = true;
         bool        useTemporalReuse = true;
         bool        unbiasedTemporalReuse = true;
         bool        shiftSuffixes = true;

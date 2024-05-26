@@ -365,7 +365,7 @@ extension PathGenerator {
 
 extension PathGenerator {
     // Shift a path to a new primary vertex. For pure random replay light paths, newPixel is set to the pixel the last light subpath vertex lands in.
-    PathSample ShiftPath(const PathSample basePath, const PackedPathVertex newPrimaryHit, out int2 newPixel, out float jacobian, const bool shiftToPrev = false) {
+    PathSample ShiftPath(bool isTemporalShift, const PathSample basePath, const PackedPathVertex newPrimaryHit, out int2 newPixel, out float jacobian, const bool shiftToPrev = false) {
         jacobian = 0;
         newPixel = -1;
         PathSample result = {};
@@ -474,7 +474,7 @@ extension PathGenerator {
                         }
 
                         jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
-                        jacobian *= (result.mSuffix.mCos / basePath.mSuffix.mCos) * sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
+                        jacobian *= isTemporalShift && !result.mSuffix.mVertex.IsFinite() ? 1.f : (result.mSuffix.mCos / basePath.mSuffix.mCos) * sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
                         jacobian *= basePath.mSuffix.mCameraFwdPdf / result.mSuffix.mCameraFwdPdf; // includes camera cosine term
                         return result;
                     }

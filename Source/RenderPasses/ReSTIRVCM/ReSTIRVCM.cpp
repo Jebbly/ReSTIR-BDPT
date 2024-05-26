@@ -344,6 +344,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
 
                         mpShiftCausticsPass->addDefine("SHIFT_SUFFIXES", "1");
                         mpShiftCausticsPass->addDefine("USE_CAUSTIC_SHIFT", "1");
+                        mpTemporalReusePass->addDefine("USE_CAUSTIC_M", mStaticParams.useCausticM ? "1" : "0");
                         mpShiftCausticsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
 
                         mpCausticReservoirMap->sort(pRenderContext);
@@ -355,6 +356,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                         mpTemporalReusePass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
                         mpTemporalReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
                         mpTemporalReusePass->addDefine("USE_CAUSTIC_SHIFT", mStaticParams.useCausticShift ? "1" : "0");
+                        mpTemporalReusePass->addDefine("USE_CAUSTIC_M", mStaticParams.useCausticM ? "1" : "0");
                         mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
                     }
                 }
@@ -632,6 +634,11 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                 if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection) {
                     dirty |= group.checkbox("Caustic shift", mStaticParams.useCausticShift);
                     group.tooltip("Allow caustic light paths to contribute to any\npixel during temporal resamlping.", true);
+
+                    if (mStaticParams.useCausticReservoirs) {
+                        dirty |= group.checkbox("Caustic M", mStaticParams.useCausticM);
+                        group.tooltip("Use M from caustic reservoirs instead of from motion vectors.", true);
+                    }
                 }
             }
 
@@ -1409,6 +1416,7 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
             mpTemporalShiftPass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
             mpTemporalShiftPass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
             mpTemporalShiftPass->addDefine("USE_CAUSTIC_SHIFT", mStaticParams.useCausticShift ? "1" : "0");
+            mpTemporalShiftPass->addDefine("USE_CAUSTIC_M", mStaticParams.useCausticM ? "1" : "0");
         }
 
         pRenderContext->copyResource(mpLastReservoirs.get(), mSwapReservoirs ? mpReservoirs[1].get() : mpReservoirs[0].get());
