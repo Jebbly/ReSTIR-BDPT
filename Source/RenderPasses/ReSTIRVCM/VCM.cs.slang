@@ -56,7 +56,7 @@ void ResolveLightTraceReservoirs(uint3 index: SV_DispatchThreadID) {
             // Reject path if it is not samplable from the primary vertex
             float jacobian;
             int2 tmp;
-            const bool valid = gPathGenerator.ShiftPath(c.mSample, primaryVertex, tmp, jacobian).IsValid();
+            const bool valid = gPathGenerator.ShiftPath(false, c.mSample, primaryVertex, tmp, jacobian).IsValid();
             gPathGenerator.DebugSetPixel(id);
             if (!valid || !(jacobian > 0))
                 continue;

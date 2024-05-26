@@ -21,7 +21,7 @@ PathSample TemporalShift<let bShiftToPrev : bool>(const uint2 basePixel, const P
         newPixel = bShiftToPrev ? gPathGenerator.GetPrevPixelCoord(pos) : gPathGenerator.GetPixelCoord(pos);
         result = basePath;
     } else {
-        result = gPathGenerator.ShiftPath(basePath, newVertex, newPixel, jacobian, bShiftToPrev);
+        result = gPathGenerator.ShiftPath(true, basePath, newVertex, newPixel, jacobian, bShiftToPrev);
     }
 
     if (result.IsValid() && jacobian > 0 && result.HasFlag(PathFlags::eCausticLightPath) && gPathGenerator.gBidirectional) {
