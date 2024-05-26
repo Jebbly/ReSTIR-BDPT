@@ -75,12 +75,12 @@ private:
         bool        disableEarlyReconnection = false;
         bool        reconnectionMIS = true;
         bool        debugBPT = false;
+        uint        debugCausticReservoirs = 0;
         bool        debugHeatmap = false;
         bool        useResampling = true;
         bool        shiftLightPathsToPixelCenters = true;
         bool        useCausticShift = true;
         bool        useCausticReservoirs = true;
-        bool        useCausticM = true;
         bool        useTemporalReuse = true;
         bool        unbiasedTemporalReuse = true;
         bool        shiftSuffixes = true;

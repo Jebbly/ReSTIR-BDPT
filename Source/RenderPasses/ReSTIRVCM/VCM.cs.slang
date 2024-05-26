@@ -3,7 +3,8 @@ import Utils.Sampling.SampleGenerator;
 import Utils.Debug.PixelDebug;
 import PathShift;
 
-static const bool gUseCausticReservoirs = USE_CAUSTIC_RESERVOIRS;
+static const bool gUseCausticReservoirs   = USE_CAUSTIC_RESERVOIRS;
+static const uint gDebugCausticReservoirs = DEBUG_CAUSTIC_RESERVOIRS;
 
 [shader("compute")]
 [numthreads(8, 4, 1)]
@@ -113,12 +114,14 @@ void OutputRadiance(uint3 index: SV_DispatchThreadID) {
     // Copy radiance from the pixel's reservoir to the output buffer.
 
     if (gPathGenerator.gUseResampling) {
-        const PathReservoir r = gPathGenerator.LoadInputReservoir(id);
-        if (r.mW > 0 && r.mSample.IsValid()) {
-            radiance.rgb += r.GetRadiance();
+        if ((gDebugCausticReservoirs & 1) == 0) {
+            const PathReservoir r = gPathGenerator.LoadInputReservoir(id);
+            if (r.mW > 0 && r.mSample.IsValid()) {
+                radiance.rgb += r.GetRadiance();
+            }
         }
 
-        if (gUseCausticReservoirs) {
+        if (gUseCausticReservoirs && (gDebugCausticReservoirs & 2) == 0) {
             const PathReservoir r = gPathGenerator.LoadCausticReservoir(id);
             if (r.mW > 0 && r.mSample.IsValid()) {
                 radiance.rgb += r.GetRadiance();

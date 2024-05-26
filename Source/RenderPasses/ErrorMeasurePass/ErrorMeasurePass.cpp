@@ -49,6 +49,7 @@ const std::string kMeasurementsFilePath = "MeasurementsFilePath";
 const std::string kIgnoreBackground = "IgnoreBackground";
 const std::string kComputeSquaredDifference = "ComputeSquaredDifference";
 const std::string kComputeAverage = "ComputeAverage";
+const std::string kComputePercentage = "ComputePercentage";
 const std::string kUseLoadedReference = "UseLoadedReference";
 const std::string kReportRunningError = "ReportRunningError";
 const std::string kRunningErrorSigma = "RunningErrorSigma";
@@ -98,6 +99,8 @@ void ErrorMeasurePass::setProperties(const Properties& props)
             mComputeSquaredDifference = value;
         else if (key == kComputeAverage)
             mComputeAverage = value;
+        else if (key == kComputePercentage)
+            mComputePercentage = value;
         else if (key == kUseLoadedReference)
             mUseLoadedReference = value;
         else if (key == kReportRunningError)
@@ -130,6 +133,7 @@ Properties ErrorMeasurePass::getProperties() const
     props[kIgnoreBackground] = mIgnoreBackground;
     props[kComputeSquaredDifference] = mComputeSquaredDifference;
     props[kComputeAverage] = mComputeAverage;
+    props[kComputePercentage] = mComputePercentage;
     props[kUseLoadedReference] = mUseLoadedReference;
     props[kReportRunningError] = mReportRunningError;
     props[kRunningErrorSigma] = mRunningErrorSigma;

@@ -43,12 +43,14 @@ namespace
 
     const std::string kUseResampling         = "useResampling";
     const std::string kMCap                  = "Mcap";
+    const std::string kUnbiasedTemporalReuse = "unbiasedTemporalReuse";
     const std::string kUseReconnectionMis    = "useReconnectionMis";
     const std::string kUseSuffixShift        = "useSuffixShift";
     const std::string kUseCausticShift       = "useCausticShift";
     const std::string kUseCausticReservoirs  = "useCausticReservoirs";
     const std::string kUseTemporalResampling = "useTemporalResampling";
     const std::string kSpatialPasses         = "spatialResamplingPasses";
+    const std::string kSpatialCandidates     = "spatialResamplingCandidates";
 }
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
@@ -61,15 +63,6 @@ void ReSTIRVCM::registerBindings(pybind11::module& m)
 {
     pybind11::class_<ReSTIRVCM, RenderPass, ref<ReSTIRVCM>> pass(m, "ReSTIRVCM");
     pass.def("reset", &ReSTIRVCM::reset);
-
-    pass.def_property("useFixedSeed",
-        [](const ReSTIRVCM* pt) { return pt->mUseFixedSeed ? true : false; },
-        [](ReSTIRVCM* pt, bool value) { pt->mUseFixedSeed = value ? 1 : 0; }
-    );
-    pass.def_property("fixedSeed",
-        [](const ReSTIRVCM* pt) { return pt->mFixedSeed; },
-        [](ReSTIRVCM* pt, uint32_t value) { pt->mFixedSeed = value; }
-    );
 }
 
 ReSTIRVCM::ReSTIRVCM(ref<Device> pDevice, const Properties& props)
@@ -122,7 +115,9 @@ void ReSTIRVCM::parseProperties(const Properties& props)
         else if (key == kEmissiveSampler) mStaticParams.emissiveSampler = value;
         else if (key == kUseResampling) mStaticParams.useResampling = value;
         else if (key == kUseTemporalResampling) mStaticParams.useTemporalReuse = value;
+        else if (key == kUnbiasedTemporalReuse) mStaticParams.unbiasedTemporalReuse = value;
         else if (key == kSpatialPasses) mStaticParams.spatialReusePasses = value;
+        else if (key == kSpatialCandidates) mParams.mSpatialReuseSamples = value;
         else if (key == kMCap) mParams.mMCap = value;
         else if (key == kUseCausticReservoirs) mStaticParams.useCausticReservoirs = value;
         else if (key == kUseSuffixShift) mStaticParams.shiftSuffixes = value;
@@ -187,7 +182,9 @@ Properties ReSTIRVCM::getProperties() const
     if (mStaticParams.emissiveSampler == EmissiveLightSamplerType::LightBVH) props[kLightBVHOptions] = mLightBVHOptions;
     props[kUseResampling] = mStaticParams.useResampling;
     props[kUseTemporalResampling] = mStaticParams.useTemporalReuse;
+    props[kUnbiasedTemporalReuse] = mStaticParams.unbiasedTemporalReuse;
     props[kSpatialPasses] = mStaticParams.spatialReusePasses;
+    props[kSpatialCandidates] = mParams.mSpatialReuseSamples;
     props[kMCap] = mParams.mMCap;
     props[kUseCausticReservoirs] = mStaticParams.useCausticReservoirs;
     props[kUseSuffixShift] = mStaticParams.shiftSuffixes;
@@ -347,7 +344,6 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
 
                         mpShiftCausticsPass->addDefine("SHIFT_SUFFIXES", "1");
                         mpShiftCausticsPass->addDefine("USE_CAUSTIC_SHIFT", "1");
-                        mpTemporalReusePass->addDefine("USE_CAUSTIC_M", mStaticParams.useCausticM ? "1" : "0");
                         mpShiftCausticsPass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
 
                         mpCausticReservoirMap->sort(pRenderContext);
@@ -359,7 +355,6 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
                         mpTemporalReusePass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
                         mpTemporalReusePass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
                         mpTemporalReusePass->addDefine("USE_CAUSTIC_SHIFT", mStaticParams.useCausticShift ? "1" : "0");
-                        mpTemporalReusePass->addDefine("USE_CAUSTIC_M", mStaticParams.useCausticM ? "1" : "0");
                         mpTemporalReusePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
                     }
                 }
@@ -394,6 +389,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
     {
         FALCOR_ASSERT(mpCopyRadiancePass);
         preparePass(pRenderContext, renderData, *mpCopyRadiancePass);
+        mpCopyRadiancePass->addDefine("DEBUG_CAUSTIC_RESERVOIRS", mStaticParams.useCausticReservoirs ? std::to_string(mStaticParams.debugCausticReservoirs) : "0");
         mpCopyRadiancePass->execute(pRenderContext, mParams.mOutputDim.x, mParams.mOutputDim.y);
     }
 
@@ -636,11 +632,6 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                 if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection) {
                     dirty |= group.checkbox("Caustic shift", mStaticParams.useCausticShift);
                     group.tooltip("Allow caustic light paths to contribute to any\npixel during temporal resamlping.", true);
-
-                    if (mStaticParams.useCausticReservoirs) {
-                        dirty |= group.checkbox("Caustic M", mStaticParams.useCausticM);
-                        group.tooltip("Use M from caustic reservoirs instead of from motion vectors.", true);
-                    }
                 }
             }
 
@@ -724,6 +715,17 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
         if (mStaticParams.useResampling) {
             recompile |= group.checkbox("Disable early reconnection", mStaticParams.disableEarlyReconnection);
             group.tooltip("Disable reconnection before the light subpath.", true);
+
+            if (mStaticParams.useCausticReservoirs)
+            {
+                group.text("Show:");
+                static const Gui::RadioButtonGroup buttons = {
+                    { 0, "All", true },
+                    { 1, "Caustic", true },
+                    { 2, "Non-caustic", true },
+                };
+                group.radioButtons(buttons, mStaticParams.debugCausticReservoirs);
+            }
         }
 
         dirty |= group.checkbox("Fix seed per-frame", mUsePerFrameSeed);
@@ -819,6 +821,7 @@ bool ReSTIRVCM::onKeyEvent(const KeyboardEvent& keyEvent)
 void ReSTIRVCM::reset()
 {
     mFrameCount = 0;
+    mResetTemporalHistory = true;
 }
 
 void ReSTIRVCM::resetPrograms()
@@ -1406,7 +1409,6 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
             mpTemporalShiftPass->addDefine("UNBIASED_TEMPORAL_REUSE", mStaticParams.unbiasedTemporalReuse ? "1" : "0");
             mpTemporalShiftPass->addDefine("SHIFT_SUFFIXES", mStaticParams.shiftSuffixes ? "1" : "0");
             mpTemporalShiftPass->addDefine("USE_CAUSTIC_SHIFT", mStaticParams.useCausticShift ? "1" : "0");
-            mpTemporalShiftPass->addDefine("USE_CAUSTIC_M", mStaticParams.useCausticM ? "1" : "0");
         }
 
         pRenderContext->copyResource(mpLastReservoirs.get(), mSwapReservoirs ? mpReservoirs[1].get() : mpReservoirs[0].get());
@@ -1476,7 +1478,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("UNBIASED_TEMPORAL_REUSE", "0"); // placeholder
     defines.add("USE_CAUSTIC_SHIFT", "0"); // placeholder
     defines.add("SPATIAL_RMIS_TYPE", "0"); // placeholder
-    defines.add("USE_CAUSTIC_M", "0"); // placeholder
+    defines.add("DEBUG_CAUSTIC_RESERVOIRS", "0"); // placeholder
 
     // Sampling utilities configuration.
     FALCOR_ASSERT(owner.mpSampleGenerator);
