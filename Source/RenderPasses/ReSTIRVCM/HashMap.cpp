@@ -63,6 +63,20 @@ void GPUHashMap::bindShaderData(const ShaderVar& var) const
     var["mMaxSize"]         = mpData ? mpData->getElementCount() : 0;
 }
 
+size_t GPUHashMap::getTotalSize() const {
+    size_t s = 0;
+    if (mpData) {
+        s += mpCellKeys->getSize();
+        s += mpCellCounters->getSize();
+        s += mpCellDataOffsets->getSize();
+        s += mpData->getSize();
+        s += mpSortedData->getSize();
+        s += mpDataIndices->getSize();
+        s += mpCounters->getSize();
+    }
+    return s;
+}
+
 void GPUHashMap::clear(RenderContext* pRenderContext) const
 {
     pRenderContext->clearUAV(mpCellKeys->getUAV().get(), uint4(0));

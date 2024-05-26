@@ -6,6 +6,7 @@ import Utils.Sampling.SampleGenerator;
 static const bool gUnbiasedTemporalReuse = UNBIASED_TEMPORAL_REUSE;
 static const bool gUseCausticShift       = USE_CAUSTIC_SHIFT;
 static const bool gUseCausticReservoirs  = USE_CAUSTIC_RESERVOIRS;
+static const bool gUseCausticM           = USE_CAUSTIC_M;
 
 PathSample TemporalShift<let bShiftToPrev : bool>(const uint2 basePixel, const PathSample basePath, const PackedPathVertex newVertex, out float jacobian, out bool causticReject) {
     jacobian = 0;
@@ -131,33 +132,41 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
 
     // merge with caustic reservoirs
     if (gUseCausticShift) {
-        const float crM = gUseCausticReservoirs ? cr.mM : centerM;
+        float proxyM = candidate.mM;
 
+        // shift current caustic sample to previous frame
         if (gUseCausticReservoirs) {
-            // shift current caustic sample to previous frame
             float m = 0;
             if (cr.mSample.IsValid()) {
+                float f;
                 if (gUnbiasedTemporalReuse) {
                     // sample was already shifted in ShiftToPrevFrame
-                    // HACK: storing m in reservoir
-                    m = cr.mSample.mSuffix.mVertex.pad1;
+                    // HACK: storing 'shiftedTargetPdf / jacobianToPrev' in reservoir
+                    f = cr.mSample.mSuffix.mVertex.pad1;
+                    if (gUseCausticM) proxyM = cr.mSample.mPrefixPdf;
+                    cr.mSample.mPrefixPdf = 1;
                 } else {
-                    bool causticReject;
+                    int2 newPixel;
                     float jacobianToPrev;
-                    const float shiftedTargetPdf = TemporalShift<true>(prevPixel, cr.mSample, prevVertex, jacobianToPrev, causticReject).GetTargetPdf();
-                    const float f = SafeDivide(shiftedTargetPdf, jacobianToPrev);
-                    print("  f, jacobianToPrev:", float2(shiftedTargetPdf, jacobianToPrev));
+                    const float shiftedTargetPdf = gPathGenerator.ShiftCausticPath(cr.mSample, newPixel, jacobianToPrev, true).GetTargetPdf();
+                    f = SafeDivide(shiftedTargetPdf, jacobianToPrev);
 
-                    const float mi = crM * cr.mSample.GetTargetPdf();
-                    m = SafeDivide(
-                        mi,
-                        mi + candidate.mM * f);
+                    if (gUseCausticM && shiftedTargetPdf > 0)
+                        proxyM = gPathGenerator.LoadPrevCausticReservoir(newPixel).mM;
+
+                    print("  f, jacobianToPrev:", float2(shiftedTargetPdf, jacobianToPrev));
                 }
+
+                const float mi = cr.mM * cr.mSample.GetTargetPdf();
+                m = SafeDivide(
+                    mi,
+                    mi + proxyM * f);
             }
 
             cr.PrepareMerge(m);
         }
 
+        // perform the merge
         const uint2 range = gPathGenerator.mCausticReservoirMap.GetCellDataRange(id.y * gPathGenerator.mParams.mOutputDim.x + id.x);
         for (uint i = range.x; i < range.y; i++) {
             candidate = gPathGenerator.mCausticReservoirMap[i];
@@ -167,16 +176,18 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
             candidateTargetPdf = candidate.mSample.mPrefixPdf;
             candidate.mSample.mPrefixPdf = 1;
 
-            // apply mis weight to previous frame's sample
+            const float rM = gUseCausticReservoirs ? cr.mM : r.mM;
+            if (!gUseCausticM) candidate.mM = proxyM;
+
+            // apply mis weight to previous frame's sample (same Talbot RMIS as for non-caustic samples)
             {
                 const float mi = SafeDivide(candidate.mM * candidateTargetPdf, jacobianToCenter);
                 const float m = SafeDivide(
                     mi,
-                    mi + crM * candidate.mSample.GetTargetPdf());
+                    mi + rM * candidate.mSample.GetTargetPdf());
                 candidate.PrepareMerge(m, jacobianToCenter);
             }
 
-            // perform the merge
             if (gUseCausticReservoirs) {
                 if (cr.Merge(sampleNext1D(sg), candidate))
                     gPathGenerator.IncrementCounter(DebugCounterType::eCausticReuseAcceptances);
@@ -186,7 +197,9 @@ void TemporalReuse(const uint2 id, inout SampleGenerator sg, inout PathReservoir
             }
         }
 
-        if (gUseCausticReservoirs) cr.FinalizeMerge();
+        if (gUseCausticReservoirs) {
+            cr.FinalizeMerge();
+        }
     }
 
     r.FinalizeMerge();
@@ -227,19 +240,12 @@ void ShiftToPrevFrame(uint3 index: SV_DispatchThreadID) {
         if (r.mSample.IsValid()) {
             int2 newPixel;
             float jacobianToPrev;
-            const float shiftedTargetPdf = gPathGenerator.ShiftPath(r.mSample, prevVertex, newPixel, jacobianToPrev, false).GetTargetPdf();
-            float prevM = 0;
-            if (all(newPixel >= 0) && all(newPixel < gPathGenerator.mParams.mOutputDim))
-                prevM = gPathGenerator.LoadPrevCausticReservoir(newPixel).mM;
-
-            const float f = SafeDivide(shiftedTargetPdf, jacobianToPrev);
-            const float mi = r.mM * r.mSample.GetTargetPdf();
-            const float m = SafeDivide(
-                mi,
-                mi + prevM * f);
+            const float shiftedTargetPdf = gPathGenerator.ShiftCausticPath(r.mSample, newPixel, jacobianToPrev, false).GetTargetPdf();
 
             // HACK: storing 'shiftedTargetPdf / jacobianToPrev' in reservoir
-            r.mSample.mSuffix.mVertex.pad1 = m;
+            r.mSample.mSuffix.mVertex.pad1 = SafeDivide(shiftedTargetPdf, jacobianToPrev);
+            // HACK: storing prev caustic reservoir's M in reservoir
+            if (gUseCausticM) r.mSample.mPrefixPdf = shiftedTargetPdf > 0 ? gPathGenerator.LoadPrevCausticReservoir(newPixel).mM : 0;
 
             gPathGenerator.StoreCausticReservoir(id, r);
         }

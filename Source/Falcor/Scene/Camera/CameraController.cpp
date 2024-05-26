@@ -37,6 +37,7 @@ namespace Falcor
         const float kGamepadDeadZone = 0.1f;        ///< Gamepad dead zone.
         const float kGamepadPowerCurve = 1.2f;      ///< Gamepad power curve exponent.
         const float kGamepadRotationSpeed = 2.5f;   ///< Gamepad camera rotation speed.
+        const float kMouseRotationSensitivity = 2.0f; ///< Mouse rotation speed.
 
         float2 convertCamPosRange(const float2 pos)
         {
@@ -260,7 +261,7 @@ namespace Falcor
                 {
                     float3 sideway = cross(viewDir, normalize(camUp));
 
-                    float2 mouseRotation = mIsLeftButtonDown ? mMouseDelta * mSpeedModifier : float2(0.f);
+                    float2 mouseRotation = mIsLeftButtonDown ? mMouseDelta * kMouseRotationSensitivity : float2(0.f);
                     float2 gamepadRotation = anyGamepadRotation ? mGamepadRightStick * kGamepadRotationSpeed * elapsedTime : float2(0.f);
                     float2 rotation = mouseRotation + gamepadRotation;
 
@@ -283,7 +284,7 @@ namespace Falcor
                 if (b6DoF && mIsRightButtonDown)
                 {
                     // Rotate around x-axis
-                    quatf q = math::quatFromAngleAxis(mMouseDelta.x * mSpeedModifier, viewDir);
+                    quatf q = math::quatFromAngleAxis(mMouseDelta.x, viewDir);
                     float3x3 rot = math::matrixFromQuat(q);
                     camUp = mul(camUp, rot);
                     mpCamera->setUpVector(camUp);
