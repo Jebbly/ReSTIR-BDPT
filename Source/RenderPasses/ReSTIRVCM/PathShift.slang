@@ -132,7 +132,7 @@ extension PathGenerator {
                 // Compute pdf conversion factor from image plane area to surface area
                 cameraPdfA = imageToSolidAngleFactor * cosToCamera / sqr(dist);
 
-                newSuffix.mCameraFwdPdf = cosAtCamera * cosAtCamera * cosAtCamera;
+                newSuffix.mCameraFwdPdf = 1;
                 newSuffix.mCos = cameraCosOut;
 
                 // get MIS state at new primary hit. TODO: skip visibility check in InitializeLightPath
@@ -365,7 +365,7 @@ extension PathGenerator {
 
 extension PathGenerator {
     // Shift a path to a new primary vertex. For pure random replay light paths, newPixel is set to the pixel the last light subpath vertex lands in.
-    PathSample ShiftPath(bool isTemporalShift, const PathSample basePath, const PackedPathVertex newPrimaryHit, out int2 newPixel, out float jacobian, const bool shiftToPrev = false) {
+    PathSample ShiftPath(const PathSample basePath, const PackedPathVertex newPrimaryHit, out int2 newPixel, out float jacobian, const bool shiftToPrev = false) {
         jacobian = 0;
         newPixel = -1;
         PathSample result = {};
@@ -474,7 +474,8 @@ extension PathGenerator {
                         }
 
                         jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
-                        jacobian *= isTemporalShift && !result.mSuffix.mVertex.IsFinite() ? 1.f : (result.mSuffix.mCos / basePath.mSuffix.mCos) * sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
+                        jacobian *= result.mSuffix.mCos / basePath.mSuffix.mCos;
+                        if (basePath.mSuffix.mVertex.IsFinite()) jacobian *= sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
                         jacobian *= basePath.mSuffix.mCameraFwdPdf / result.mSuffix.mCameraFwdPdf; // includes camera cosine term
                         return result;
                     }
@@ -524,7 +525,8 @@ extension PathGenerator {
 
         if (hasLightSubpath || (basePath.HasSuffix() && basePath.mSuffix.mVertex.IsFinite())) {
             // reconnection jacobian
-            jacobian *= (result.mSuffix.mCos / basePath.mSuffix.mCos) * sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
+            jacobian *= result.mSuffix.mCos / basePath.mSuffix.mCos;
+            if (basePath.mSuffix.mVertex.IsFinite()) jacobian *= sqr(basePath.mSuffix.mDist / result.mSuffix.mDist);
 
             // suffix jacobian (includes light subpath jacobian)
             jacobian *= basePath.mSuffix.mCameraFwdPdf / result.mSuffix.mCameraFwdPdf;
@@ -569,7 +571,7 @@ extension PathGenerator {
         }
 
         jacobian = basePath.mSuffix.mLightSubpath.mPdf / result.mSuffix.mLightSubpath.mPdf;
-        jacobian *= basePath.mSuffix.mCameraFwdPdf / result.mSuffix.mCameraFwdPdf; // includes camera cosine term
+        jacobian *= basePath.mSuffix.mCameraFwdPdf / result.mSuffix.mCameraFwdPdf; // includes camera reconnection and cosine^3 terms
         return result;
     }
 }

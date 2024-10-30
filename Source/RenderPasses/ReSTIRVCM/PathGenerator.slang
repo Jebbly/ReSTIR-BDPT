@@ -72,7 +72,7 @@ struct PathGenerator {
     Texture2D<float2>        mMotionVectors;
 
     StructuredBuffer<PathReservoir> mLastReservoirs;
-    StructuredBuffer<PathReservoir> mLastCausticReservoirs;
+    RWStructuredBuffer<PathReservoir> mLastCausticReservoirs;
     Texture2D<float3>               mLastViewDir;
     Texture2D<PackedHitInfo>        mLastVbuffer;
 }
@@ -1376,7 +1376,7 @@ extension PathGenerator {
             // if the rcv is unconnectable, this is a caustic light path and we store the primary vertex as the rcv instead.
             suffix = PathSuffix::Create(
                 s.throughput,
-                cosAtCamera * cosAtCamera * cosAtCamera,
+                1 / cameraPdfA,
                 vertex.Pack(),
                 vertex.GetDirIn(),
                 dist,
@@ -1393,7 +1393,7 @@ extension PathGenerator {
         } else {
             suffix = PathSuffix::Create(
                 s.throughputAtRcv,
-                cosAtCamera * cosAtCamera * cosAtCamera,
+                1,
                 s.rcv,
                 s.rcvDirOut,
                 s.rcvDist,
