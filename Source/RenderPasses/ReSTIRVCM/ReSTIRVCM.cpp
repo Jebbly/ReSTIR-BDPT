@@ -52,6 +52,7 @@ namespace
     const std::string kUseTemporalResampling = "useTemporalResampling";
     const std::string kSpatialPasses         = "spatialResamplingPasses";
     const std::string kSpatialCandidates     = "spatialResamplingCandidates";
+    const std::string kDisableVC             = "disableVC";
 }
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
@@ -126,6 +127,7 @@ void ReSTIRVCM::parseProperties(const Properties& props)
         else if (key == kUseCausticShift) mStaticParams.useCausticShift = value;
         else if (key == kUseReconnectionMis) mStaticParams.reconnectionMIS = value;
         else if (key == kLightBVHOptions) mLightBVHOptions = value;
+        else if (key == kDisableVC) mStaticParams.disableVC = value;
 
         else logWarning("Unknown property '{}' in ReSTIRVCM properties.", key);
     }
@@ -193,6 +195,7 @@ Properties ReSTIRVCM::getProperties() const
     props[kUseSuffixShift] = mStaticParams.shiftSuffixes;
     props[kUseCausticShift] = mStaticParams.useCausticShift;
     props[kUseReconnectionMis] = mStaticParams.reconnectionMIS;
+    props[kDisableVC] = mStaticParams.disableVC;
 
     return props;
 }
@@ -541,6 +544,9 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                 dirty |= group.checkbox("Disable camera connection", mStaticParams.disableCameraConnection);
                 group.tooltip("Don't connect light subpaths to the camera.");
 
+                dirty |= group.checkbox("Disable vertex connection (VC)", mStaticParams.disableVC);
+                group.tooltip("Only use PT, LT, and NEE");
+
                 if (mStaticParams.useVM)
                 {
                     dirty |= group.checkbox("Vertex merging only", mStaticParams.useVMOnly);
@@ -634,7 +640,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
 
                 if (mStaticParams.useBPT && !mStaticParams.disableCameraConnection) {
                     dirty |= group.checkbox("Caustic shift", mStaticParams.useCausticShift);
-                    group.tooltip("Allow caustic light paths to contribute to any\npixel during temporal resamlping.", true);
+                    group.tooltip("Allow caustic light paths to contribute to any\npixel during temporal resampling.", true);
                 }
             }
 
@@ -784,6 +790,7 @@ bool ReSTIRVCM::onKeyEvent(const KeyboardEvent& keyEvent)
     if (keyEvent.type == KeyboardEvent::Type::KeyPressed)
     {
         switch (keyEvent.key) {
+        case Input::Key::H:
         case Input::Key::T:
             mResetTemporalHistory = true;
             return true;
@@ -1473,6 +1480,7 @@ DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
     defines.add("SHIFT_LIGHT_PATHS_TO_CENTER", useResampling && useBPT && shiftLightPathsToPixelCenters ? "1" : "0");
     defines.add("DISABLE_EARLY_RECONNECTION", useResampling && disableEarlyReconnection ? "1" : "0");
     defines.add("USE_CAUSTIC_RESERVOIRS", useResampling && useBPT && useCausticReservoirs ? "1" : "0");
+    defines.add("DISABLE_VC", useBPT && disableVC ? "1" : "0");
     defines.add("DISABLE_LVC", useBPT && disableLVC ? "1" : "0");
     defines.add("DEBUG_BPT", debugBPT ? "1" : "0");
     defines.add("DEBUG_HEATMAP", debugHeatmap ? "1" : "0");

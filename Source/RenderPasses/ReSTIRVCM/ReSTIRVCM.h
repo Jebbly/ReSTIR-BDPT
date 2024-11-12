@@ -79,6 +79,7 @@ private:
         bool        debugHeatmap = false;
         bool        useResampling = true;
         bool        shiftLightPathsToPixelCenters = true;
+        bool        disableVC = false;
         bool        useCausticShift = true;
         bool        useCausticReservoirs = true;
         bool        useTemporalReuse = true;
