@@ -33,11 +33,11 @@ RWTexture2D<float4> gResult;
 cbuffer PerFrameCB
 {
     uint2 gResolution;
-    uint gIgnoreBackground;
-    uint gComputeDiffSqr;
-    uint gComputeAverage;
-    uint gComputePercentage;
-    float gDifferenceOffset;
+    uint  gIgnoreBackground;
+    uint  gComputeDiffSqr;
+    uint  gComputeAverage;
+    uint  gComputePercentage;
+    float gOffset;
 };
 
 [numthreads(16, 16, 1)]
@@ -53,29 +53,30 @@ void main(uint3 DTid: SV_DispatchThreadID)
 
     const bool isPixelValid = !gIgnoreBackground || isForeground;
 
-    float3 src = float3(0.0f);
-    float3 ref = float3(0.0f);
-    float3 diff = float3(0.0f);
-    if (isPixelValid) {
+    float3 src, gt;
+    if (isPixelValid)
+    {
         src = gSource[pixel].rgb;
-        ref = gReference[pixel].rgb;
-        diff = src - ref;
+        gt  = gReference[pixel].rgb;
+    }
+    else
+    {
+        src = 0;
+        gt = 0;
     }
 
     // Compute error based on the current options.
-    if (gComputePercentage != 0) {
-        if (ref.r > 0) diff.r /= ref.r;
-        if (ref.g > 0) diff.g /= ref.g;
-        if (ref.b > 0) diff.b /= ref.b;
-    }
+    float3 diff = src - gt;
 
-    if (gComputeDiffSqr != 0) diff = (diff * diff) * sign(diff);
+    if (gComputePercentage) diff = diff / select(gt > 0, gt, 1);
+    if (gComputeDiffSqr) diff *= abs(diff);
+    if (gComputeAverage) diff.rgb = (diff.r + diff.g + diff.b) / 3.f;
 
-    diff = abs(diff + gDifferenceOffset);
+    diff = abs(diff + gOffset);
 
-    if (gComputeAverage != 0) diff.rgb = (diff.r + diff.g + diff.b) / 3.f;
+    for (int i = 0; i < 3; i++)
+        if (diff[i] != diff[i])
+            diff[i] = 0;
 
-    if (any(isnan(diff)) || any(isinf(diff)) || any(diff != diff)) diff = 0;
-
-    gResult[pixel] = float4(diff, 0.0f);
+    gResult[pixel] = float4(diff + gOffset, 0.0f);
 }

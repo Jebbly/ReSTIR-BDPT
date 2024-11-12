@@ -37,12 +37,16 @@
  * output texture. The intermediate buffers are internal to the pass.
  */
 
+import Utils.Math.MathHelpers;
+
 cbuffer PerFrameCB
 {
     uint2 gResolution;
-    uint gAccumCount;
-    bool gAccumulate;
-    bool gMovingAverageMode;
+    uint  gAccumCount;
+    uint  gMaxAccum;
+    float gMaxDistance;
+    float gCosMaxAngle;
+    bool  gAccumulate;
 }
 
 // Input data to accumulate and accumulated output.
@@ -60,14 +64,72 @@ typedef int4 InputDataType;
 #error "Invalid format"
 #endif
 
+#ifndef _USE_MOTION_VECS
+#define _USE_MOTION_VECS 0
+#endif
+static const bool kUseMotionVectors = (bool)_USE_MOTION_VECS;
+#ifndef _USE_GBUFFER
+#define _USE_GBUFFER 0
+#endif
+static const bool kUseGbuffer = (bool)_USE_GBUFFER;
+
 Texture2D<InputDataType> gCurFrame;
-RWTexture2D<float4> gOutputFrame;
+RWTexture2D<float4>      gOutputFrame;
+
+Texture2D<float2>        gMotionVectors;
+Texture2D<float4>        gCurPosW;
+Texture2D<float2>        gCurNormalW;
+Texture2D<float4>        gLastPosW;
+Texture2D<float2>        gLastNormalW;
+
+// frame data, format depends on accumulation mode.
+RWTexture2D<uint>   gSampleCount;
+RWTexture2D<float4> gFrameSum;  // If mode is Single or SingleKahan
+RWTexture2D<float4> gFrameCorr; // If mode is SingleKahan
+RWTexture2D<uint4>  gFrameSumLo; // If mode is Double
+RWTexture2D<uint4>  gFrameSumHi; // If mode is Double
 
 // Last frame data, format depends on accumulation mode.
-RWTexture2D<float4> gLastFrameSum;  // If mode is Single or SingleKahan
-RWTexture2D<float4> gLastFrameCorr; // If mode is SingleKahan
-RWTexture2D<uint4> gLastFrameSumLo; // If mode is Double
-RWTexture2D<uint4> gLastFrameSumHi; // If mode is Double
+Texture2D<uint>   gLastSampleCount;
+Texture2D<float4> gLastFrameSum;  // If mode is Single or SingleKahan
+Texture2D<float4> gLastFrameCorr; // If mode is SingleKahan
+Texture2D<uint4>  gLastFrameSumLo; // If mode is Double
+Texture2D<uint4>  gLastFrameSumHi; // If mode is Double
+
+bool reproject(uint2 pixelPos, out int2 p, out uint accumCount)
+{
+    p = pixelPos;
+    accumCount = gAccumCount;
+
+    if (kUseMotionVectors)
+    {
+        p = int2((float2(pixelPos) + 0.5) + float2(gResolution) * gMotionVectors[pixelPos]);
+        if (any(p < 0) || any(p >= gResolution))
+        {
+            accumCount = 0;
+            return false;
+        }
+
+        accumCount = gLastSampleCount[p];
+    }
+
+    if (kUseGbuffer)
+    {
+        float3 posW = gCurPosW[pixelPos].xyz;
+        float3 normalW = oct_to_ndir_snorm(gCurNormalW[pixelPos]);
+        float3 prevPosW = gLastPosW[p].xyz;
+        float3 prevNormalW = oct_to_ndir_snorm(gLastNormalW[p]);
+
+        if (length(posW - prevPosW) > gMaxDistance || dot(normalW, prevNormalW) < gCosMaxAngle)
+        {
+            accumCount = 0;
+            return false;
+        }
+    }
+
+    return true;
+
+}
 
 /**
  * Single precision standard summation.
@@ -83,25 +145,35 @@ void accumulateSingle(uint3 dispatchThreadId: SV_DispatchThreadID)
     float4 output;
     if (gAccumulate)
     {
-        float curWeight = 1.0 / (gAccumCount + 1);
+        float4 lastSum = 0;
+        uint accumCount;
+        int2 prevPixel;
+        if (reproject(pixelPos, prevPixel, accumCount))
+        {
+            lastSum = gLastFrameSum[prevPixel];
+        }
 
-        if (gMovingAverageMode)
+        if (gMaxAccum > 0)
         {
             // Exponential weighted moving average mode.
             // Blend the accumulated frame with the current frame.
-            output = lerp(gLastFrameSum[pixelPos], curColor, curWeight);
+            output = lerp(lastSum, curColor, 1.0 / (min(accumCount, gMaxAccum) + 1));
 
-            gLastFrameSum[pixelPos] = output;
+            gFrameSum[pixelPos] = output;
         }
         else
         {
             // High precision mode with no frame limit.
             // Fetch previous sum and compute the new sum.
-            float4 sum = gLastFrameSum[pixelPos] + curColor;
-            output = sum * curWeight;
+            float4 sum = lastSum + curColor;
 
-            gLastFrameSum[pixelPos] = sum;
+            output = sum / (accumCount + 1);
+
+            gFrameSum[pixelPos] = sum;
         }
+
+        if (kUseMotionVectors)
+            gSampleCount[pixelPos] = accumCount + 1;
     }
     else
     {
@@ -125,21 +197,30 @@ void accumulateSingleCompensated(uint3 dispatchThreadId: SV_DispatchThreadID)
     float4 output;
     if (gAccumulate)
     {
-        // Fetch the previous sum and running compensation term.
-        float4 sum = gLastFrameSum[pixelPos];
-        // c measures how large (+) or small (-) the current sum is compared to what it should be.
-        float4 c = gLastFrameCorr[pixelPos];
+        float4 sum = 0;
+        float4 c = 0;
+        uint accumCount;
+        int2 prevPixel;
+        if (reproject(pixelPos, prevPixel, accumCount)) {
+            // Fetch the previous sum and running compensation term.
+            sum = gLastFrameSum[prevPixel];
+            // c measures how large (+) or small (-) the current sum is compared to what it should be.
+            c = gLastFrameCorr[prevPixel];
+        }
 
         // Adjust current value to minimize the running error.
         // Compute the new sum by adding the adjusted current value.
         float4 y = curColor - c;
         // The value we'll see in 'sum' on the next iteration.
         float4 sumNext = sum + y;
-        output = sumNext / (gAccumCount + 1);
+        output = sumNext / (accumCount + 1);
 
-        gLastFrameSum[pixelPos] = sumNext;
+        gFrameSum[pixelPos] = sumNext;
         // Store new correction term.
-        gLastFrameCorr[pixelPos] = (sumNext - sum) - y;
+        gFrameCorr[pixelPos] = (sumNext - sum) - y;
+
+        if (kUseMotionVectors)
+            gSampleCount[pixelPos] = accumCount + 1;
     }
     else
     {
@@ -163,17 +244,23 @@ void accumulateDouble(uint3 dispatchThreadId: SV_DispatchThreadID)
     float4 output;
     if (gAccumulate)
     {
-        double curWeight = 1.0 / (gAccumCount + 1);
-
         // Fetch the previous sum in double precision.
         // There is no 'double' resource format, so the bits are stored in two uint4 textures.
-        uint4 sumLo = gLastFrameSumLo[pixelPos];
-        uint4 sumHi = gLastFrameSumHi[pixelPos];
+        uint4 sumLo = 0;
+        uint4 sumHi = 0;
+        uint accumCount;
+        int2 prevPixel;
+        if (reproject(pixelPos, prevPixel, accumCount)) {
+            sumLo = gLastFrameSumLo[prevPixel];
+            sumHi = gLastFrameSumHi[prevPixel];
+        }
 
         double sum[4];
 
-        if (gMovingAverageMode)
+        if (gMaxAccum > 0)
         {
+            double curWeight = 1.0 / (min(accumCount, gMaxAccum) + 1);
+
             // Exponential weighted moving average mode.
             for (int i = 0; i < 4; i++)
             {
@@ -185,6 +272,8 @@ void accumulateDouble(uint3 dispatchThreadId: SV_DispatchThreadID)
         }
         else
         {
+            double curWeight = 1.0 / (gMaxAccum + 1);
+
             // High precision mode with no frame limit.
             for (int i = 0; i < 4; i++)
             {
@@ -195,8 +284,11 @@ void accumulateDouble(uint3 dispatchThreadId: SV_DispatchThreadID)
             }
         }
 
-        gLastFrameSumLo[pixelPos] = sumLo;
-        gLastFrameSumHi[pixelPos] = sumHi;
+        gFrameSumLo[pixelPos] = sumLo;
+        gFrameSumHi[pixelPos] = sumHi;
+
+        if (kUseMotionVectors)
+            gSampleCount[pixelPos] = accumCount + 1;
     }
     else
     {

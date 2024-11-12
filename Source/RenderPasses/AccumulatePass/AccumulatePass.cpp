@@ -46,6 +46,9 @@ namespace
 const char kShaderFile[] = "RenderPasses/AccumulatePass/Accumulate.cs.slang";
 
 const char kInputChannel[] = "input";
+const char kInputMotionVecsChannel[] = "mvec";
+const char kInputPosWChannel[] = "posW";
+const char kInputNormalWChannel[] = "normalW";
 const char kOutputChannel[] = "output";
 
 // Serialized parameters
@@ -57,6 +60,10 @@ const char kAutoReset[] = "autoReset";
 const char kPrecisionMode[] = "precisionMode";
 const char kMaxFrameCount[] = "maxFrameCount";
 const char kOverflowMode[] = "overflowMode";
+const char kUseMotionVectors[] = "useMotionVectors";
+const char kUseGbuffer[] = "useGbuffer";
+const char kMaxDistance[] = "maxDistance";
+const char kMaxAngle[] = "maxAngle";
 } // namespace
 
 AccumulatePass::AccumulatePass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
@@ -80,6 +87,14 @@ AccumulatePass::AccumulatePass(ref<Device> pDevice, const Properties& props) : R
             mMaxFrameCount = value;
         else if (key == kOverflowMode)
             mOverflowMode = value;
+        else if (key == kUseMotionVectors)
+            mUseMotionVectors = value;
+        else if (key == kUseGbuffer)
+            mUseGbuffer = value;
+        else if (key == kMaxDistance)
+            mMaxDistance = value;
+        else if (key == kMaxAngle)
+            mMaxAngle = value;
         else
             logWarning("Unknown property '{}' in AccumulatePass properties.", key);
     }
@@ -107,6 +122,10 @@ Properties AccumulatePass::getProperties() const
     props[kPrecisionMode] = mPrecisionMode;
     props[kMaxFrameCount] = mMaxFrameCount;
     props[kOverflowMode] = mOverflowMode;
+    props[kUseMotionVectors] = mUseMotionVectors;
+    props[kUseGbuffer] = mUseGbuffer;
+    props[kMaxDistance] = mMaxDistance;
+    props[kMaxAngle] = mMaxAngle;
     return props;
 }
 
@@ -117,6 +136,9 @@ RenderPassReflection AccumulatePass::reflect(const CompileData& compileData)
     const auto fmt = mOutputFormat != ResourceFormat::Unknown ? mOutputFormat : ResourceFormat::RGBA32Float;
 
     reflector.addInput(kInputChannel, "Input data to be temporally accumulated").bindFlags(ResourceBindFlags::ShaderResource);
+    reflector.addInput(kInputMotionVecsChannel, "Input motion vectors").bindFlags(ResourceBindFlags::ShaderResource);
+    reflector.addInput(kInputPosWChannel, "Input world space position").bindFlags(ResourceBindFlags::ShaderResource);
+    reflector.addInput(kInputNormalWChannel, "Input world space normal").bindFlags(ResourceBindFlags::ShaderResource);
     reflector.addOutput(kOutputChannel, "Output data that is temporally accumulated")
         .bindFlags(ResourceBindFlags::RenderTarget | ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
         .format(fmt)
@@ -208,7 +230,7 @@ void AccumulatePass::execute(RenderContext* pRenderContext, const RenderData& re
     }
     else if (resolutionMatch)
     {
-        accumulate(pRenderContext, pSrc, pDst);
+        accumulate(pRenderContext, pSrc, pDst, renderData);
     }
     else
     {
@@ -217,7 +239,7 @@ void AccumulatePass::execute(RenderContext* pRenderContext, const RenderData& re
     }
 }
 
-void AccumulatePass::accumulate(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst)
+void AccumulatePass::accumulate(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst, const RenderData& renderData)
 {
     FALCOR_ASSERT(pSrc && pDst);
     FALCOR_ASSERT(pSrc->getWidth() == mFrameDim.x && pSrc->getHeight() == mFrameDim.y);
@@ -258,23 +280,43 @@ void AccumulatePass::accumulate(RenderContext* pRenderContext, const ref<Texture
         mSrcType = srcType;
     }
 
+    ref<Texture> pMVec = renderData.getTexture(kInputMotionVecsChannel);
+    ref<Texture> pPosW = renderData.getTexture(kInputPosWChannel);
+    ref<Texture> pNormalW = renderData.getTexture(kInputNormalWChannel);
+
+    mpProgram[mPrecisionMode]->addDefine("_USE_MOTION_VECS", mUseMotionVectors && pMVec ? "1" : "0");
+    mpProgram[mPrecisionMode]->addDefine("_USE_GBUFFER", mUseGbuffer && pPosW && pNormalW ? "1" : "0");
+
     // Setup accumulation.
-    prepareAccumulation(pRenderContext, mFrameDim.x, mFrameDim.y);
+    prepareAccumulation(pRenderContext, mFrameDim.x, mFrameDim.y, mUseMotionVectors && pMVec, mUseGbuffer && pPosW && pNormalW);
 
     // Set shader parameters.
     auto var = mpVars->getRootVar();
     var["PerFrameCB"]["gResolution"] = mFrameDim;
     var["PerFrameCB"]["gAccumCount"] = mFrameCount;
     var["PerFrameCB"]["gAccumulate"] = mEnabled;
-    var["PerFrameCB"]["gMovingAverageMode"] = (mMaxFrameCount > 0);
+    var["PerFrameCB"]["gMaxAccum"] = mMaxFrameCount;
+    var["PerFrameCB"]["gMaxDistance"] = mMaxDistance * mpScene->getSceneBounds().extent().length();
+    var["PerFrameCB"]["gCosMaxAngle"] = (float)std::cos(mMaxAngle * (M_PI / 180.f));
     var["gCurFrame"] = pSrc;
     var["gOutputFrame"] = pDst;
+    var["gMotionVectors"] = pMVec;
+    var["gCurPosW"] = pPosW;
+    var["gCurNormalW"] = pNormalW;
+    var["gLastPosW"] = mpLastPosW;
+    var["gLastNormalW"] = mpLastNormalW;
 
     // Bind accumulation buffers. Some of these may be nullptr's.
-    var["gLastFrameSum"] = mpLastFrameSum;
-    var["gLastFrameCorr"] = mpLastFrameCorr;
-    var["gLastFrameSumLo"] = mpLastFrameSumLo;
-    var["gLastFrameSumHi"] = mpLastFrameSumHi;
+    var["gSampleCount"]     = mpSampleCount[0];
+    var["gFrameSum"]        = mpFrameSum[0];
+    var["gFrameCorr"]       = mpFrameCorr[0];
+    var["gFrameSumLo"]      = mpFrameSumLo[0];
+    var["gFrameSumHi"]      = mpFrameSumHi[0];
+    var["gLastSampleCount"] = mpSampleCount[1];
+    var["gLastFrameSum"]    = mpFrameSum[1];
+    var["gLastFrameCorr"]   = mpFrameCorr[1];
+    var["gLastFrameSumLo"]  = mpFrameSumLo[1];
+    var["gLastFrameSumHi"]  = mpFrameSumHi[1];
 
     // Update the frame count.
     // The accumulation limit (mMaxFrameCount) has a special value of 0 (no limit) and is not supported in the SingleCompensated mode.
@@ -289,6 +331,17 @@ void AccumulatePass::accumulate(RenderContext* pRenderContext, const ref<Texture
     uint3 numGroups = div_round_up(uint3(mFrameDim.x, mFrameDim.y, 1u), pProgram->getReflector()->getThreadGroupSize());
     mpState->setProgram(pProgram);
     pRenderContext->dispatch(mpState.get(), mpVars.get(), numGroups);
+
+    if (mUseMotionVectors && pMVec) pRenderContext->copyResource(mpSampleCount[1].get(), mpSampleCount[0].get());
+    if (mpFrameSum[0]) pRenderContext->copyResource(mpFrameSum[1].get(), mpFrameSum[0].get());
+    if (mpFrameCorr[0]) pRenderContext->copyResource(mpFrameCorr[1].get(), mpFrameCorr[0].get());
+    if (mpFrameSumLo[0]) pRenderContext->copyResource(mpFrameSumLo[1].get(), mpFrameSumLo[0].get());
+    if (mpFrameSumHi[0]) pRenderContext->copyResource(mpFrameSumHi[1].get(), mpFrameSumHi[0].get());
+    if (mUseGbuffer && pPosW && pNormalW)
+    {
+        pRenderContext->copyResource(mpLastPosW.get(), pPosW.get());
+        pRenderContext->copyResource(mpLastNormalW.get(), pNormalW.get());
+    }
 }
 
 void AccumulatePass::renderUI(Gui::Widgets& widget)
@@ -313,6 +366,21 @@ void AccumulatePass::renderUI(Gui::Widgets& widget)
 
         widget.checkbox("Auto Reset", mAutoReset);
         widget.tooltip("Reset accumulation automatically upon scene changes and refresh flags.");
+
+        widget.checkbox("Use motion vectors", mUseMotionVectors);
+        widget.tooltip("Accumulate using motion vectors.");
+
+        widget.checkbox("Use gbuffer", mUseGbuffer);
+        widget.tooltip("Accumulate using motion vectors.");
+
+        if (mUseGbuffer)
+        {
+            widget.var("Max distance", mMaxDistance, 0.f, 1.f);
+            widget.tooltip("Maximum distance to allow reprojection\nas a percentage of the scene radius.");
+
+            widget.var("Max normal", mMaxAngle, 0.f, 180.f);
+            widget.tooltip("Maximum angle (in degrees) to allow reprojection.");
+        }
 
         if (widget.dropdown("Mode", mPrecisionMode))
         {
@@ -377,40 +445,51 @@ void AccumulatePass::reset()
     mFrameCount = 0;
 }
 
-void AccumulatePass::prepareAccumulation(RenderContext* pRenderContext, uint32_t width, uint32_t height)
+void AccumulatePass::prepareAccumulation(RenderContext* pRenderContext, uint32_t width, uint32_t height, bool useMotionVecs, bool useGbuffer)
 {
     // Allocate/resize/clear buffers for intermedate data. These are different depending on accumulation mode.
     // Buffers that are not used in the current mode are released.
-    auto prepareBuffer = [&](ref<Texture>& pBuf, ResourceFormat format, bool bufUsed)
+    auto prepareBuffer = [&](ref<Texture>& b, ResourceFormat format, bool bufUsed)
     {
         if (!bufUsed)
         {
-            pBuf = nullptr;
+            b = nullptr;
             return;
         }
+
         // (Re-)create buffer if needed.
-        if (!pBuf || pBuf->getWidth() != width || pBuf->getHeight() != height)
+        if (!b || b->getWidth() != width || b->getHeight() != height)
         {
-            pBuf = mpDevice->createTexture2D(
-                width, height, format, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
-            );
-            FALCOR_ASSERT(pBuf);
+            for (uint i = 0; i < 2; i++) {
+                b = mpDevice->createTexture2D(
+                    width, height, format, 1, 1, nullptr, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
+                );
+                FALCOR_ASSERT(b);
+            }
             reset();
         }
+
         // Clear data if accumulation has been reset (either above or somewhere else).
         if (mFrameCount == 0)
         {
             if (getFormatType(format) == FormatType::Float)
-                pRenderContext->clearUAV(pBuf->getUAV().get(), float4(0.f));
+                pRenderContext->clearUAV(b->getUAV().get(), float4(0.f));
             else
-                pRenderContext->clearUAV(pBuf->getUAV().get(), uint4(0));
+                pRenderContext->clearUAV(b->getUAV().get(), uint4(0));
         }
     };
+    auto prepareBuffers = [&](auto& bufs, ResourceFormat format, bool bufUsed) {
+        for (auto& b : bufs)
+            prepareBuffer(b, format, bufUsed);
+    };
 
-    prepareBuffer(
-        mpLastFrameSum, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::Single || mPrecisionMode == Precision::SingleCompensated
+    prepareBuffers(mpSampleCount, ResourceFormat::R32Uint, useMotionVecs);
+    prepareBuffers(
+        mpFrameSum, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::Single || mPrecisionMode == Precision::SingleCompensated
     );
-    prepareBuffer(mpLastFrameCorr, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::SingleCompensated);
-    prepareBuffer(mpLastFrameSumLo, ResourceFormat::RGBA32Uint, mPrecisionMode == Precision::Double);
-    prepareBuffer(mpLastFrameSumHi, ResourceFormat::RGBA32Uint, mPrecisionMode == Precision::Double);
+    prepareBuffers(mpFrameCorr, ResourceFormat::RGBA32Float, mPrecisionMode == Precision::SingleCompensated);
+    prepareBuffers(mpFrameSumLo, ResourceFormat::RGBA32Uint, mPrecisionMode == Precision::Double);
+    prepareBuffers(mpFrameSumHi, ResourceFormat::RGBA32Uint, mPrecisionMode == Precision::Double);
+    prepareBuffer(mpLastPosW, ResourceFormat::RGBA32Float, useGbuffer);
+    prepareBuffer(mpLastNormalW, ResourceFormat::RG32Float, useGbuffer);
 }

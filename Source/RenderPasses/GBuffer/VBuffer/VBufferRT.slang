@@ -30,6 +30,7 @@ __exported import Utils.Timing.GpuTimer;
 __exported import Utils.Math.Ray;
 import Utils.Math.MathHelpers;
 import Utils.Sampling.SampleGenerator;
+#include "Utils/Math/MathConstants.slangh"
 
 RWTexture2D<PackedHitInfo> gVBuffer;
 RWTexture2D<float> gDepth;
@@ -37,6 +38,8 @@ RWTexture2D<float2> gMotionVector;
 RWTexture2D<float4> gViewW;
 RWTexture2D<uint> gTime;
 RWTexture2D<float> gMask;
+RWTexture2D<float4> gPosW;
+RWTexture2D<float2> gNormalW;
 
 #define is_valid(name) (is_valid_##name != 0)
 
@@ -121,6 +124,10 @@ struct VBufferRT
             gMotionVector[pixel] = motionVector;
         if (is_valid(gMask))
             gMask[pixel] = 1.0f;
+        if (is_valid(gPosW))
+            gPosW[pixel] = float4(v.posW, 1);
+        if (is_valid(gPosW))
+            gNormalW[pixel] = ndir_to_oct_snorm(v.normalW);
     }
 
     void writeMiss(uint2 pixel, float3 rayOrigin, float3 rayDir)
@@ -133,6 +140,10 @@ struct VBufferRT
             gMotionVector[pixel] = {};
         if (is_valid(gMask))
             gMask[pixel] = 0.0f;
+        if (is_valid(gPosW))
+            gPosW[pixel] = float4(FLT_MAX, FLT_MAX, FLT_MAX, 1);
+        if (is_valid(gPosW))
+            gNormalW[pixel] = ndir_to_oct_snorm(rayDir);
     }
 
     void writeAux(uint2 pixel, const Ray ray)

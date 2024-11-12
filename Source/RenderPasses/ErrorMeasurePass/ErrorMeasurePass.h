@@ -46,12 +46,6 @@ public:
         Count
     };
 
-    enum class GraphAxisScale {
-        Linear,
-        LogLinear,
-        LogLog
-    };
-
     FALCOR_ENUM_INFO(
         OutputId,
         {
@@ -61,26 +55,15 @@ public:
         }
     );
 
-    FALCOR_ENUM_INFO(
-        GraphAxisScale,
-        {
-            {GraphAxisScale::Linear, "Linear"},
-            {GraphAxisScale::LogLinear, "LogLinear"},
-            {GraphAxisScale::LogLog, "LogLog"},
-        }
-    );
-
     static ref<ErrorMeasurePass> create(ref<Device> pDevice, const Properties& props) { return make_ref<ErrorMeasurePass>(pDevice, props); }
 
     ErrorMeasurePass(ref<Device> pDevice, const Properties& props);
 
-    virtual void setProperties(const Properties& props) override;
     virtual Properties getProperties() const override;
     virtual RenderPassReflection reflect(const CompileData& compileData) override;
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override;
-    virtual void setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) override;
 
 private:
     bool loadReference();
@@ -107,6 +90,8 @@ private:
     /// A negative value indicates that both running error values are invalid.
     float mRunningAvgError = -1.f;
 
+    bool mCaptureReference = false;
+
     ref<Texture> mpReferenceTexture;
     ref<Texture> mpDifferenceTexture;
 
@@ -119,43 +104,27 @@ private:
     /// Path to the output file where measurements are stored (.csv).
     std::filesystem::path mMeasurementsFilePath;
 
-    std::filesystem::path mOutputImageFilePath;
-    size_t                mOutputFrameIndex = 1000;
-    size_t                mCurrentFrameIndex = 0;
-
-    bool mEnabled = true;
-
     /// If true, do not measure error on pixels that belong to the background.
     bool mIgnoreBackground = true;
     /// Compute the square difference when creating the difference image.
     bool mComputeSquaredDifference = true;
     /// Compute the average of the RGB components when creating the difference image.
     bool mComputeAverage = false;
-    /// Comptue the percentange error.
-    bool mComputePercentage = false;
     /// If true, use loaded reference image instead of input.
     bool mUseLoadedReference = false;
     /// Use exponetial moving average (EMA) for the computed error.
     bool mReportRunningError = true;
     /// Coefficient used for the exponential moving average. Larger values mean slower response.
     float mRunningErrorSigma = 0.995f;
-    /// Offset to apply to per-pixel differences.
-    float mDifferenceOffset = 0;
-
-    bool mSetReference = false;
-
-    std::vector<float> mMeasurementHistory = {};
-    size_t mMeasurementHistoryLength = 4096;
-    float mMinMeasurement = FLT_MAX;
-    float mMaxMeasurement = 0;
-
-    GraphAxisScale mGraphScaleMode = GraphAxisScale::LogLog;
+    /// If true, divide the error by the ground truth value.
+    bool mComputePercentage = false;
+    /// Offset to apply to the error.
+    float mOffset = 0;
 
     OutputId mSelectedOutputId = OutputId::Source;
 
     static const Gui::RadioButtonGroup sOutputSelectionButtons;
     static const Gui::RadioButtonGroup sOutputSelectionButtonsSourceOnly;
-    static const Gui::RadioButtonGroup sGraphModeSelectionButtons;
 };
 
 FALCOR_ENUM_REGISTER(ErrorMeasurePass::OutputId);

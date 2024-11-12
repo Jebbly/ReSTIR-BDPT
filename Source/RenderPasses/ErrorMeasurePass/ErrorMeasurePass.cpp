@@ -28,7 +28,6 @@
 #include "ErrorMeasurePass.h"
 #include "Core/AssetResolver.h"
 #include <sstream>
-#include <imgui.h>
 
 namespace
 {
@@ -50,12 +49,11 @@ const std::string kIgnoreBackground = "IgnoreBackground";
 const std::string kComputeSquaredDifference = "ComputeSquaredDifference";
 const std::string kComputeAverage = "ComputeAverage";
 const std::string kComputePercentage = "ComputePercentage";
+const std::string kOffset = "Offset";
 const std::string kUseLoadedReference = "UseLoadedReference";
 const std::string kReportRunningError = "ReportRunningError";
 const std::string kRunningErrorSigma = "RunningErrorSigma";
 const std::string kSelectedOutputId = "SelectedOutputId";
-const std::string kOutputImageFilePath = "OutputImageFilePath";
-const std::string kOutputFrameIndex = "OutputFrameIndex";
 } // namespace
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
@@ -70,22 +68,7 @@ const Gui::RadioButtonGroup ErrorMeasurePass::sOutputSelectionButtons = {
 
 const Gui::RadioButtonGroup ErrorMeasurePass::sOutputSelectionButtonsSourceOnly = {{(uint32_t)OutputId::Source, "Source", true}};
 
-const Gui::RadioButtonGroup ErrorMeasurePass::sGraphModeSelectionButtons = {
-    {(uint32_t)GraphAxisScale::Linear,    "Linear",     false},
-    {(uint32_t)GraphAxisScale::LogLinear, "Log-Linear", true},
-    {(uint32_t)GraphAxisScale::LogLog,    "Log-Log",    true}};
-
 ErrorMeasurePass::ErrorMeasurePass(ref<Device> pDevice, const Properties& props) : RenderPass(pDevice)
-{
-    setProperties(props);
-
-    mpParallelReduction = std::make_unique<ParallelReduction>(mpDevice);
-    mpErrorMeasurerPass = ComputePass::create(mpDevice, kErrorComputationShaderFile);
-
-    mMeasurementHistory.reserve(mMeasurementHistoryLength);
-}
-
-void ErrorMeasurePass::setProperties(const Properties& props)
 {
     for (const auto& [key, value] : props)
     {
@@ -101,6 +84,8 @@ void ErrorMeasurePass::setProperties(const Properties& props)
             mComputeAverage = value;
         else if (key == kComputePercentage)
             mComputePercentage = value;
+        else if (key == kOffset)
+            mOffset = value;
         else if (key == kUseLoadedReference)
             mUseLoadedReference = value;
         else if (key == kReportRunningError)
@@ -109,10 +94,6 @@ void ErrorMeasurePass::setProperties(const Properties& props)
             mRunningErrorSigma = value;
         else if (key == kSelectedOutputId)
             mSelectedOutputId = value;
-        else if (key == kOutputImageFilePath)
-            mOutputImageFilePath = value.operator std::filesystem::path();
-        else if (key == kOutputFrameIndex)
-            mOutputFrameIndex = value;
         else
         {
             logWarning("Unknown property '{}' in ErrorMeasurePass properties.", key);
@@ -122,8 +103,10 @@ void ErrorMeasurePass::setProperties(const Properties& props)
     // Load/create files (if specified in config).
     loadReference();
     loadMeasurementsFile();
-}
 
+    mpParallelReduction = std::make_unique<ParallelReduction>(mpDevice);
+    mpErrorMeasurerPass = ComputePass::create(mpDevice, kErrorComputationShaderFile);
+}
 
 Properties ErrorMeasurePass::getProperties() const
 {
@@ -134,12 +117,11 @@ Properties ErrorMeasurePass::getProperties() const
     props[kComputeSquaredDifference] = mComputeSquaredDifference;
     props[kComputeAverage] = mComputeAverage;
     props[kComputePercentage] = mComputePercentage;
+    props[kOffset] = mOffset;
     props[kUseLoadedReference] = mUseLoadedReference;
     props[kReportRunningError] = mReportRunningError;
     props[kRunningErrorSigma] = mRunningErrorSigma;
     props[kSelectedOutputId] = mSelectedOutputId;
-    props[kOutputImageFilePath] = mOutputImageFilePath;
-    props[kOutputFrameIndex] = mOutputFrameIndex;
     return props;
 }
 
@@ -157,31 +139,46 @@ RenderPassReflection ErrorMeasurePass::reflect(const CompileData& compileData)
 void ErrorMeasurePass::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
     ref<Texture> pSourceImageTexture = renderData.getTexture(kInputChannelSourceImage);
+    ref<Texture> pOutputImageTexture = renderData.getTexture(kOutputChannelImage);
 
-    if (mEnabled && mSetReference)
+    // Create the texture for the difference image if this is our first
+    // time through or if the source image resolution has changed.
+    const uint32_t width = pSourceImageTexture->getWidth(), height = pSourceImageTexture->getHeight();
+    if (!mpDifferenceTexture || mpDifferenceTexture->getWidth() != width || mpDifferenceTexture->getHeight() != height)
     {
-        const uint32_t width = pSourceImageTexture->getWidth(), height = pSourceImageTexture->getHeight();
-        if (!mpReferenceTexture || mpReferenceTexture->getWidth() != width || mpReferenceTexture->getHeight() != height)
-        {
-            mpReferenceTexture = mpDevice->createTexture2D(
-                width,
-                height,
-                pSourceImageTexture->getFormat(),
-                1,
-                1,
-                nullptr,
-                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
-            );
-            FALCOR_ASSERT(mpReferenceTexture);
-        }
-        pRenderContext->copyResource(mpReferenceTexture.get(), pSourceImageTexture.get());
-        mUseLoadedReference = true;
-        mSetReference = false;
+        mpDifferenceTexture = mpDevice->createTexture2D(
+            width,
+            height,
+            ResourceFormat::RGBA32Float,
+            1,
+            1,
+            nullptr,
+            ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
+        );
+        FALCOR_ASSERT(mpDifferenceTexture);
     }
 
-    ref<Texture> pOutputImageTexture = renderData.getTexture(kOutputChannelImage);
-    ref<Texture> pReference = getReference(renderData);
+    if (mCaptureReference)
+    {
+        mpReferenceTexture = mpDevice->createTexture2D(
+            width,
+            height,
+            pSourceImageTexture->getFormat(),
+            1,
+            1,
+            nullptr,
+            ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess | ResourceBindFlags::RenderTarget
+        );
+        FALCOR_ASSERT(mpReferenceTexture);
+        pRenderContext->blit(pSourceImageTexture->getSRV(), mpReferenceTexture->getRTV());
+        mCaptureReference = false;
+        mUseLoadedReference = true;
+        mRunningAvgError = -1.f; // Mark running error values as invalid.
+    }
 
+    mMeasurements.valid = false;
+
+    ref<Texture> pReference = getReference(renderData);
     if (!pReference)
     {
         // We don't have a reference image, so just copy the source image to the output.
@@ -189,46 +186,8 @@ void ErrorMeasurePass::execute(RenderContext* pRenderContext, const RenderData& 
         return;
     }
 
-    if (mEnabled) {
-        // Create the texture for the difference image if this is our first
-        // time through or if the source image resolution has changed.
-        const uint32_t width = pSourceImageTexture->getWidth(), height = pSourceImageTexture->getHeight();
-        if (!mpDifferenceTexture || mpDifferenceTexture->getWidth() != width || mpDifferenceTexture->getHeight() != height)
-        {
-            mpDifferenceTexture = mpDevice->createTexture2D(
-                width,
-                height,
-                ResourceFormat::RGBA32Float,
-                1,
-                1,
-                nullptr,
-                ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess
-            );
-            FALCOR_ASSERT(mpDifferenceTexture);
-        }
-
-        mMeasurements.valid = false;
-
-        runDifferencePass(pRenderContext, renderData);
-        runReductionPasses(pRenderContext, renderData);
-
-        saveMeasurementsToFile();
-
-        if (mMeasurementHistory.size() == mMeasurementHistoryLength) {
-            for (size_t i = 0; i < mMeasurementHistory.size() - 1; i++)
-                mMeasurementHistory[i] = mMeasurementHistory[i+1];
-            mMeasurementHistory.back() = mMeasurements.avgError;
-        } else
-            mMeasurementHistory.emplace_back(mMeasurements.avgError);
-        mMaxMeasurement = std::max(mMaxMeasurement, mMeasurements.avgError);
-        mMinMeasurement = std::min(mMinMeasurement, mMeasurements.avgError);
-
-        if (mCurrentFrameIndex == mOutputFrameIndex && !mOutputImageFilePath.empty())
-        {
-            pSourceImageTexture->captureToFile(0, 0, mOutputImageFilePath, Bitmap::FileFormat::ExrFile);
-        }
-        mCurrentFrameIndex++;
-    }
+    runDifferencePass(pRenderContext, renderData);
+    runReductionPasses(pRenderContext, renderData);
 
     switch (mSelectedOutputId)
     {
@@ -244,6 +203,8 @@ void ErrorMeasurePass::execute(RenderContext* pRenderContext, const RenderData& 
     default:
         FALCOR_THROW("ErrorMeasurePass: Unhandled OutputId case");
     }
+
+    saveMeasurementsToFile();
 }
 
 void ErrorMeasurePass::runDifferencePass(RenderContext* pRenderContext, const RenderData& renderData)
@@ -265,7 +226,7 @@ void ErrorMeasurePass::runDifferencePass(RenderContext* pRenderContext, const Re
     var[kConstantBufferName]["gComputeDiffSqr"] = (uint32_t)mComputeSquaredDifference;
     var[kConstantBufferName]["gComputeAverage"] = (uint32_t)mComputeAverage;
     var[kConstantBufferName]["gComputePercentage"] = (uint32_t)mComputePercentage;
-    var[kConstantBufferName]["gDifferenceOffset"] = mDifferenceOffset;
+    var[kConstantBufferName]["gOffset"] = mOffset;
 
     // Run the compute shader.
     mpErrorMeasurerPass->execute(pRenderContext, resolution.x, resolution.y);
@@ -277,7 +238,7 @@ void ErrorMeasurePass::runReductionPasses(RenderContext* pRenderContext, const R
     mpParallelReduction->execute(pRenderContext, mpDifferenceTexture, ParallelReduction::Type::Sum, &error);
 
     const float pixelCountf = static_cast<float>(mpDifferenceTexture->getWidth() * mpDifferenceTexture->getHeight());
-    mMeasurements.error = error.xyz() / pixelCountf - mDifferenceOffset;
+    mMeasurements.error = error.xyz() / pixelCountf;
     mMeasurements.avgError = (mMeasurements.error.x + mMeasurements.error.y + mMeasurements.error.z) / 3.f;
     mMeasurements.valid = true;
 
@@ -292,18 +253,10 @@ void ErrorMeasurePass::runReductionPasses(RenderContext* pRenderContext, const R
         mRunningError = mRunningErrorSigma * mRunningError + (1 - mRunningErrorSigma) * mMeasurements.error;
         mRunningAvgError = mRunningErrorSigma * mRunningAvgError + (1 - mRunningErrorSigma) * mMeasurements.avgError;
     }
-
-}
-
-void ErrorMeasurePass::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene) {
-    mCurrentFrameIndex = 0;
 }
 
 void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
 {
-    widget.checkbox("Enabled", mEnabled);
-    if (!mEnabled) return;
-
     const auto getFilename = [](const std::filesystem::path& path) { return path.empty() ? "N/A" : path.filename().string(); };
 
     // Create a button for loading the reference image.
@@ -320,16 +273,25 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
                 msgBox("Error", fmt::format("Failed to load reference image from '{}'.", path), MsgBoxType::Ok, MsgBoxIcon::Error);
         }
     }
-    if (mReferenceImagePath.empty())
+
+    if (widget.button("Capture reference", true))
     {
-        if (widget.button("Set reference", true))
-            mSetReference = true;
-    } else {
-        widget.text(getFilename(mReferenceImagePath), true);
+        mCaptureReference = true;
+    }
+
+    if (mUseLoadedReference)
+    {
+        if (widget.button("Unload", true))
+        {
+            mpReferenceTexture = nullptr;
+            mUseLoadedReference = false;
+            mReferenceImagePath.clear();
+            mRunningAvgError = -1.f; // Mark running error values as invalid.
+        }
     }
 
     // Create a button for defining the measurements output file.
-    if (widget.button("Set output data file"))
+    if (widget.button("Set output data file", true))
     {
         FileDialogFilterVec filters;
         filters.push_back({"csv", "CSV Files"});
@@ -340,40 +302,6 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
             if (!loadMeasurementsFile())
                 msgBox("Error", fmt::format("Failed to save measurements to '{}'.", path), MsgBoxType::Ok, MsgBoxIcon::Error);
         }
-    }
-    widget.text(getFilename(mMeasurementsFilePath), true);
-    if (mMeasurementsFile && mMeasurementsFile.is_open())
-    {
-        if (widget.button("x", true))
-        {
-            mMeasurementsFile.close();
-            mMeasurementsFilePath.clear();
-        }
-    }
-
-    if (widget.button("Set output image"))
-    {
-        FileDialogFilterVec filters;
-        filters.push_back({"exr", "High Dynamic Range"});
-        std::filesystem::path path;
-        if (saveFileDialog(filters, path))
-        {
-            mOutputImageFilePath = path;
-        }
-    }
-    widget.text(getFilename(mOutputImageFilePath), true);
-    if (!mOutputImageFilePath.empty())
-    {
-        if (widget.button("x", true))
-        {
-            mOutputImageFilePath.clear();
-        }
-    }
-    widget.var<size_t>("Output frame", mOutputFrameIndex, 0, std::numeric_limits<size_t>::max(), 1.f);
-    widget.text(std::to_string(mCurrentFrameIndex));
-    if (widget.button("Reset counter", true))
-    {
-        mCurrentFrameIndex = 0;
     }
 
     // Radio buttons to select the output.
@@ -400,18 +328,14 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
             std::string(kInputChannelWorldPosition) + "' to be bound",
         true
     );
+    widget.checkbox("Compute relative error", mComputePercentage);
     widget.checkbox("Compute L2 error (rather than L1)", mComputeSquaredDifference);
     widget.checkbox("Compute RGB average", mComputeAverage);
     widget.tooltip(
         "When enabled, the average error over the RGB components is computed when creating the difference image.\n"
         "The average is computed after squaring the differences when L2 error is selected."
     );
-
-    widget.checkbox("Compute percentage", mComputePercentage);
-    widget.tooltip("When enabled, the error is divided by the reference value.");
-
-    widget.var("Difference offset", mDifferenceOffset);
-    widget.tooltip("Offset to apply to per-pixel differences.");
+    widget.var("Offset", mOffset);
 
     widget.checkbox("Use loaded reference image", mUseLoadedReference);
     widget.tooltip(
@@ -447,17 +371,9 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
         // Use stream so we can control formatting.
         std::ostringstream oss;
         oss << std::scientific;
-
-        const char* label = "MSE";
-        if (mComputeSquaredDifference) {
-            label = mComputePercentage ? "MSAPE" : "MSE";
-        } else {
-            label = mComputePercentage ? "MAPE" : "L1 error";
-        }
-
-        oss << label << " (avg): "
+        oss << (mComputeSquaredDifference ? "MSE (avg): " : "L1 error (avg): ")
             << (mReportRunningError ? mRunningAvgError : mMeasurements.avgError) << std::endl;
-        oss << label << " (rgb): "
+        oss << (mComputeSquaredDifference ? "MSE (rgb): " : "L1 error (rgb): ")
             << (mReportRunningError ? mRunningError.r : mMeasurements.error.r) << ", "
             << (mReportRunningError ? mRunningError.g : mMeasurements.error.g) << ", "
             << (mReportRunningError ? mRunningError.b : mMeasurements.error.b);
@@ -466,67 +382,6 @@ void ErrorMeasurePass::renderUI(Gui::Widgets& widget)
     else
     {
         widget.text("Error: N/A");
-        widget.text("Error delta: N/A");
-    }
-
-    if (widget.var("History length", mMeasurementHistoryLength, size_t(100), size_t(100000))) {
-        if (mMeasurementHistoryLength > mMeasurementHistory.size())
-            mMeasurementHistory.reserve(mMeasurementHistoryLength);
-        else
-            mMeasurementHistory.resize(mMeasurementHistoryLength);
-    }
-
-    widget.radioButtons(sGraphModeSelectionButtons, reinterpret_cast<uint32_t&>(mGraphScaleMode));
-
-    if (widget.button("Reset")) {
-        mMeasurementHistory.clear();
-        mMaxMeasurement = 0;
-        mMinMeasurement = FLT_MAX;
-    }
-    if (mMeasurementHistory.size() > 1 && mMaxMeasurement > 0) {
-        ImVec2 frame_size = { ImGui::GetWindowContentRegionWidth(), ImGui::GetTextLineHeight()*6 };
-
-        ImGuiStyle& style = ImGui::GetStyle();
-
-        ImVec2 windowCursor = ImGui::GetCursorScreenPos();
-        ImVec2 graphMin { windowCursor.x + style.FramePadding.x, windowCursor.y + style.FramePadding.y};
-        ImVec2 graphMax { windowCursor.x + frame_size.x - style.FramePadding.x, windowCursor.y + frame_size.y - style.FramePadding.y};
-
-        ImGui::Dummy(frame_size);
-
-        ImDrawList* drawList = ImGui::GetWindowDrawList();
-        drawList->AddRectFilled(graphMin, graphMax, ImGui::GetColorU32(ImGuiCol_FrameBg), style.FrameRounding, 0);
-        drawList->PathClear();
-
-        ImVec2 mousePos = ImGui::GetIO().MousePos;
-
-        const ImU32 lineColor = ImGui::GetColorU32(ImGuiCol_PlotLines);
-
-        for (int i = 0; i < mMeasurementHistory.size(); i++)
-        {
-            ImVec2 p = { i+1.f, mMeasurementHistory[i] };
-
-            // scale x axis
-            if (mGraphScaleMode == GraphAxisScale::LogLog) {
-                p.x = std::log10(p.x) / std::log10(mMeasurementHistory.size());
-            } else {
-                p.x = (p.x - 1) / mMeasurementHistory.size();
-            }
-
-            // scale y axis
-            if (mGraphScaleMode == GraphAxisScale::LogLog || mGraphScaleMode == GraphAxisScale::LogLinear) {
-                p.y = (std::log10(p.y) - std::log10(mMinMeasurement)) / (std::log10(mMaxMeasurement) - std::log10(mMinMeasurement));
-            } else {
-                p.y = (p.y - mMinMeasurement) / (mMaxMeasurement - mMinMeasurement);
-            }
-
-            drawList->PathLineTo({
-                graphMin.x + (graphMax.x - graphMin.x) * p.x,
-                graphMin.y + (graphMax.y - graphMin.y) * (1 - p.y) // invert y since screen coordinates are y-down
-            });
-        }
-
-        drawList->PathStroke(lineColor, 0, 2.5f);
     }
 }
 
@@ -593,8 +448,6 @@ bool ErrorMeasurePass::loadMeasurementsFile()
         }
         mMeasurementsFile << std::scientific;
     }
-
-    mCurrentFrameIndex = 0;
 
     return true;
 }

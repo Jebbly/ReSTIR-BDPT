@@ -100,8 +100,8 @@ public:
     );
 
 protected:
-    void prepareAccumulation(RenderContext* pRenderContext, uint32_t width, uint32_t height);
-    void accumulate(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst);
+    void prepareAccumulation(RenderContext* pRenderContext, uint32_t width, uint32_t height, bool useMotionVecs, bool useGbuffer);
+    void accumulate(RenderContext* pRenderContext, const ref<Texture>& pSrc, const ref<Texture>& pDst, const RenderData& renderData);
 
     // Internal state
 
@@ -120,14 +120,18 @@ protected:
     uint32_t mFrameCount = 0;
     /// Current frame dimension in pixels.
     uint2 mFrameDim = {0, 0};
+    std::array<ref<Texture>, 2> mpSampleCount;
     /// Last frame running sum. Used in Single and SingleKahan mode.
-    ref<Texture> mpLastFrameSum;
+    std::array<ref<Texture>, 2> mpFrameSum;
     /// Last frame running compensation term. Used in SingleKahan mode.
-    ref<Texture> mpLastFrameCorr;
+    std::array<ref<Texture>, 2> mpFrameCorr;
     /// Last frame running sum (lo bits). Used in Double mode.
-    ref<Texture> mpLastFrameSumLo;
+    std::array<ref<Texture>, 2> mpFrameSumLo;
     /// Last frame running sum (hi bits). Used in Double mode.
-    ref<Texture> mpLastFrameSumHi;
+    std::array<ref<Texture>, 2> mpFrameSumHi;
+
+    ref<Texture> mpLastPosW;
+    ref<Texture> mpLastNormalW;
 
     // UI variables
 
@@ -135,6 +139,16 @@ protected:
     bool mEnabled = true;
     /// Reset accumulation automatically upon scene changes and refresh flags.
     bool mAutoReset = true;
+
+    /// Whether to use motion vectors (if present).
+    bool mUseMotionVectors = true;
+    /// Whether to use gbuffer heuristics (if present).
+    bool mUseGbuffer = true;
+
+    /// world units
+    float mMaxDistance = 0.03f;
+    /// degrees
+    float mMaxAngle = 5;
 
     Precision mPrecisionMode = Precision::Single;
     /// Maximum number of frames to accumulate before triggering overflow. 0 means infinite accumulation.
