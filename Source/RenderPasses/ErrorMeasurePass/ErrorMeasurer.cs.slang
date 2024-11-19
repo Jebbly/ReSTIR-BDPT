@@ -58,6 +58,11 @@ void main(uint3 DTid: SV_DispatchThreadID)
     {
         src = gSource[pixel].rgb;
         gt  = gReference[pixel].rgb;
+
+        if (any(gt != gt) || any(isnan(gt)) || any(isinf(gt)))
+            gt = 0;
+        if (any(src != src) || any(isnan(src)) || any(isinf(src)))
+            src = 0;
     }
     else
     {
@@ -74,9 +79,5 @@ void main(uint3 DTid: SV_DispatchThreadID)
 
     diff = abs(diff + gOffset);
 
-    for (int i = 0; i < 3; i++)
-        if (diff[i] != diff[i])
-            diff[i] = 0;
-
-    gResult[pixel] = float4(diff + gOffset, 0.0f);
+    gResult[pixel] = float4(diff, 0.0f);
 }

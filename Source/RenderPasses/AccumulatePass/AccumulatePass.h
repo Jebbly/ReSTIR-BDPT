@@ -141,9 +141,9 @@ protected:
     bool mAutoReset = true;
 
     /// Whether to use motion vectors (if present).
-    bool mUseMotionVectors = true;
+    bool mUseMotionVectors = false;
     /// Whether to use gbuffer heuristics (if present).
-    bool mUseGbuffer = true;
+    bool mUseGbuffer = false;
 
     /// world units
     float mMaxDistance = 0.03f;

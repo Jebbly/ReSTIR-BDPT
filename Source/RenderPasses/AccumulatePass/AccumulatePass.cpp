@@ -136,9 +136,9 @@ RenderPassReflection AccumulatePass::reflect(const CompileData& compileData)
     const auto fmt = mOutputFormat != ResourceFormat::Unknown ? mOutputFormat : ResourceFormat::RGBA32Float;
 
     reflector.addInput(kInputChannel, "Input data to be temporally accumulated").bindFlags(ResourceBindFlags::ShaderResource);
-    reflector.addInput(kInputMotionVecsChannel, "Input motion vectors").bindFlags(ResourceBindFlags::ShaderResource);
-    reflector.addInput(kInputPosWChannel, "Input world space position").bindFlags(ResourceBindFlags::ShaderResource);
-    reflector.addInput(kInputNormalWChannel, "Input world space normal").bindFlags(ResourceBindFlags::ShaderResource);
+    reflector.addInput(kInputMotionVecsChannel, "Input motion vectors").bindFlags(ResourceBindFlags::ShaderResource).flags(RenderPassReflection::Field::Flags::Optional);
+    reflector.addInput(kInputPosWChannel, "Input world space position").bindFlags(ResourceBindFlags::ShaderResource).flags(RenderPassReflection::Field::Flags::Optional);
+    reflector.addInput(kInputNormalWChannel, "Input world space normal").bindFlags(ResourceBindFlags::ShaderResource).flags(RenderPassReflection::Field::Flags::Optional);
     reflector.addOutput(kOutputChannel, "Output data that is temporally accumulated")
         .bindFlags(ResourceBindFlags::RenderTarget | ResourceBindFlags::UnorderedAccess | ResourceBindFlags::ShaderResource)
         .format(fmt)

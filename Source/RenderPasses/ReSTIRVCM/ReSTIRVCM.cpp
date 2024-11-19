@@ -52,7 +52,9 @@ namespace
     const std::string kUseTemporalResampling = "useTemporalResampling";
     const std::string kSpatialPasses         = "spatialResamplingPasses";
     const std::string kSpatialCandidates     = "spatialResamplingCandidates";
+    const std::string kSpatialRadius         = "spatialReuseRadius";
     const std::string kDisableVC             = "disableVC";
+    const std::string kRoughnessThreshold    = "rcvRoughness";
 }
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
@@ -128,6 +130,8 @@ void ReSTIRVCM::parseProperties(const Properties& props)
         else if (key == kUseReconnectionMis) mStaticParams.reconnectionMIS = value;
         else if (key == kLightBVHOptions) mLightBVHOptions = value;
         else if (key == kDisableVC) mStaticParams.disableVC = value;
+        else if (key == kRoughnessThreshold) mParams.mReconnectionRoughness = value;
+        else if (key == kSpatialRadius) mParams.mSpatialReuseRadius = value;
 
         else logWarning("Unknown property '{}' in ReSTIRVCM properties.", key);
     }
@@ -196,6 +200,8 @@ Properties ReSTIRVCM::getProperties() const
     props[kUseCausticShift] = mStaticParams.useCausticShift;
     props[kUseReconnectionMis] = mStaticParams.reconnectionMIS;
     props[kDisableVC] = mStaticParams.disableVC;
+    props[kRoughnessThreshold] = mParams.mReconnectionRoughness;
+    props[kSpatialRadius] = mParams.mSpatialReuseRadius;
 
     return props;
 }
