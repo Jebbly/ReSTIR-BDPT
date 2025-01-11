@@ -177,6 +177,7 @@ extension PathGenerator {
         float misWeight = basePath.mMisWeight;
 
         // compute new MIS weight for the shifted path
+        #if USE_RECONNECTION_MIS
         if (gUseReconnectionMIS && !DebugDisableMIS()) {
             misWeight = 0;
             if (basePath.HasFlag(PathFlags::eNonCausticLightPath) && gBidirectional) {
@@ -267,13 +268,10 @@ extension PathGenerator {
                 }
             }
 
-            float error = abs((misWeight - basePath.mMisWeight) / basePath.mMisWeight);
-            if (error > 1e-6) {
-                print("    w: expected, actual, error", float3(basePath.mMisWeight, misWeight, error));
-                IncrementCounter(DebugCounterType::eMisWeightDebug);//, max(1, uint(saturate(error)*1e4)));
-            }
+            print("    mis base, shifted, error", float3(basePath.mMisWeight, misWeight, abs((misWeight - basePath.mMisWeight) / basePath.mMisWeight)));
             print("    bounces, cameraBounces, prefixBounces, s.bounces", uint4(basePath.mBounces, cameraBounces, basePath.mPrefixBounces, s.bounces));
         }
+        #endif
 
         result = basePath;
         result.mContribution = s.throughput * newSuffix.mContribution;

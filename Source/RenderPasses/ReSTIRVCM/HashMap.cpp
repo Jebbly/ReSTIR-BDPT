@@ -36,10 +36,12 @@ bool GPUHashMap::prepareResources(const ShaderVar& var, const uint cellCount, co
         changed = true;
     }
 
-    if (!mpData || mpData->getElementCount() != maxSize)
+    uint elementSize = var["mData"].getType()->unwrapArray()->asResourceType()->getSize();
+
+    if (!mpData || mpData->getElementCount() != maxSize || mpData->getElementSize() != elementSize)
     {
-        mpData            = mpDevice->createStructuredBuffer(var["mData"]       , maxSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-        mpSortedData      = mpDevice->createStructuredBuffer(var["mSortedData"] , maxSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+        mpData            = mpDevice->createStructuredBuffer(elementSize,         maxSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
+        mpSortedData      = mpDevice->createStructuredBuffer(elementSize,         maxSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
         mpDataIndices     = mpDevice->createStructuredBuffer(var["mDataIndices"], maxSize, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
         changed = true;
     }

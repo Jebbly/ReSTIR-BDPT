@@ -73,7 +73,13 @@ void main(uint3 DTid: SV_DispatchThreadID)
     // Compute error based on the current options.
     float3 diff = src - gt;
 
-    if (gComputePercentage) diff = diff / select(gt > 0, gt, 1);
+    if (gComputePercentage)
+    {
+        uint w, h, l;
+        gReference.GetDimensions(0, w, h, l);
+        float3 o = 0.01 * gReference.Load(int3(0, 0, l - 1)).rgb;
+        diff = diff / select(gt > 0, gt + o, 1);
+    }
     if (gComputeDiffSqr) diff *= abs(diff);
     if (gComputeAverage) diff.rgb = (diff.r + diff.g + diff.b) / 3.f;
 

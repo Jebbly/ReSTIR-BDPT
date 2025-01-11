@@ -425,7 +425,7 @@ void ReSTIRVCM::renderUI(Gui::Widgets& widget)
             size_t reservoirsSize = 0;
             reservoirsSize += mpReservoirs[0]->getSize();
             reservoirsSize += mpReservoirs[1]->getSize();
-            reservoirsSize += mpLastReservoirs->getSize();
+            if (mpLastReservoirs) reservoirsSize += mpLastReservoirs->getSize();
             totalSize += reservoirsSize;
             widget.text("Reservoirs: " + std::to_string(reservoirsSize/1024));
             widget.text("stride: " + std::to_string(mpReservoirs[0]->getElementSize()));
@@ -436,9 +436,12 @@ void ReSTIRVCM::renderUI(Gui::Widgets& widget)
                 totalSize += lrmSize;
                 widget.text("LRM: " + std::to_string(lrmSize/1024));
 
-                size_t crmSize = mpCausticReservoirMap->getTotalSize();
-                totalSize += crmSize;
-                widget.text("CRM: " + std::to_string(crmSize/1024));
+                if (mStaticParams.useCausticReservoirs)
+                {
+                    size_t crmSize = mpCausticReservoirMap->getTotalSize();
+                    totalSize += crmSize;
+                    widget.text("CRM: " + std::to_string(crmSize/1024));
+                }
             }
 
             if (mStaticParams.useTemporalReuse)
@@ -461,6 +464,7 @@ void ReSTIRVCM::renderUI(Gui::Widgets& widget)
             lvcSize += mpLightVertexCount->getSize();
             totalSize += lvcSize;
             widget.text("LVC: " + std::to_string(lvcSize/1024));
+            widget.text("stride: " + std::to_string(mpLightVertices->getElementSize()));
 
             if (mStaticParams.useVM && mpPhotonCellSizes) {
                 size_t pmSize = mpPhotonCellSizes->getSize() + mpPhotonCellOffsets->getSize();
@@ -683,6 +687,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
                     runtimeDirty |= group.var("Caustic reuse radius", mParams.mCausticReuseRadius, 0.f, 10.f);
                     group.tooltip("Radius in pixels for which caustic paths are allowed to be reused.", true);
                 }
+                group.separator();
             }
         }
     }
@@ -985,13 +990,15 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
 
     auto var = mpReflectTypes->getRootVar();
 
+    uint reservoirSize = var["gPathGenerator"]["mPathReservoirs0"].getType()->unwrapArray()->asResourceType()->getSize();
+
     if (mStaticParams.useResampling)
     {
-        if (!mpReservoirs[0] || mpReservoirs[0]->getElementCount() != screenPixelCount)
+        if (!mpReservoirs[0] || mpReservoirs[0]->getElementCount() != screenPixelCount || mpReservoirs[0]->getElementSize() != reservoirSize)
         {
-            mpReservoirs[0]  = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs0"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-            mpReservoirs[1]  = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPathReservoirs1"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-            mpLastReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mLastReservoirs"] , screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+            mpReservoirs[0]  = mpDevice->createStructuredBuffer(reservoirSize, screenPixelCount);
+            mpReservoirs[1]  = mpDevice->createStructuredBuffer(reservoirSize, screenPixelCount);
+            mpLastReservoirs = mpDevice->createStructuredBuffer(reservoirSize, screenPixelCount);
             mVarsChanged = true;
         }
 
@@ -1010,9 +1017,9 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
         }
 
         if (mStaticParams.useBPT && mStaticParams.useCausticReservoirs) {
-            if (!mpCausticReservoirs || mpCausticReservoirs->getElementCount() != screenPixelCount)
+            if (!mpCausticReservoirs || mpCausticReservoirs->getElementCount() != screenPixelCount || mpCausticReservoirs->getElementSize() != reservoirSize)
             {
-                mpCausticReservoirs = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mCausticReservoirs"], screenPixelCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
+                mpCausticReservoirs = mpDevice->createStructuredBuffer(reservoirSize, screenPixelCount);
                 mVarsChanged = true;
             }
         }

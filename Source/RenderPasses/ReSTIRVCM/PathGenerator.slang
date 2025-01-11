@@ -569,11 +569,8 @@ extension PathGenerator {
 ///////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////// MIS weight helpers ////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////
-#ifndef DISABLE_VC
-#define USE_BIDIRECTIONAL 1
-#define DISABLE_VC 1
-#endif
-#if USE_BIDIRECTIONAL && DISABLE_VC
+
+#if DISABLE_VC
 
 extension RecursiveMisState {
     // N_LT * p_rev / p_fwd
@@ -701,7 +698,6 @@ extension RecursiveMisState {
 }
 
 extension ReconnectionMisState {
-    // no vertex merging for now
     property float alpha_r { get { return prod_ratio; } set { prod_ratio = newValue; } }
     property float alpha_k { get { return prod_dVCM; } set { prod_dVCM = newValue; } }
 

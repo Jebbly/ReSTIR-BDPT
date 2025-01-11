@@ -165,12 +165,13 @@ void ErrorMeasurePass::execute(RenderContext* pRenderContext, const RenderData& 
             height,
             pSourceImageTexture->getFormat(),
             1,
-            1,
+            Resource::kMaxPossible,
             nullptr,
             ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess | ResourceBindFlags::RenderTarget
         );
         FALCOR_ASSERT(mpReferenceTexture);
         pRenderContext->blit(pSourceImageTexture->getSRV(), mpReferenceTexture->getRTV());
+        mpReferenceTexture->generateMips(pRenderContext);
         mCaptureReference = false;
         mUseLoadedReference = true;
         mRunningAvgError = -1.f; // Mark running error values as invalid.
@@ -406,7 +407,7 @@ bool ErrorMeasurePass::loadReference()
 
     // TODO: it would be nice to also be able to take the reference image as an input.
     std::filesystem::path resolvedPath = AssetResolver::getDefaultResolver().resolvePath(mReferenceImagePath);
-    mpReferenceTexture = Texture::createFromFile(mpDevice, resolvedPath, false /* no MIPs */, false /* linear color */);
+    mpReferenceTexture = Texture::createFromFile(mpDevice, resolvedPath, true /* Generate mips */, false /* linear color */);
     if (!mpReferenceTexture)
     {
         logWarning("Failed to load texture from '{}'", mReferenceImagePath);
