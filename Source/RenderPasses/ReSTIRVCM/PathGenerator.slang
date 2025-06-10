@@ -970,7 +970,9 @@ extension PathGenerator {
         CachedVertexData lastVertex = {};
 
         RecursiveMisState mis = {};
+        #if USE_RECONNECTION_MIS
         ReconnectionMisState rcvMis = {};
+        #endif
 
         PackedPathVertex rcv = {};
         float3 throughputAtRcv = 0;
@@ -1185,6 +1187,7 @@ extension PathGenerator {
         // compute mis weight
         const float misWeight = s.mis.EvalDirectLightMIS(directPdfW, emissionPdfW, f, cosOut, cosLight);
         MisEvalData misEvalArgs = {};
+        #if USE_RECONNECTION_MIS
         misEvalArgs.reconnectionMis = s.rcvMis;
         misEvalArgs.directPdfW = directPdfW;
         misEvalArgs.emissionPdfW = emissionPdfW;
@@ -1192,6 +1195,7 @@ extension PathGenerator {
         misEvalArgs.cameraScatterRevPdfW = f.mRevPdfW;
         misEvalArgs.cosCam = cosOut;
         misEvalArgs.cosLight = cosLight;
+        #endif
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -1324,6 +1328,7 @@ extension PathGenerator {
 
         const float misWeight = s.mis.EvalVertexConnectionMIS(v.mis, r, f, cosCam, cosLight, invDist2);
         MisEvalData misEvalArgs = {};
+        #if USE_RECONNECTION_MIS
         misEvalArgs.reconnectionMis = s.rcvMis;
         misEvalArgs.lightSubpathMis = v.mis;
         misEvalArgs.lightScatterFwdPdfW = r.mFwdPdfW;
@@ -1333,6 +1338,7 @@ extension PathGenerator {
         misEvalArgs.cosCam = cosCam;
         misEvalArgs.cosLight = cosLight;
         misEvalArgs.invDist2 = invDist2;
+        #endif
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -1418,10 +1424,12 @@ extension PathGenerator {
 
         const float misWeight = s.mis.EvalVertexMergingMIS(v.mis, f);
         MisEvalData misEvalArgs = {};
+        #if USE_RECONNECTION_MIS
         misEvalArgs.reconnectionMis = s.rcvMis;
         misEvalArgs.lightSubpathMis = v.mis;
         misEvalArgs.cameraScatterFwdPdfW = f.mFwdPdfW;
         misEvalArgs.cameraScatterRevPdfW = f.mRevPdfW;
+        #endif
 
         float3 suffixContrib;
         float3 suffixDir;
@@ -1518,10 +1526,14 @@ extension PathGenerator {
 
         if (!gUseResampling) integrationWeight /= mParams.mLightSubpathCount;
 
+        bool caustic = s.deltaRcv || s.rcvDist < mParams.mReconnectionDistance;
+
         const float misWeight = s.mis.EvalLightTraceMIS(f.mRevPdfW, cameraPdfA);
         MisEvalData misEvalArgs = {};
+        #if USE_RECONNECTION_MIS
         misEvalArgs.reconnectionMis = s.rcvMis;
-        misEvalArgs.lightSubpathMis = s.deltaRcv ? s.mis : s.lastVertex.mis;
+        misEvalArgs.lightSubpathMis = caustic ? s.mis : s.lastVertex.mis;
+        #endif
 
         /*{
             const uint2 cached = gPixelDebugPixel;
@@ -1531,7 +1543,7 @@ extension PathGenerator {
         }*/
 
         PathSuffix suffix = {};
-        if (s.deltaRcv) {
+        if (caustic) {
             // if the rcv is unconnectable, this is a caustic light path and we store the primary vertex as the rcv instead.
             suffix = PathSuffix::Create(
                 s.throughput,
@@ -1577,7 +1589,7 @@ extension PathGenerator {
             0,
             s.id,
             suffix,
-            s.deltaRcv ? PathFlags::eCausticLightPath : PathFlags::eNonCausticLightPath);
+            caustic ? PathFlags::eCausticLightPath : PathFlags::eNonCausticLightPath);
 
         return result;
     }
@@ -1606,11 +1618,13 @@ extension PathGenerator {
 
         float misWeight = s.mis.EvalCameraTraceMIS(s.lastVertex.scatterFwdPdfW, directPdfA, directPdfW, emissionPdfW);
         MisEvalData misEvalArgs = {};
+        #if USE_RECONNECTION_MIS
         misEvalArgs.reconnectionMis = s.rcvMis;
         misEvalArgs.cameraScatterFwdPdfW = s.lastVertex.scatterFwdPdfW;
         misEvalArgs.directPdfA = directPdfA;
         misEvalArgs.directPdfW = directPdfW;
         misEvalArgs.emissionPdfW = emissionPdfW;
+        #endif
 
         PathSuffix suffix = {};
         const bool hasRcv = s.rcvFound;
@@ -1880,13 +1894,15 @@ extension PathGenerator {
             }
         }
 
-        if (s.rcvFound && gUseReconnectionMIS) {
+        #if USE_RECONNECTION_MIS
+        if (gUseReconnectionMIS && s.rcvFound) {
             const float cosOut = s.lastVertex.HasNormal() ? abs(dot(s.lastVertex.normal, vertex.GetDirIn())) : 1;
             s.rcvMis.Update( s.mis,
                 s.lastVertex.scatterFwdPdfW, s.lastVertex.scatterRevPdfW,
                 cosIn, cosOut, vertex.mVertex.mRayDistance,
                 int(s.bounces) - int(s.prefixBounces + 2) );
         }
+        #endif
     }
 
     // Sample the BSDF and trace a ray to find the next vertex.
@@ -2034,11 +2050,15 @@ extension PathGenerator {
                     const PathSample ps = ConnectToCamera(s, vertex, pixelCoord, weight);
                     if (ps.IsValid() && weight > 0 && all(pixelCoord >= 0) && all(pixelCoord < mParams.mOutputDim)) {
                         DebugSetPixel(pixelCoord);
-                        if (!gUseResampling) {
-                            print("Found path. contrib:", ps.mContribution);
+                        if (!gUseResampling)
+                        {
+                            print("Found path. contrib:", luminance(ps.mContribution) * ps.mMisWeight);
+                            print("\tW:", weight);
                             print("\tLight subpath vertices:", ps.mSuffix.mLightSubpath.mVertexCount);
                             print("\tMerge:", ps.HasFlag(PathFlags::eVertexMerging));
                             print("\tPrefix bounces:", ps.mPrefixBounces);
+                            print("\trcv dist:", s.rcvDist);
+                            print("\tcaustic:", ps.HasFlag(PathFlags::eCausticLightPath));
                         }
                         DebugSetPixel(-1);
 

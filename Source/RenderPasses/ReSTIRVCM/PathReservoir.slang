@@ -112,6 +112,7 @@ struct MisEvalData {
     float directPdfW = 0;
     float directPdfA = 0;
 };
+static const uint MisEvalDataSize = sizeof(MisEvalData);
 
 struct PathSuffix {
     PackedPathVertex mVertex = {};          ///< First vertex in the suffix.

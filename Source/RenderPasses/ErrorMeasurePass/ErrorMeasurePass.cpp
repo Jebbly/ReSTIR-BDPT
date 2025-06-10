@@ -196,7 +196,7 @@ void ErrorMeasurePass::execute(RenderContext* pRenderContext, const RenderData& 
         pRenderContext->blit(pSourceImageTexture->getSRV(), pOutputImageTexture->getRTV());
         break;
     case OutputId::Reference:
-        pRenderContext->blit(pReference->getSRV(), pOutputImageTexture->getRTV());
+        pRenderContext->blit(pReference->getSRV(0, 1), pOutputImageTexture->getRTV());
         break;
     case OutputId::Difference:
         pRenderContext->blit(mpDifferenceTexture->getSRV(), pOutputImageTexture->getRTV());
