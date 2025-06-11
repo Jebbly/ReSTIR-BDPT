@@ -1,14 +1,14 @@
-    #include "ReSTIRVCM.h"
+#include "ReSTIRBDPT.h"
 #include "RenderGraph/RenderPassHelpers.h"
 #include "RenderGraph/RenderPassStandardFlags.h"
 #include "Rendering/Lights/EmissiveUniformSampler.h"
 
 namespace
 {
-    const std::string kVCMPassFilename           = "RenderPasses/ReSTIRVCM/VCM.cs.slang";
-    const std::string kTemporalReusePassFilename = "RenderPasses/ReSTIRVCM/TemporalReuse.cs.slang";
-    const std::string kSpatialReusePassFilename  = "RenderPasses/ReSTIRVCM/SpatialReuse.cs.slang";
-    const std::string kReflectTypesFile          = "RenderPasses/ReSTIRVCM/ReflectTypes.cs.slang";
+    const std::string kBDPTPassFilename           = "RenderPasses/ReSTIRBDPT/BDPT.cs.slang";
+    const std::string kTemporalReusePassFilename = "RenderPasses/ReSTIRBDPT/TemporalReuse.cs.slang";
+    const std::string kSpatialReusePassFilename  = "RenderPasses/ReSTIRBDPT/SpatialReuse.cs.slang";
+    const std::string kReflectTypesFile          = "RenderPasses/ReSTIRBDPT/ReflectTypes.cs.slang";
 
     // Render pass inputs and outputs.
     const std::string kInputVBuffer       = "vbuffer";
@@ -59,23 +59,23 @@ namespace
 
 extern "C" FALCOR_API_EXPORT void registerPlugin(Falcor::PluginRegistry& registry)
 {
-    registry.registerClass<RenderPass, ReSTIRVCM>();
-    ScriptBindings::registerBinding(ReSTIRVCM::registerBindings);
+    registry.registerClass<RenderPass, ReSTIRBDPT>();
+    ScriptBindings::registerBinding(ReSTIRBDPT::registerBindings);
 }
 
-void ReSTIRVCM::registerBindings(pybind11::module& m)
+void ReSTIRBDPT::registerBindings(pybind11::module& m)
 {
-    pybind11::class_<ReSTIRVCM, RenderPass, ref<ReSTIRVCM>> pass(m, "ReSTIRVCM");
-    pass.def("reset", &ReSTIRVCM::reset);
+    pybind11::class_<ReSTIRBDPT, RenderPass, ref<ReSTIRBDPT>> pass(m, "ReSTIRBDPT");
+    pass.def("reset", &ReSTIRBDPT::reset);
 }
 
-ReSTIRVCM::ReSTIRVCM(ref<Device> pDevice, const Properties& props)
+ReSTIRBDPT::ReSTIRBDPT(ref<Device> pDevice, const Properties& props)
     : RenderPass(pDevice)
 {
     if (!mpDevice->isShaderModelSupported(ShaderModel::SM6_5))
-        FALCOR_THROW("ReSTIRVCM requires Shader Model 6.5 support.");
+        FALCOR_THROW("ReSTIRBDPT requires Shader Model 6.5 support.");
     if (!mpDevice->isFeatureSupported(Device::SupportedFeatures::RaytracingTier1_1))
-        FALCOR_THROW("ReSTIRVCM requires Raytracing Tier 1.1 support.");
+        FALCOR_THROW("ReSTIRBDPT requires Raytracing Tier 1.1 support.");
 
     parseProperties(props);
     validateOptions();
@@ -91,7 +91,7 @@ ReSTIRVCM::ReSTIRVCM(ref<Device> pDevice, const Properties& props)
     mpCausticReservoirMap = std::make_unique<GPUHashMap>(mpDevice);
 }
 
-void ReSTIRVCM::setProperties(const Properties& props)
+void ReSTIRBDPT::setProperties(const Properties& props)
 {
     parseProperties(props);
     validateOptions();
@@ -101,7 +101,7 @@ void ReSTIRVCM::setProperties(const Properties& props)
     mOptionsChanged = true;
 }
 
-void ReSTIRVCM::parseProperties(const Properties& props)
+void ReSTIRBDPT::parseProperties(const Properties& props)
 {
     for (const auto& [key, value] : props)
     {
@@ -133,11 +133,11 @@ void ReSTIRVCM::parseProperties(const Properties& props)
         else if (key == kRoughnessThreshold) mParams.mReconnectionRoughness = value;
         else if (key == kSpatialRadius) mParams.mSpatialReuseRadius = value;
 
-        else logWarning("Unknown property '{}' in ReSTIRVCM properties.", key);
+        else logWarning("Unknown property '{}' in ReSTIRBDPT properties.", key);
     }
 }
 
-void ReSTIRVCM::validateOptions()
+void ReSTIRBDPT::validateOptions()
 {
     mParams.mMaxBounces = std::min(mParams.mMaxBounces, PathGeneratorParams::kMaxBounces);
     mParams.mMaxDiffuseBounces = std::min(mParams.mMaxDiffuseBounces, mParams.mMaxBounces);
@@ -166,7 +166,7 @@ void ReSTIRVCM::validateOptions()
     }
 }
 
-Properties ReSTIRVCM::getProperties() const
+Properties ReSTIRBDPT::getProperties() const
 {
     if (auto lightBVHSampler = dynamic_cast<LightBVHSampler*>(mpEmissiveSampler.get()))
     {
@@ -206,7 +206,7 @@ Properties ReSTIRVCM::getProperties() const
     return props;
 }
 
-RenderPassReflection ReSTIRVCM::reflect(const CompileData& compileData)
+RenderPassReflection ReSTIRBDPT::reflect(const CompileData& compileData)
 {
     RenderPassReflection reflector;
     const uint2 sz = RenderPassHelpers::calculateIOSize(RenderPassHelpers::IOSize::Default, { 512, 512 }, compileData.defaultTexDims);
@@ -216,7 +216,7 @@ RenderPassReflection ReSTIRVCM::reflect(const CompileData& compileData)
     return reflector;
 }
 
-void ReSTIRVCM::setFrameDim(const uint2 mOutputDim)
+void ReSTIRBDPT::setFrameDim(const uint2 mOutputDim)
 {
     auto prevFrameDim = mParams.mOutputDim;
 
@@ -228,7 +228,7 @@ void ReSTIRVCM::setFrameDim(const uint2 mOutputDim)
     }
 }
 
-void ReSTIRVCM::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene)
+void ReSTIRBDPT::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene)
 {
     mpScene = pScene;
     mFrameCount = 0;
@@ -241,14 +241,14 @@ void ReSTIRVCM::setScene(RenderContext* pRenderContext, const ref<Scene>& pScene
     {
         if (pScene->hasGeometryType(Scene::GeometryType::Custom))
         {
-            logWarning("ReSTIRVCM: This render pass does not support custom primitives.");
+            logWarning("ReSTIRBDPT: This render pass does not support custom primitives.");
         }
 
         validateOptions();
     }
 }
 
-void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderData)
+void ReSTIRBDPT::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
     if (!beginFrame(pRenderContext, renderData)) return;
 
@@ -408,7 +408,7 @@ void ReSTIRVCM::execute(RenderContext* pRenderContext, const RenderData& renderD
     endFrame(pRenderContext, renderData);
 }
 
-void ReSTIRVCM::renderUI(Gui::Widgets& widget)
+void ReSTIRBDPT::renderUI(Gui::Widgets& widget)
 {
     bool dirty = false;
 
@@ -504,7 +504,7 @@ void ReSTIRVCM::renderUI(Gui::Widgets& widget)
     }
 }
 
-bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
+bool ReSTIRBDPT::renderRenderingUI(Gui::Widgets& widget)
 {
     bool dirty = false;
     bool runtimeDirty = false;
@@ -696,7 +696,7 @@ bool ReSTIRVCM::renderRenderingUI(Gui::Widgets& widget)
     return dirty || runtimeDirty;
 }
 
-bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
+bool ReSTIRBDPT::renderDebugUI(Gui::Widgets& widget)
 {
     bool dirty = false;
 
@@ -792,11 +792,11 @@ bool ReSTIRVCM::renderDebugUI(Gui::Widgets& widget)
     return dirty;
 }
 
-bool ReSTIRVCM::onMouseEvent(const MouseEvent& mouseEvent)
+bool ReSTIRBDPT::onMouseEvent(const MouseEvent& mouseEvent)
 {
     return mpPixelDebug->onMouseEvent(mouseEvent);
 }
-bool ReSTIRVCM::onKeyEvent(const KeyboardEvent& keyEvent)
+bool ReSTIRBDPT::onKeyEvent(const KeyboardEvent& keyEvent)
 {
     if (keyEvent.type == KeyboardEvent::Type::KeyPressed)
     {
@@ -839,13 +839,13 @@ bool ReSTIRVCM::onKeyEvent(const KeyboardEvent& keyEvent)
     return false;
 }
 
-void ReSTIRVCM::reset()
+void ReSTIRBDPT::reset()
 {
     mFrameCount = 0;
     mResetTemporalHistory = true;
 }
 
-void ReSTIRVCM::resetPrograms()
+void ReSTIRBDPT::resetPrograms()
 {
     mpReflectTypes = nullptr;
     mpSampleCameraPathsPass = nullptr;
@@ -860,7 +860,7 @@ void ReSTIRVCM::resetPrograms()
     mRecompile = true;
 }
 
-void ReSTIRVCM::updatePrograms()
+void ReSTIRBDPT::updatePrograms()
 {
     FALCOR_ASSERT(mpScene);
 
@@ -892,7 +892,7 @@ void ReSTIRVCM::updatePrograms()
     if (!mpSampleCameraPathsPass)
     {
         ProgramDesc desc = baseDesc;
-        desc.addShaderLibrary(kVCMPassFilename).csEntry("SampleCameraPaths");
+        desc.addShaderLibrary(kBDPTPassFilename).csEntry("SampleCameraPaths");
         mpSampleCameraPathsPass = ComputePass::create(mpDevice, desc, defines, false);
     }
     preparePass(mpSampleCameraPathsPass);
@@ -902,7 +902,7 @@ void ReSTIRVCM::updatePrograms()
         if (!mpSampleLightPathsPass)
         {
             ProgramDesc desc = baseDesc;
-            desc.addShaderLibrary(kVCMPassFilename).csEntry("SampleLightPaths");
+            desc.addShaderLibrary(kBDPTPassFilename).csEntry("SampleLightPaths");
             mpSampleLightPathsPass = ComputePass::create(mpDevice, desc, defines, false);
         }
         preparePass(mpSampleLightPathsPass);
@@ -912,7 +912,7 @@ void ReSTIRVCM::updatePrograms()
             if (!mpLightReservoirResolvePass)
             {
                 ProgramDesc desc = baseDesc;
-                desc.addShaderLibrary(kVCMPassFilename).csEntry("ResolveLightTraceReservoirs");
+                desc.addShaderLibrary(kBDPTPassFilename).csEntry("ResolveLightTraceReservoirs");
                 mpLightReservoirResolvePass = ComputePass::create(mpDevice, desc, defines, false);
             }
             preparePass(mpLightReservoirResolvePass);
@@ -965,7 +965,7 @@ void ReSTIRVCM::updatePrograms()
     if (!mpCopyRadiancePass)
     {
         ProgramDesc desc = baseDesc;
-        desc.addShaderLibrary(kVCMPassFilename).csEntry("OutputRadiance");
+        desc.addShaderLibrary(kBDPTPassFilename).csEntry("OutputRadiance");
         mpCopyRadiancePass = ComputePass::create(mpDevice, desc, defines, false);
     }
     preparePass(mpCopyRadiancePass);
@@ -982,7 +982,7 @@ void ReSTIRVCM::updatePrograms()
     mRecompile = false;
 }
 
-void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData& renderData)
+void ReSTIRBDPT::prepareResources(RenderContext* pRenderContext, const RenderData& renderData)
 {
     const uint32_t screenPixelCount = mParams.mOutputDim.x * mParams.mOutputDim.y;
     if (mStaticParams.disableLVC) mParams.mLightSubpathCount = screenPixelCount;
@@ -1095,7 +1095,7 @@ void ReSTIRVCM::prepareResources(RenderContext* pRenderContext, const RenderData
     }
 }
 
-void ReSTIRVCM::resetLighting()
+void ReSTIRBDPT::resetLighting()
 {
     // Retain the options for the emissive sampler.
     if (auto lightBVHSampler = dynamic_cast<LightBVHSampler*>(mpEmissiveSampler.get()))
@@ -1108,7 +1108,7 @@ void ReSTIRVCM::resetLighting()
     mRecompile = true;
 }
 
-void ReSTIRVCM::prepareMaterials(RenderContext* pRenderContext)
+void ReSTIRBDPT::prepareMaterials(RenderContext* pRenderContext)
 {
     // This functions checks for scene changes that require shader recompilation.
     // Whenever materials or geometry is added/removed to the scene, we reset the shader programs to trigger
@@ -1121,7 +1121,7 @@ void ReSTIRVCM::prepareMaterials(RenderContext* pRenderContext)
     }
 }
 
-bool ReSTIRVCM::prepareLighting(RenderContext* pRenderContext)
+bool ReSTIRBDPT::prepareLighting(RenderContext* pRenderContext)
 {
     bool lightingChanged = false;
 
@@ -1220,7 +1220,7 @@ bool ReSTIRVCM::prepareLighting(RenderContext* pRenderContext)
     return lightingChanged;
 }
 
-void ReSTIRVCM::bindShaderData(const ShaderVar& var, const RenderData& renderData) const
+void ReSTIRBDPT::bindShaderData(const ShaderVar& var, const RenderData& renderData) const
 {
     // Bind static resources that don't change per frame.
     if (mVarsChanged)
@@ -1274,7 +1274,7 @@ void ReSTIRVCM::bindShaderData(const ShaderVar& var, const RenderData& renderDat
     var["mPhotonMap"]["gHashOffset"] = mFrameCount;
 }
 
-bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& renderData)
+bool ReSTIRBDPT::beginFrame(RenderContext* pRenderContext, const RenderData& renderData)
 {
     if (mPauseRendering)
     {
@@ -1313,7 +1313,7 @@ bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& rend
 
     if (mEnabled && resolutionMismatch)
     {
-        logError("ReSTIRVCM I/O sizes don't match. The pass will be disabled.");
+        logError("ReSTIRBDPT I/O sizes don't match. The pass will be disabled.");
         mEnabled = false;
     }
 
@@ -1403,7 +1403,7 @@ bool ReSTIRVCM::beginFrame(RenderContext* pRenderContext, const RenderData& rend
     return true;
 }
 
-void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& renderData)
+void ReSTIRBDPT::endFrame(RenderContext* pRenderContext, const RenderData& renderData)
 {
     // Copy pixel stats to outputs if available.
     if (mStaticParams.useTemporalReuse && !mFreezeHistory)
@@ -1456,7 +1456,7 @@ void ReSTIRVCM::endFrame(RenderContext* pRenderContext, const RenderData& render
     }
 }
 
-void ReSTIRVCM::preparePass(RenderContext* pRenderContext, const RenderData& renderData, ComputePass& pass) const
+void ReSTIRBDPT::preparePass(RenderContext* pRenderContext, const RenderData& renderData, ComputePass& pass) const
 {
     ref<Program> program = pass.getProgram();
 
@@ -1475,7 +1475,7 @@ void ReSTIRVCM::preparePass(RenderContext* pRenderContext, const RenderData& ren
     pass.addDefine("USE_VIEW_DIR", (mpScene->getCamera()->getApertureRadius() > 0 && renderData[kInputViewDir] != nullptr) ? "1" : "0");
 }
 
-DefineList ReSTIRVCM::StaticParams::getDefines(const ReSTIRVCM& owner) const
+DefineList ReSTIRBDPT::StaticParams::getDefines(const ReSTIRBDPT& owner) const
 {
     DefineList defines;
 

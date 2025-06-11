@@ -18,14 +18,14 @@ using namespace Falcor;
 
 /** Fast path tracer.
 */
-class ReSTIRVCM : public RenderPass
+class ReSTIRBDPT : public RenderPass
 {
 public:
-    FALCOR_PLUGIN_CLASS(ReSTIRVCM, "ReSTIRVCM", "ReSTIR VCM.");
+    FALCOR_PLUGIN_CLASS(ReSTIRBDPT, "ReSTIRBDPT", "ReSTIR BDPT.");
 
-    static ref<ReSTIRVCM> create(ref<Device> pDevice, const Properties& props) { return make_ref<ReSTIRVCM>(pDevice, props); }
+    static ref<ReSTIRBDPT> create(ref<Device> pDevice, const Properties& props) { return make_ref<ReSTIRBDPT>(pDevice, props); }
 
-    ReSTIRVCM(ref<Device> pDevice, const Properties& props);
+    ReSTIRBDPT(ref<Device> pDevice, const Properties& props);
 
     virtual void setProperties(const Properties& props) override;
     virtual Properties getProperties() const override;
@@ -93,7 +93,7 @@ private:
 
         EmissiveLightSamplerType emissiveSampler = EmissiveLightSamplerType::Power;
 
-        DefineList getDefines(const ReSTIRVCM& owner) const;
+        DefineList getDefines(const ReSTIRBDPT& owner) const;
     };
 
     // Configuration

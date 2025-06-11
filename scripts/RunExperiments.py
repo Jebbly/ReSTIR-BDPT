@@ -2,10 +2,10 @@ from falcor import *
 import os
 
 def render_graph_ReSTIRVCM():
-    g = RenderGraph("ReSTIRVCM")
+    g = RenderGraph("ReSTIRBDPT")
 
-    ReSTIRVCM = createPass("ReSTIRVCM", {})
-    g.addPass(ReSTIRVCM, "ReSTIRVCM")
+    ReSTIRBDPT = createPass("ReSTIRBDPT", {})
+    g.addPass(ReSTIRBDPT, "ReSTIRBDPT")
 
     VBufferRT = createPass("VBufferRT", {
         'adjustShadingNormals': False,
@@ -23,10 +23,10 @@ def render_graph_ReSTIRVCM():
     ErrorMeasurePass = createPass("ErrorMeasurePass")
     g.addPass(ErrorMeasurePass, "ErrorMeasurePass")
 
-    g.addEdge("VBufferRT.vbuffer",     "ReSTIRVCM.vbuffer")
-    g.addEdge("VBufferRT.viewW",       "ReSTIRVCM.viewW")
-    g.addEdge("VBufferRT.mvec",        "ReSTIRVCM.mvec")
-    g.addEdge("ReSTIRVCM.color",       "AccumulatePass.input")
+    g.addEdge("VBufferRT.vbuffer",     "ReSTIRBDPT.vbuffer")
+    g.addEdge("VBufferRT.viewW",       "ReSTIRBDPT.viewW")
+    g.addEdge("VBufferRT.mvec",        "ReSTIRBDPT.mvec")
+    g.addEdge("ReSTIRBDPT.color",       "AccumulatePass.input")
     g.addEdge("AccumulatePass.output", "ErrorMeasurePass.Source")
     g.addEdge("ErrorMeasurePass.Output", "ToneMapper.src")
 
@@ -73,7 +73,7 @@ def Render(
         m.clock.step()
 
 # Full ReSTIR BDPT, 1spp
-graph.updatePass("ReSTIRVCM", {
+graph.updatePass("ReSTIRBDPT", {
     "useBPT":               True,
     "numLightSubpaths":     1920 * 1080,
     "enableResampling":     True,

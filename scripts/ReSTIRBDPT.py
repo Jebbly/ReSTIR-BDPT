@@ -2,10 +2,10 @@ from falcor import *
 import os
 
 def render_graph_PathTracer():
-    g = RenderGraph("ReSTIRVCM")
+    g = RenderGraph("ReSTIRBDPT")
 
-    ReSTIRVCM = createPass("ReSTIRVCM", {})
-    g.addPass(ReSTIRVCM, "ReSTIRVCM")
+    ReSTIRBDPT = createPass("ReSTIRBDPT", {})
+    g.addPass(ReSTIRBDPT, "ReSTIRBDPT")
 
     VBufferRT = createPass("VBufferRT", {
         'adjustShadingNormals': False,
@@ -23,10 +23,10 @@ def render_graph_PathTracer():
     ErrorMeasurePass = createPass("ErrorMeasurePass")
     g.addPass(ErrorMeasurePass, "ErrorMeasurePass")
 
-    g.addEdge("VBufferRT.vbuffer",       "ReSTIRVCM.vbuffer")
-    g.addEdge("VBufferRT.viewW",         "ReSTIRVCM.viewW")
-    g.addEdge("VBufferRT.mvec",          "ReSTIRVCM.mvec")
-    g.addEdge("ReSTIRVCM.color",         "AccumulatePass.input")
+    g.addEdge("VBufferRT.vbuffer",       "ReSTIRBDPT.vbuffer")
+    g.addEdge("VBufferRT.viewW",         "ReSTIRBDPT.viewW")
+    g.addEdge("VBufferRT.mvec",          "ReSTIRBDPT.mvec")
+    g.addEdge("ReSTIRBDPT.color",         "AccumulatePass.input")
     g.addEdge("VBufferRT.mvec",          "AccumulatePass.mvec")
     g.addEdge("VBufferRT.posW",          "AccumulatePass.posW")
     g.addEdge("VBufferRT.normalW",       "AccumulatePass.normalW")

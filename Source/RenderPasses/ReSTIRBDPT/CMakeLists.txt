@@ -1,6 +1,6 @@
-add_plugin(ReSTIRVCM)
+add_plugin(ReSTIRBDPT)
 
-target_sources(ReSTIRVCM PRIVATE
+target_sources(ReSTIRBDPT PRIVATE
     BitfieldMacros.slangh
     HashMap.slang
     HashMap.cs.slang
@@ -12,13 +12,13 @@ target_sources(ReSTIRVCM PRIVATE
     PathReservoir.slang
     PhotonMap.slang
     ReflectTypes.cs.slang
-    ReSTIRVCM.cpp
-    ReSTIRVCM.h
+    ReSTIRBDPT.cpp
+    ReSTIRBDPT.h
     SpatialReuse.cs.slang
     TemporalReuse.cs.slang
-    VCM.cs.slang
+    BDPT.cs.slang
 )
 
-target_copy_shaders(ReSTIRVCM RenderPasses/ReSTIRVCM)
+target_copy_shaders(ReSTIRBDPT RenderPasses/ReSTIRBDPT)
 
-target_source_group(ReSTIRVCM "RenderPasses")
+target_source_group(ReSTIRBDPT "RenderPasses")

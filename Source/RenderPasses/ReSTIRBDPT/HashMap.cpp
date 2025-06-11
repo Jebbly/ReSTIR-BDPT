@@ -3,7 +3,7 @@
 
 namespace
 {
-    const char kShaderFile[] = "RenderPasses/ReSTIRVCM/HashMap.cs.slang";
+    const char kShaderFile[] = "RenderPasses/ReSTIRBDPT/HashMap.cs.slang";
 }
 
 namespace Falcor
