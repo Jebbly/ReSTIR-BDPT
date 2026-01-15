@@ -40,5 +40,4 @@ PathTracer = render_graph_PathTracer()
 try: m.addGraph(PathTracer)
 except NameError: None
 
-#if os.path.exists('D:/3d/obj/VeachAjar/VeachAjar.pyscene'):
-#    m.loadScene('D:/3d/obj/VeachAjar/VeachAjar.pyscene')
+m.loadScene(os.path.join(os.path.dirname(__file__), os.path.pardir, "scene", "veach-bidir.pyscene"))

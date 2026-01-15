@@ -3,6 +3,11 @@
 This is the official implementation for the 2025 ACM TOG paper "ReSTIR BDPT: Bidirectional ReSTIR Path Tracing with Caustics".
 ReSTIR BDPT is implemented as a new pass called ReSTIRBDPT. ReSTIR BDPT specific code is found in `Source/RenderPasses/ReSTIRBDPT`.
 
+## Rough glass bug
+When rendering rough glass,
+
+# Falcor
+
 ## Running
 To run, follow the Falcor build instructions below, then launch Mogwai and load the ReSTIRBDPT script in `scripts/ReSTIRBDPT.py`, then load a scene.
 

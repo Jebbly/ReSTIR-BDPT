@@ -1,0 +1,10 @@
+sceneBuilder.importScene("veach-bidir.gltf")
+
+ceilingLight = sceneBuilder.getMaterial("Ceiling Light")
+ceilingLight.emissiveFactor = 523.2579956054688
+
+light = sceneBuilder.getMaterial("Main Light")
+light.emissiveFactor = 12048.2001953125
+
+glass = sceneBuilder.getMaterial("Glass")
+glass.specularTransmission = 1.0
