@@ -1,10 +1,12 @@
 # ReSTIR BDPT
 
-This is the official implementation for the 2025 ACM TOG paper "ReSTIR BDPT: Bidirectional ReSTIR Path Tracing with Caustics".
+This is the official implementation for the 2025 ACM TOG paper [ReSTIR BDPT: Bidirectional ReSTIR Path Tracing with Caustics](https://dl.acm.org/doi/10.1145/3744898).
 ReSTIR BDPT is implemented as a new pass called ReSTIRBDPT. ReSTIR BDPT specific code is found in `Source/RenderPasses/ReSTIRBDPT`.
 
+To run the code, first build the project, then run Mogwai.exe and load `scripts/ReSTIRBDPT.py`.
+
 ## Rough glass bug
-When rendering rough glass,
+When rendering rough glass, a bug causes some bias to appear in the UCW term, which compounds between frames and dominates the image. This is caused a bug in the shift mapping code and is not a result of the ReSTIR BDPT theory.
 
 # Falcor
 
