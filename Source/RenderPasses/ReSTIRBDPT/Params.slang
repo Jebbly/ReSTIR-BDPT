@@ -81,13 +81,10 @@ struct PathGeneratorParams {
     uint  mMaxDiffuseBounces = 8;
     float mTerminationProbability = .2f;
     uint  mLightSubpathCount = 1000000;
-    uint  mPhotonCellCount   = 10000000;
-    float mMergeRadius       = 0.0025f;
-    float mDynamicMergeRadius = 2.f;
 
     float mReconnectionDistance  = 0.3f;
     float mReconnectionRoughness = 0.08f; ///< sqrt(kMinGGXAlpha)
-    float mCausticReuseRadius = 0.f;      ///< in pixels
+    float mCausticReuseRadius = 0.f;      ///< in pixels. introduces bias.
 
     uint  mSpatialReuseSamples = 2;
     float mSpatialReuseRadius  = 30.f;
@@ -97,7 +94,6 @@ struct PathGeneratorParams {
     int mDebugTotalVertices  = -1; ///< Only render paths with this many vertices.
     int mDebugLightVertices  = -1; ///< Only render paths with this many light vertices.
     int mDebugPrefixBounces  = -1; ///< Only render paths with this many prefix bounces.
-    int mDebugDisableMerging = 0;  ///< Don't render paths that use vertex merging.
     DebugCounterType mDebugCounter = DebugCounterType::eRays;
 };
 

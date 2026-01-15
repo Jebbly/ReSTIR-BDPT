@@ -10,7 +10,7 @@ target_sources(ReSTIRBDPT PRIVATE
     Params.slang
     PathGenerator.slang
     PathReservoir.slang
-    PhotonMap.slang
+    LightVertexCache.slang
     ReflectTypes.cs.slang
     ReSTIRBDPT.cpp
     ReSTIRBDPT.h

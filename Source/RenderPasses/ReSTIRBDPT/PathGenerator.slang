@@ -10,7 +10,7 @@ import Utils.Color.ColorHelpers;
 import Utils.Debug.PixelDebug;
 import LoadShadingData;
 import HashMap;
-import PhotonMap;
+import LightVertexCache;
 __exported import Params;
 __exported import PathReservoir;
 
@@ -27,9 +27,6 @@ extension PathGenerator {
     static const bool  gSampleDirectLight             = USE_NEE;
     static const bool  gBidirectional                 = USE_BIDIRECTIONAL;
     static const bool  gShiftLightPathsToPixelCenters = SHIFT_LIGHT_PATHS_TO_CENTER;
-    static const bool  gVertexMerging                 = USE_VERTEX_MERGING;
-    static const bool  gDynamicMergeRadius            = DYNAMIC_MERGE_RADIUS;
-    static const bool  gProgressivePhotonMapping      = USE_PPM_ONLY;
     static const bool  gLightTraceOnly                = LIGHT_TRACE_ONLY;
     static const bool  gUseResampling                 = USE_RESAMPLING;
     static const bool  gUseReconnectionMIS            = USE_RECONNECTION_MIS;
@@ -56,7 +53,7 @@ struct PathGenerator {
     EmissiveLightSampler mEmissiveSampler;
 
     LightVertexCache mLightVertexCache;
-    PhotonMap        mPhotonMap;
+    LightVertexCache        mPhotonMap;
 
     RWByteAddressBuffer mAtomicRadiance;
     RWTexture2D<float4> mOutputRadiance;
@@ -361,26 +358,9 @@ extension PathGenerator {
     }
     bool DebugDisablePath(const uint bounces, const uint lightVertices, const uint prefixBounces, const bool merged) {
         if (!gDebugBPT) return false;
-        return
-            (merged && bool(mParams.mDebugDisableMerging))
-            || (mParams.mDebugTotalVertices != -1 && mParams.mDebugTotalVertices != bounces + 2)
+        return (mParams.mDebugTotalVertices != -1 && mParams.mDebugTotalVertices != bounces + 2)
             || (mParams.mDebugLightVertices != -1 && mParams.mDebugLightVertices != lightVertices)
             || (mParams.mDebugPrefixBounces != -1 && mParams.mDebugPrefixBounces != prefixBounces);
-    }
-    float GetMisVcWeightFactor() { return Mis(1.f / (sqr(mParams.mMergeRadius) * M_PI * mParams.mLightSubpathCount)); }
-    float GetMisVmWeightFactor() { return gVertexMerging ? Mis((sqr(mParams.mMergeRadius) * M_PI * mParams.mLightSubpathCount)) : 0; }
-
-    float GetMergeRadius(const float3 pos, const bool discretize = false) {
-        if (gDynamicMergeRadius) {
-            const float d = length(pos - gScene.camera.getPosition());
-            const float pixelSize = tan(2.0f * atan(0.5f * gScene.camera.data.frameHeight / gScene.camera.data.focalLength)) / mParams.mOutputDim.y;
-            float r = mParams.mDynamicMergeRadius * d * pixelSize;
-            //if (discretize) {
-            //    r = ldexp(1, int(ceil(log2(r))));
-            //}
-            return r;
-        }
-        return mParams.mMergeRadius;
     }
 
     float GetImageToSolidAngleFactor(const float3 dir, out float cosCamera) {
@@ -408,47 +388,6 @@ extension PathGenerator {
     }
 
     // IO helpers
-
-    LightSubpathVertex FindPhoton(inout SampleGenerator sg, const PathVertex vertex, out float weight) {
-        // merge with a random vertex from the 8 nearest grid cells
-        uint cell = -1;
-        weight = 0.f;
-
-        const float3 pos = vertex.GetPosition();
-        const float mergeRadius = GetMergeRadius(pos, true);
-
-        // Iterate the 8 neighbor grid cells and merge with the vertices in them.
-        // pick one random grid cell to merge with, with probability proportional to its count
-        const int3 o = int3(lerp(
-                            float3(0, 0, 0),
-                            float3(-1, -1, -1),
-                            float3(frac(pos / (2.f * mergeRadius)) < 0.5f)));
-
-        for (int x = 0; x < 2; x++) {
-            for (int y = 0; y < 2; y++) {
-                for (int z = 0; z < 2; z++) {
-                    const uint cellIndex = mPhotonMap.getCellIndex(pos, mergeRadius, mParams.mPhotonCellCount, int3(x, y, z) + o);
-                    if (cellIndex == -1)
-                        continue;
-
-                    const uint count = mPhotonMap.getCellPhotonCount(cellIndex);
-                    if (count == 0)
-                        continue;
-
-                    weight += count;
-                    if (sampleNext1D(sg) * weight < count)
-                        cell = cellIndex;
-                }
-            }
-        }
-
-        if (cell == -1) {
-            weight = 0;
-            return {};
-        }
-
-        return mLightVertexCache[mPhotonMap.getCellOffset(cell)];
-    }
 
     PackedPathVertex LoadPrimaryVertex(const uint2 id) {
         if (any(id > mParams.mOutputDim))
@@ -728,7 +667,6 @@ extension RecursiveMisState {
             const float cameraPdfW = gPathGenerator.GetImageToSolidAngleFactor(-vertex.GetDirIn(), cosAtCamera);
             dVCM = gPathGenerator.Mis(gPathGenerator.mParams.mLightSubpathCount / cameraPdfW);
             dVC = 0;
-            dVM = 0;
 
             const float cosIn = vertex.GetCosN(vertex.GetDirIn());
             const float3 d = gScene.camera.getPosition() - vertex.GetPosition();
@@ -742,7 +680,6 @@ extension RecursiveMisState {
     __init(const bool finiteEmitter, const float directPdfA, const float emissionPdfW, const float cosLight) {
         dVCM = gPathGenerator.Mis(directPdfA / emissionPdfW);
         dVC = finiteEmitter ? gPathGenerator.Mis(cosLight / emissionPdfW) : 0;
-        dVM = dVC * gPathGenerator.GetMisVcWeightFactor();
     }
 
     [mutating]
@@ -752,13 +689,11 @@ extension RecursiveMisState {
             if (connectable && !r.IsLobe(LobeType::Delta)) {
                 // SmallVCM tech. rep. (34)-(36)
                 const float invPdf = 1.f / r.mFwdPdfW;
-                dVC = gPathGenerator.Mis(cosOut * invPdf) * (dVC * gPathGenerator.Mis(r.mRevPdfW) + dVCM + gPathGenerator.GetMisVmWeightFactor());
-                dVM = gPathGenerator.Mis(cosOut * invPdf) * (dVM * gPathGenerator.Mis(r.mRevPdfW) + dVCM * gPathGenerator.GetMisVcWeightFactor() + 1);
+                dVC = gPathGenerator.Mis(cosOut * invPdf) * (dVC * gPathGenerator.Mis(r.mRevPdfW) + dVCM);
                 dVCM = gPathGenerator.Mis(invPdf);
             } else {
                 // SmallVCM tech. rep. (53)-(55)
                 dVC *= gPathGenerator.Mis(cosOut);
-                dVM *= gPathGenerator.Mis(cosOut);
                 dVCM = 0.f;
             }
         }
@@ -773,7 +708,6 @@ extension RecursiveMisState {
             const float invCosIn = 1 / gPathGenerator.Mis(cosIn);
             dVCM *= invCosIn;
             dVC  *= invCosIn;
-            dVM  *= invCosIn;
         }
     }
 
@@ -784,7 +718,7 @@ extension RecursiveMisState {
 
         if (gPathGenerator.gBidirectional) {
             const float wLight  = gPathGenerator.Mis(f.mFwdPdfW / directPdfW);
-            const float wCamera = gPathGenerator.Mis(emissionPdfW * abs(cosOut) / (directPdfW * cosLight)) * (gPathGenerator.GetMisVmWeightFactor() + dVCM + dVC * gPathGenerator.Mis(f.mRevPdfW));
+            const float wCamera = gPathGenerator.Mis(emissionPdfW * abs(cosOut) / (directPdfW * cosLight)) * (dVCM + dVC * gPathGenerator.Mis(f.mRevPdfW));
             misWeight = 1 / (wLight + 1 + wCamera);
         } else {
             // NEE MIS
@@ -799,19 +733,8 @@ extension RecursiveMisState {
 
         const float cameraBsdfDirPdfA = f.mFwdPdfW * cosLight * invDist2;
         const float lightBsdfDirPdfA  = r.mFwdPdfW * cosCam   * invDist2;
-        const float wLight  = gPathGenerator.Mis(cameraBsdfDirPdfA) * (gPathGenerator.GetMisVmWeightFactor() + v.dVCM + v.dVC * gPathGenerator.Mis(r.mRevPdfW));
-        const float wCamera = gPathGenerator.Mis(lightBsdfDirPdfA)  * (gPathGenerator.GetMisVmWeightFactor() +   dVCM +   dVC * gPathGenerator.Mis(f.mRevPdfW));
-        misWeight = 1 / (wLight + 1 + wCamera);
-
-        return misWeight;
-    }
-
-    float EvalVertexMergingMIS(const RecursiveMisState v, const ReflectanceEvalData f) {
-        float misWeight = 1;
-        if (gPathGenerator.DebugDisableMIS() || gPathGenerator.gProgressivePhotonMapping) return misWeight;
-
-        const float wLight  = v.dVCM * gPathGenerator.GetMisVcWeightFactor() + v.dVM * gPathGenerator.Mis(f.mFwdPdfW);
-        const float wCamera =   dVCM * gPathGenerator.GetMisVcWeightFactor() +   dVM * gPathGenerator.Mis(f.mRevPdfW);
+        const float wLight  = gPathGenerator.Mis(cameraBsdfDirPdfA) * (v.dVCM + v.dVC * gPathGenerator.Mis(r.mRevPdfW));
+        const float wCamera = gPathGenerator.Mis(lightBsdfDirPdfA)  * (  dVCM +   dVC * gPathGenerator.Mis(f.mRevPdfW));
         misWeight = 1 / (wLight + 1 + wCamera);
 
         return misWeight;
@@ -822,7 +745,7 @@ extension RecursiveMisState {
         if (gPathGenerator.DebugDisableMIS() || gPathGenerator.gLightTraceOnly)
             return misWeight;
 
-        const float wLight = gPathGenerator.Mis(cameraPdfA / gPathGenerator.mParams.mLightSubpathCount) * (gPathGenerator.GetMisVmWeightFactor() + dVCM + dVC * gPathGenerator.Mis(scatterRevPdfW));
+        const float wLight = gPathGenerator.Mis(cameraPdfA / gPathGenerator.mParams.mLightSubpathCount) * (dVCM + dVC * gPathGenerator.Mis(scatterRevPdfW));
         misWeight = 1 / (wLight + 1);
 
         return misWeight;
@@ -907,16 +830,12 @@ extension ReconnectionMisState {
         if (singleBounce) {
             // vertex after rcv is last vertex
             mis_r.dVC = ratio_r * (
-                gPathGenerator.GetMisVmWeightFactor()
-                +
                 mis_r.dVCM
                 +
                 mis_r.dVC * gPathGenerator.Mis(pdfRev_r));
             mis_r.dVCM = gPathGenerator.Mis(invPdf * invFwdG_r);
         } else {
             mis_r.dVC = end_coeff * (
-                gPathGenerator.GetMisVmWeightFactor() * (1 + ratio_r + sumProd_eta)
-                +
                 mis_r.dVCM * ratio_r + gPathGenerator.Mis(invPdf * invFwdG_r) * prod_dVCM + sumProd_dVCM
                 +
                 mis_r.dVC * ratio_r * gPathGenerator.Mis(pdfRev_r));
@@ -1041,7 +960,6 @@ extension PathGenerator {
         } else if (ps.IsValid() && weight > 0) {
             print("Found path. contrib:", ps.mContribution);
             print("\tLight subpath vertices:", ps.mSuffix.mLightSubpath.mVertexCount);
-            print("\tMerge:", ps.HasFlag(PathFlags::eVertexMerging));
             print("\tPrefix bounces:", ps.mPrefixBounces);
             r.mSample.mContribution += ps.mContribution * (ps.mMisWeight * weight);
         }
@@ -1385,95 +1303,6 @@ extension PathGenerator {
             s.id,
             suffix,
             PathFlags::eNone);
-
-        return result;
-    }
-    PathSample MergeWithLightVertex <let bShift : bool>(inout PathState<bShift> s, const PathVertex vertex, const LightSubpathVertex v, out float integrationWeight) {
-        integrationWeight = 0;
-
-        PathSample result = {};
-
-        const float mergeRadius = GetMergeRadius(vertex.GetPosition());
-
-        const uint bounces = s.bounces + v.mBounces + 1;
-        if (bounces > mParams.mMaxBounces || s.diffuseBounces + v.mDiffuseBounces + 1 > mParams.mMaxDiffuseBounces || DebugDisablePath(bounces, v.mLightSubpath.mVertexCount, s.rcvFound ? s.prefixBounces : s.bounces, true))
-            return result;
-
-        const PathVertex photon = PathVertex(v.mVertex);
-        const float3 toPhoton = photon.GetPosition() - vertex.GetPosition();
-        if (dot(toPhoton, toPhoton) >= sqr(mergeRadius))
-            return result;
-
-        ReflectanceEvalData f = vertex.EvaluateReflectance(s.sg, v.GetDirIn(), false);
-        if (vertex.HasFaceNormal()) {
-            const float3 guideNormal = vertex.mMaterial.getProperties(vertex.mShadingData).guideNormal;
-            const float cosOut = abs(dot(guideNormal, v.GetDirIn()));
-            if (cosOut < kMinCosTheta)
-                return result;
-            f.mReflectance /= cosOut; // divide out dot(N, wo)
-        }
-
-        if (gBidirectional && gDisableCameraConnection && !s.isLightPath && s.bounces == 1)
-            f.mRevPdfW = 0;
-
-        const float3 contrib = s.throughput * v.mThroughput * f.mReflectance;
-        if (all(contrib <= 0))
-            return result;
-
-        integrationWeight = 1 / (s.pdfW * v.mLightSubpath.mPdf * (sqr(mergeRadius) * M_PI * mParams.mLightSubpathCount));
-
-        const float misWeight = s.mis.EvalVertexMergingMIS(v.mis, f);
-        MisEvalData misEvalArgs = {};
-        #if USE_RECONNECTION_MIS
-        misEvalArgs.reconnectionMis = s.rcvMis;
-        misEvalArgs.lightSubpathMis = v.mis;
-        misEvalArgs.cameraScatterFwdPdfW = f.mFwdPdfW;
-        misEvalArgs.cameraScatterRevPdfW = f.mRevPdfW;
-        #endif
-
-        float3 suffixContrib;
-        float3 suffixDir;
-        float suffixPdf = v.mLightSubpath.mPdf;
-        const bool hasRcv = !bShift && s.rcvFound;
-        if (hasRcv) {
-            // use rcv found earlier along the camera subpath
-            if (s.bounces == s.prefixBounces + 1) {
-                // the light vertex is the 2nd vertex in the suffix
-                suffixContrib = v.mThroughput * f.mReflectance;
-                suffixDir = v.GetDirIn();
-            } else {
-                // the light vertex is after the 2nd suffix vertex
-                suffixContrib = SafeDivide(contrib, s.throughputAtRcv);
-                suffixDir = s.rcvDirOut;
-                suffixPdf *= (s.pdfW / s.pdfAtRcv);
-            }
-        } else {
-            // use the light subpath vertex as the rcv
-            suffixContrib = v.mThroughput;
-            suffixDir = v.GetDirIn();
-        }
-
-        const PathSuffix suffix = PathSuffix::Create(
-            suffixContrib,
-            suffixPdf,
-            hasRcv ? s.rcv     : v.mVertex,
-            suffixDir,
-            hasRcv ? s.rcvDist : 0,
-            hasRcv ? s.rcvCos  : 0,
-            misEvalArgs,
-            v.mLightSubpath
-        );
-
-        result = PathSample::Create(
-            contrib,
-            misWeight,
-            bounces,
-            hasRcv ? s.prefixPdf         : s.pdfW,
-            hasRcv ? s.prefixBounces     : s.bounces,
-            hasRcv ? s.rcvDiffuseBounces : s.diffuseBounces,
-            s.id,
-            suffix,
-            PathFlags::eVertexMerging);
 
         return result;
     }
@@ -2018,11 +1847,11 @@ extension PathGenerator {
         while (any(s.throughput > 0) && s.pdfW > 0 && vertex.IsFinite() && s.bounces + 1 <= mParams.mMaxBounces && s.diffuseBounces + 1 <= mParams.mMaxDiffuseBounces) {
             const bool connectable = vertex.IsConnectable();
             if (connectable) {
-                // store vertex for connection and merging
+                // store light vertex for subpath connection
                 if (!gLightTraceOnly && !gDisableVC) {
                     const LightSubpathVertex v = PackLightSubpathVertex(s, vertex);
 
-                    if (gVertexMerging || s.bounces + 2 <= mParams.mMaxBounces) {
+                    if (s.bounces + 2 <= mParams.mMaxBounces) {
                         uint i;
                         if (gDisableLVC) {
                             i = id.mId.y * mParams.mOutputDim.x + id.mId.x;
@@ -2035,16 +1864,11 @@ extension PathGenerator {
                         } else {
                             i = mLightVertexCache.Insert(v);
                         }
-
-                        if (gVertexMerging) {
-                            const float3 pos = vertex.GetPosition();
-                            mPhotonMap.addPhoton(i, pos, GetMergeRadius(pos, true), mParams.mPhotonCellCount, sampleNext1D(s.sg));
-                        }
                     }
                 }
 
-                // form a full path by connecting the vertex to the camera
-                if (!gProgressivePhotonMapping && !gDisableCameraConnection) {
+                // form a full path by connecting camera vertex to the camera
+                if (!gDisableCameraConnection) {
                     float weight = 0;
                     int2 pixelCoord;
                     const PathSample ps = ConnectToCamera(s, vertex, pixelCoord, weight);
@@ -2055,7 +1879,6 @@ extension PathGenerator {
                             print("Found path. contrib:", luminance(ps.mContribution) * ps.mMisWeight);
                             print("\tW:", weight);
                             print("\tLight subpath vertices:", ps.mSuffix.mLightSubpath.mVertexCount);
-                            print("\tMerge:", ps.HasFlag(PathFlags::eVertexMerging));
                             print("\tPrefix bounces:", ps.mPrefixBounces);
                             print("\trcv dist:", s.rcvDist);
                             print("\tcaustic:", ps.HasFlag(PathFlags::eCausticLightPath));
@@ -2120,7 +1943,7 @@ extension PathGenerator {
 
             while (s.bounces < mParams.mMaxBounces && any(s.throughput > 0) && s.pdfW > 0 && vertex.IsFinite()) {
                 if (vertex.IsConnectable() && s.diffuseBounces < mParams.mMaxDiffuseBounces) {
-                    if ((gBidirectional || gSampleDirectLight) && !gProgressivePhotonMapping) {
+                    if ((gBidirectional || gSampleDirectLight)) {
                         // connect to a random light
                         float weight = 0;
                         const PathSample ps = ConnectToLight(s, vertex, weight);
@@ -2128,7 +1951,7 @@ extension PathGenerator {
                     }
 
                     if (gBidirectional) {
-                        if (gBidirectional && !gProgressivePhotonMapping && !gDisableVC) {
+                        if (gBidirectional && !gDisableVC) {
                             if (gDisableLVC) {
                                 uint i = id.mId.y * mParams.mOutputDim.x + id.mId.x;
                                 const uint count = mLightVertexCache.lightVertexCount[i];
@@ -2156,20 +1979,6 @@ extension PathGenerator {
                                     ProcessSample(r, s.sg, ps, weight * (count / (float)mParams.mLightSubpathCount));
                                 }
                             }
-                        }
-
-                        if (gVertexMerging) {
-                            // merge with the photon in the selected cell
-                            float cellW = 0.f;
-                            const LightSubpathVertex v = FindPhoton(s.sg, vertex, cellW);
-                            if (cellW > 0) {
-                                float weight = 0;
-                                const PathSample ps = MergeWithLightVertex(s, vertex, v, weight);
-                                ProcessSample(r, s.sg, ps, weight * cellW);
-                            }
-
-                            if (gProgressivePhotonMapping)
-                                break;
                         }
                     }
                 }

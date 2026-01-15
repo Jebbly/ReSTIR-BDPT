@@ -67,10 +67,7 @@ private:
         bool        useBsdfImportanceSampling = true;
         bool        useNEE = true;                    ///< Use next-event estimation (NEE). This enables shadow ray(s) from each path vertex.
         bool        useBPT = true;                    ///< Use bidirectional path tracing. Automatically enables NEE.
-        bool        useVM  = false;                   ///< Use vertex merging when using BPT.
-        bool        dynamicMergeRadius = false;
         bool        lightTraceOnly = false;
-        bool        useVMOnly = false;
         bool        disableCameraConnection = false;
         bool        disableEarlyReconnection = false;
         bool        reconnectionMIS = true;
@@ -108,8 +105,6 @@ private:
     bool                            mKeepFrameIndex = false;
     bool                            mFreezeHistory = false;
 
-    float                           mVMRadiusFactor  = .001f;    ///< Initial merge radius as a percentage of the scene radius.
-    float                           mVMRadiusAlpha = 1.0f;       ///< Merge radius shrink factor.
     uint                            mFrameCount = 0;
     uint                            mFixedSeed = 0;
     bool                            mUseFixedSeed = false;
@@ -148,8 +143,6 @@ private:
     ref<Buffer>                     mpLightImage;                ///< Light trace image. Light subpath contributions are atomically added to this.
     ref<Buffer>                     mpLightVertices;             ///< Light sub-path vertices.
     ref<Buffer>                     mpLightVertexCount;          ///< Light vertex counter.
-    ref<Buffer>                     mpPhotonCellSizes;           ///< Photon grid cell sizes.
-    ref<Buffer>                     mpPhotonCellOffsets;         ///< Photon grid cell offsets.
     ref<Buffer>                     mpReservoirs[2];             ///< Per-pixel reservoirs.
     ref<Buffer>                     mpLastReservoirs;            ///< Per-pixel reservoirs.
     ref<Buffer>                     mpCausticReservoirs;         ///< Per-pixel reservoirs.

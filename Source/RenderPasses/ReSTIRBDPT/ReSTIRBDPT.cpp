@@ -36,7 +36,6 @@ namespace
     const std::string kUseNEE                = "useNEE";
     const std::string kUseBPT                = "useBPT";
     const std::string kNumLightSubpaths      = "numLightSubpaths";
-    const std::string kUseVM                 = "useVM";
     const std::string kMISPowerExponent      = "misPowerExponent";
     const std::string kEmissiveSampler       = "emissiveSampler";
     const std::string kLightBVHOptions       = "lightBVHOptions";
@@ -113,7 +112,6 @@ void ReSTIRBDPT::parseProperties(const Properties& props)
         else if (key == kFixedSeed) { mFixedSeed = value; mUseFixedSeed = true; }
         else if (key == kUseNEE) mStaticParams.useNEE = value;
         else if (key == kUseBPT) mStaticParams.useBPT = value;
-        else if (key == kUseVM) mStaticParams.useVM = value;
         else if (key == kNumLightSubpaths) mParams.mLightSubpathCount = value;
         else if (key == kMISPowerExponent) mStaticParams.misPowerExponent = value;
         else if (key == kEmissiveSampler) mStaticParams.emissiveSampler = value;
@@ -183,7 +181,6 @@ Properties ReSTIRBDPT::getProperties() const
     if (mUseFixedSeed) props[kFixedSeed] = mFixedSeed;
     props[kUseNEE] = mStaticParams.useNEE;
     props[kUseBPT] = mStaticParams.useBPT;
-    props[kUseVM] = mStaticParams.useVM;
     props[kNumLightSubpaths] = mParams.mLightSubpathCount;
     props[kMISPowerExponent] = mStaticParams.misPowerExponent;
     props[kEmissiveSampler] = mStaticParams.emissiveSampler;
@@ -263,10 +260,6 @@ void ReSTIRBDPT::execute(RenderContext* pRenderContext, const RenderData& render
         if (mStaticParams.useBPT)
         {
             pRenderContext->clearUAV(mpLightVertexCount->getUAV().get(), uint4(0));
-            if (mStaticParams.useVM)
-            {
-                pRenderContext->clearUAV(mpPhotonCellSizes->getUAV().get(), uint4(0));
-            }
 
             if (mStaticParams.useResampling)
             {
@@ -288,10 +281,10 @@ void ReSTIRBDPT::execute(RenderContext* pRenderContext, const RenderData& render
 
     // Canonical sampling
     {
-        FALCOR_PROFILE(pRenderContext, "Canonical sampling");
         // Trace light sub-paths.
         if (mStaticParams.useBPT)
         {
+            FALCOR_PROFILE(pRenderContext, "Initial light trace");
             // one thread per light subpath
             FALCOR_ASSERT(mpSampleLightPathsPass);
             preparePass(pRenderContext, renderData, *mpSampleLightPathsPass);
@@ -299,6 +292,7 @@ void ReSTIRBDPT::execute(RenderContext* pRenderContext, const RenderData& render
             mCurrentSeed++;
         }
 
+        FALCOR_PROFILE(pRenderContext, "Initial camera trace");
         // Trace camera sub-paths.
         FALCOR_ASSERT(mpSampleCameraPathsPass);
         preparePass(pRenderContext, renderData, *mpSampleCameraPathsPass);
@@ -307,11 +301,11 @@ void ReSTIRBDPT::execute(RenderContext* pRenderContext, const RenderData& render
     }
 
     if (mStaticParams.useResampling) {
-        FALCOR_PROFILE(pRenderContext, "Resampling");
 
         // Merge pure light tracing reservoirs with camera reservoirs
         if (mStaticParams.useBPT)
         {
+            FALCOR_PROFILE(pRenderContext, "Resolve light trace");
             mpLightReservoirs->sort(pRenderContext);
 
             FALCOR_ASSERT(mpLightReservoirResolvePass);
@@ -337,7 +331,7 @@ void ReSTIRBDPT::execute(RenderContext* pRenderContext, const RenderData& render
                 if (!mResetTemporalHistory) {
                     // shift samples to last frame
                     if (mStaticParams.unbiasedTemporalReuse) {
-                        FALCOR_PROFILE(pRenderContext, "Shift to last frame");
+                        FALCOR_PROFILE(pRenderContext, "Temporal shift");
                         FALCOR_ASSERT(mpTemporalShiftPass);
                         ref<Program> program = mpTemporalShiftPass->getProgram();
                         FALCOR_ASSERT(program);
@@ -352,7 +346,7 @@ void ReSTIRBDPT::execute(RenderContext* pRenderContext, const RenderData& render
 
                     if (mStaticParams.useCausticShift)
                     {
-                        FALCOR_PROFILE(pRenderContext, "Caustic shift");
+                        FALCOR_PROFILE(pRenderContext, "Temporal caustic shift");
 
                         mpShiftCausticsPass->addDefine("SHIFT_SUFFIXES", "1");
                         mpShiftCausticsPass->addDefine("USE_CAUSTIC_SHIFT", "1");
@@ -465,13 +459,6 @@ void ReSTIRBDPT::renderUI(Gui::Widgets& widget)
             totalSize += lvcSize;
             widget.text("LVC: " + std::to_string(lvcSize/1024));
             widget.text("stride: " + std::to_string(mpLightVertices->getElementSize()));
-
-            if (mStaticParams.useVM && mpPhotonCellSizes) {
-                size_t pmSize = mpPhotonCellSizes->getSize() + mpPhotonCellOffsets->getSize();
-                totalSize += pmSize;
-                widget.text("Photon map: " + std::to_string(pmSize/1024));
-            }
-
             if (!mStaticParams.useResampling && mpLightImage)
                 totalSize += mpLightImage->getSize();
         }
@@ -548,39 +535,11 @@ bool ReSTIRBDPT::renderRenderingUI(Gui::Widgets& widget)
 
             if (!mStaticParams.lightTraceOnly)
             {
-                dirty |= group.checkbox("Vertex merging (VM)", mStaticParams.useVM);
-                group.tooltip("Enable vertex merging.");
-
                 dirty |= group.checkbox("Disable camera connection", mStaticParams.disableCameraConnection);
                 group.tooltip("Don't connect light subpaths to the camera.");
 
                 dirty |= group.checkbox("Disable vertex connection (VC)", mStaticParams.disableVC);
                 group.tooltip("Only use PT, LT, and NEE");
-
-                if (mStaticParams.useVM)
-                {
-                    dirty |= group.checkbox("Vertex merging only", mStaticParams.useVMOnly);
-                    group.tooltip("Only use vertex merging.\nThis is the same as Progressive Photon Mapping.");
-
-                    runtimeDirty |= group.var("Photon hash grid cells", mParams.mPhotonCellCount, 1000u, 32000000u);
-                    group.tooltip("Number of cells in the photon hash grid.");
-
-                    runtimeDirty |= group.var("Photon radius factor", mVMRadiusFactor, 1e-10f, 1.0f);
-                    group.tooltip("Photon radius as a percentange of the scene radius.");
-
-                    runtimeDirty |= group.slider("Photon radius alpha", mVMRadiusAlpha, 0.f, 1.f);
-                    group.tooltip("Photon radius shrink factor.\nLower values cause the radius to shrink faster.");
-                    if (mVMRadiusAlpha < 1.f)
-                        group.text("Current radius: " + std::to_string(mParams.mMergeRadius) + " at frame " + std::to_string(mFrameCount));
-
-                    dirty |= group.checkbox("Dynamic merge radius", mStaticParams.dynamicMergeRadius);
-                    group.tooltip("Use a per-pixel merge radius, roughly equal to the pixel spread.\nThis introduces bias as the MIS weights assume a fixed radius.");
-
-                    if (mStaticParams.dynamicMergeRadius) {
-                        runtimeDirty |= group.var("Photon pixel radius", mParams.mDynamicMergeRadius, 1e-9f, 1000.0f);
-                        group.tooltip("Photon radius in pixels.\nNote the above'Photon radius factor' is still used for\ncalculating MIS, and the mismatch causes bias.");
-                    }
-                }
             }
         }
         else
@@ -766,11 +725,6 @@ bool ReSTIRBDPT::renderDebugUI(Gui::Widgets& widget)
 
             dirty |= group.var("Prefix bounces", mParams.mDebugPrefixBounces, -1);
             group.tooltip("Only render paths with this many prefix bounces.");
-
-            if (mStaticParams.useVM) {
-                dirty |= group.checkbox("Disable Merging", mParams.mDebugDisableMerging);
-                group.tooltip("Don't render paths that use vertex merging.");
-            }
         }
 
         recompile |= group.checkbox("Visualize counter data", mStaticParams.debugHeatmap);
@@ -1066,15 +1020,6 @@ void ReSTIRBDPT::prepareResources(RenderContext* pRenderContext, const RenderDat
             mVarsChanged = true;
         }
 
-        if (mStaticParams.useVM) {
-            if (!mpPhotonCellSizes || mpPhotonCellSizes->getSize() != sizeof(uint32_t)*mParams.mPhotonCellCount || mVarsChanged)
-            {
-                mpPhotonCellSizes     = mpDevice->createBuffer(sizeof(uint32_t)*mParams.mPhotonCellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess);
-                mpPhotonCellOffsets   = mpDevice->createStructuredBuffer(var["gPathGenerator"]["mPhotonMap"]["cellOffsets"], mParams.mPhotonCellCount, ResourceBindFlags::ShaderResource | ResourceBindFlags::UnorderedAccess, MemoryType::DeviceLocal, nullptr, false);
-                mVarsChanged = true;
-            }
-        }
-
         if (!mStaticParams.useResampling)
         {
             if (!mpLightImage || mpLightImage->getSize() != sizeof(float3) * screenPixelCount || mVarsChanged)
@@ -1230,9 +1175,6 @@ void ReSTIRBDPT::bindShaderData(const ShaderVar& var, const RenderData& renderDa
         var["mLightVertexCache"]["lightVertices"] = mpLightVertices;
         var["mLightVertexCache"]["lightVertexCount"] = mpLightVertexCount;
 
-        var["mPhotonMap"]["cellSizes"]   = mpPhotonCellSizes;
-        var["mPhotonMap"]["cellOffsets"] = mpPhotonCellOffsets;
-
         var["mOutputCounterData"] = mpPixelCounterData;
 
         var["mPathReservoirs0"] = mpReservoirs[0];
@@ -1270,8 +1212,6 @@ void ReSTIRBDPT::bindShaderData(const ShaderVar& var, const RenderData& renderDa
     var["mLastViewDir"] = mpLastViewDir;
     var["mMotionVectors"] = pMotionVecs; // Required for temporal reuse
     var["mOutputRadiance"] = renderData.getTexture(kOutputColor);
-
-    var["mPhotonMap"]["gHashOffset"] = mFrameCount;
 }
 
 bool ReSTIRBDPT::beginFrame(RenderContext* pRenderContext, const RenderData& renderData)
@@ -1353,29 +1293,6 @@ bool ReSTIRBDPT::beginFrame(RenderContext* pRenderContext, const RenderData& ren
 
     mpPixelDebug->beginFrame(pRenderContext, mParams.mOutputDim);
 
-    if (mStaticParams.useVM)
-    {
-        bool resetFrameCount = false;
-
-        auto refreshFlags = dict.getValue(kRenderPassRefreshFlags, RenderPassRefreshFlags::None);
-        if (refreshFlags != RenderPassRefreshFlags::None)
-            resetFrameCount = true;
-
-        auto sceneUpdates = mpScene->getUpdates();
-        if ((sceneUpdates & ~Scene::UpdateFlags::CameraPropertiesChanged) != Scene::UpdateFlags::None)
-            resetFrameCount = true;
-        if (is_set(sceneUpdates, Scene::UpdateFlags::CameraPropertiesChanged))
-        {
-            auto excluded = Camera::Changes::Jitter | Camera::Changes::History;
-            auto cameraChanges = mpScene->getCamera()->getChanges();
-            if ((cameraChanges & ~excluded) != Camera::Changes::None)
-                resetFrameCount = true;
-        }
-
-        if (resetFrameCount)
-            mFrameCount = 0;
-    }
-
     // Update the random seed.
     if (mUseFixedSeed) {
         mCurrentSeed = mFixedSeed;
@@ -1393,12 +1310,6 @@ bool ReSTIRBDPT::beginFrame(RenderContext* pRenderContext, const RenderData& ren
 
     const auto& aabb = mpScene->getSceneBounds();
     mParams.mSceneSphere = float4(aabb.maxPoint + aabb.minPoint, length(aabb.maxPoint - aabb.minPoint))*.5f;
-    mParams.mMergeRadius = mVMRadiusFactor * mParams.mSceneSphere.w;
-    if (mVMRadiusAlpha < 1.f)
-    {
-        mParams.mMergeRadius /= std::pow(float(mFrameCount + 1), 0.5f * (1 - mVMRadiusAlpha));
-        mParams.mMergeRadius = std::max(mParams.mMergeRadius, 1e-7f);
-    }
 
     return true;
 }
@@ -1485,9 +1396,6 @@ DefineList ReSTIRBDPT::StaticParams::getDefines(const ReSTIRBDPT& owner) const
     defines.add("USE_BIDIRECTIONAL", useBPT ? "1" : "0");
     defines.add("LIGHT_TRACE_ONLY", (useBPT && lightTraceOnly) ? "1" : "0");
     defines.add("DISABLE_CAMERA_CONNECTION", (useBPT && disableCameraConnection) ? "1" : "0");
-    defines.add("USE_VERTEX_MERGING", (useBPT && useVM && !lightTraceOnly) ? "1" : "0");
-    defines.add("USE_PPM_ONLY", (useBPT && useVM && useVMOnly && !lightTraceOnly) ? "1" : "0");
-    defines.add("DYNAMIC_MERGE_RADIUS", (useBPT && useVM && !lightTraceOnly && dynamicMergeRadius) ? "1" : "0");
     defines.add("USE_RESAMPLING", (useResampling || useTemporalReuse || spatialReusePasses > 0) ? "1" : "0");
     defines.add("USE_RECONNECTION_MIS", (useResampling && reconnectionMIS) ? "1" : "0");
     defines.add("SHIFT_LIGHT_PATHS_TO_CENTER", useResampling && useBPT && shiftLightPathsToPixelCenters ? "1" : "0");

@@ -7,7 +7,7 @@ import Utils.Math.MathHelpers;
 import Utils.Color.ColorHelpers;
 import Utils.Geometry.GeometryHelpers;
 __exported import PathGenerator;
-import PhotonMap;
+import LightVertexCache;
 
 extension PathGenerator {
     // shifts light paths with >1 bounce
@@ -86,7 +86,7 @@ extension PathGenerator {
 
     // connect to suffix without shifting it. Assumes the path state is already at the end of the prefix
     PathSample ConnectToSuffix(inout PathState<true> s, inout PathVertex vertex, const PathSample basePath, const bool shiftToPrev) {
-        const uint lightVertexCount = basePath.mSuffix.mLightSubpath.mVertexCount + (basePath.HasFlag(PathFlags::eNonCausticLightPath) ? -1 : 0) + (basePath.HasFlag(PathFlags::eVertexMerging) ? 1 : 0);
+        const uint lightVertexCount = basePath.mSuffix.mLightSubpath.mVertexCount + (basePath.HasFlag(PathFlags::eNonCausticLightPath) ? -1 : 0);
         const uint cameraBounces = max(0, int(basePath.mBounces) - int(lightVertexCount));
         const float prefixPdf = s.pdfW;
 
@@ -190,7 +190,7 @@ extension PathGenerator {
                     // advance the cached MIS state at the reconnection vertex to the primary hit
                     mis = basePath.mSuffix.mMisEvalArgs.lightSubpathMis;
 
-                    // note: must swap forward and reverse PDFs since light tracing would have evaluates the reverse BSDF
+                    // note: must swap forward and reverse PDFs since light tracing would have evaluated the reverse BSDF
                     DirectionSampleData r = {};
                     r.mFwdPdfW = rcvF.mRevPdfW;
                     r.mRevPdfW = rcvF.mFwdPdfW;
@@ -252,11 +252,6 @@ extension PathGenerator {
                         newSuffix.mMisEvalArgs.cosCam,
                         newSuffix.mMisEvalArgs.cosLight );
                 } else if (gBidirectional) {
-                    if (gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging)) {
-                        misWeight = mis.EvalVertexMergingMIS(
-                            newSuffix.mMisEvalArgs.lightSubpathMis,
-                            { float3(0), newSuffix.mMisEvalArgs.cameraScatterFwdPdfW, newSuffix.mMisEvalArgs.cameraScatterRevPdfW } );
-                    } else {
                         misWeight = mis.EvalVertexConnectionMIS(
                             newSuffix.mMisEvalArgs.lightSubpathMis,
                             { float3(0), newSuffix.mMisEvalArgs.lightScatterFwdPdfW, newSuffix.mMisEvalArgs.lightScatterRevPdfW },
@@ -264,7 +259,6 @@ extension PathGenerator {
                             newSuffix.mMisEvalArgs.cosCam,
                             newSuffix.mMisEvalArgs.cosLight,
                             newSuffix.mMisEvalArgs.invDist2 );
-                    }
                 }
             }
 
@@ -284,7 +278,7 @@ extension PathGenerator {
 
     // Shift and connect to a suffix. Assumes the path state is already at the end of the prefix, and the light subpath (if any) has been already shifted.
     PathSample ShiftSuffix(inout PathState<true> s, inout PathVertex vertex, const PathSample basePath, const LightSubpathVertex shiftedLightVertex) {
-        const uint lightVertexCount = basePath.mSuffix.mLightSubpath.mVertexCount + (basePath.HasFlag(PathFlags::eNonCausticLightPath) ? -1 : 0) + (basePath.HasFlag(PathFlags::eVertexMerging) ? 1 : 0);
+        const uint lightVertexCount = basePath.mSuffix.mLightSubpath.mVertexCount + (basePath.HasFlag(PathFlags::eNonCausticLightPath) ? -1 : 0);
         const uint cameraBounces = max(0, int(basePath.mBounces) - int(lightVertexCount));
 
         PathSample result = {};
@@ -348,10 +342,7 @@ extension PathGenerator {
             if ((gBidirectional || gSampleDirectLight) && basePath.mSuffix.mLightSubpath.mVertexCount == 1) {
                 result = ConnectToLight(s, vertex, w);
             } else if (gBidirectional && basePath.mSuffix.mLightSubpath.mVertexCount > 1) {
-                if (gVertexMerging && basePath.HasFlag(PathFlags::eVertexMerging))
-                    result =  MergeWithLightVertex(s, vertex, shiftedLightVertex, w);
-                else
-                    result = ConnectToLightSubpath(s, vertex, shiftedLightVertex, w);
+                result = ConnectToLightSubpath(s, vertex, shiftedLightVertex, w);
             }
         }
 
