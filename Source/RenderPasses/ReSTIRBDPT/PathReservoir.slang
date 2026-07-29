@@ -82,8 +82,8 @@ struct LightSubpathData {
 struct RecursiveMisState {
     float dVCM = 0;
     float dVC = 0;
+    float dVM = 0;
     uint  flag = 0;
-    uint  pad = 0;
 };
 struct ReconnectionMisState {
     float invFwdG_r = 0;
